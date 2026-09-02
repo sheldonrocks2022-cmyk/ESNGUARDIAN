@@ -25,7 +25,7 @@ Discord reconnects are handled by the library. API failures are caught at action
 
 ## RayNode Setup
 
-1. Create a new private GitHub repository, then upload every project file except `.env`, `.venv`, and `data/`. The required files include `main.py`, `requirements.txt`, `esn_guardian/`, `.gitignore`, and this README.
+1. Use the existing public GitHub repository at `https://github.com/Ep1cPlays/ESNGUARDIAN`. It must contain every project file except `.env`, `.venv`, and `data/`. The required files include `main.py`, `requirements.txt`, `esn_guardian/`, `.gitignore`, and this README.
 2. On the GitHub repository page, select **Code**, choose **HTTPS**, and copy the URL ending in `.git`. Use that URL in RayNode's repository field.
 3. Use the `main` Git branch unless you deliberately use a different branch.
 4. In RayNode, set **APP PY FILE** to `main.py`.
