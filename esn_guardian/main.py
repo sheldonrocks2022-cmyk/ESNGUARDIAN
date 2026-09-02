@@ -51,6 +51,26 @@ class GuardianBot(commands.Bot):
         await self.database.ensure_guild(guild.id)
         if await self.database.is_guild_blacklisted(guild.id):
             await guild.leave()
+            return
+
+        if self.settings.owner_id is None:
+            return
+        owner = self.get_user(self.settings.owner_id)
+        if owner is None:
+            try:
+                owner = await self.fetch_user(self.settings.owner_id)
+            except discord.HTTPException:
+                LOG.warning("Could not fetch bot owner %s for guild join notification", self.settings.owner_id)
+                return
+        try:
+            await owner.send(
+                f"ESN Guardian was added to **{guild.name}** (`{guild.id}`).\n"
+                f"Server owner: {guild.owner} (`{guild.owner_id}`)\n"
+                f"Members: {guild.member_count or 0}",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            LOG.warning("Could not DM bot owner about joining guild %s (%s)", guild.name, guild.id)
 
     async def on_error(self, event_method: str, *args: object, **kwargs: object) -> None:
         LOG.exception("Unhandled Discord event error in %s", event_method)

@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import discord_action, guild_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import discord_action, guild_only, log_event, notify_user, respond, staff_only
 
 
 class ModerationCog(commands.Cog):
@@ -20,6 +20,12 @@ class ModerationCog(commands.Cog):
     async def _log_case(self, interaction: discord.Interaction, case_id: int, target: discord.abc.User | None, action: str, reason: str) -> None:
         assert interaction.guild is not None
         await log_event(self.bot, interaction.guild, "moderation_log_channel_id", f"{action} | Case #{case_id}", description=f"Target: {target.mention if target else 'N/A'}\nModerator: {interaction.user.mention}\nReason: {reason}")
+        if target is not None:
+            await notify_user(
+                target,
+                f"Moderation notice from **{interaction.guild.name}** (`{interaction.guild.id}`)\n"
+                f"Action: {action}\nCase #{case_id}\nReason: {reason}",
+            )
 
     @app_commands.command(description="Issue a formal warning.")
     @guild_only()

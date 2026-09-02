@@ -112,6 +112,12 @@ class Database:
                 reason TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS global_bans (
+                user_id INTEGER PRIMARY KEY,
+                reason TEXT NOT NULL,
+                banned_by_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             CREATE TABLE IF NOT EXISTS anti_nuke_config (
                 guild_id INTEGER PRIMARY KEY,
                 enabled INTEGER NOT NULL DEFAULT 0,
@@ -213,6 +219,10 @@ class Database:
     async def is_guild_blacklisted(self, guild_id: int) -> bool:
         row = await self.fetchone("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (guild_id,))
         return row is not None
+
+    async def global_ban_reason(self, user_id: int) -> str | None:
+        row = await self.fetchone("SELECT reason FROM global_bans WHERE user_id = ?", (user_id,))
+        return str(row["reason"]) if row is not None else None
 
     async def state_enabled(self, state_key: str) -> bool:
         row = await self.fetchone("SELECT value FROM bot_state WHERE state_key = ?", (state_key,))

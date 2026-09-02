@@ -39,6 +39,14 @@ async def respond(interaction: discord.Interaction, content: str, *, ephemeral: 
         await interaction.response.send_message(content, ephemeral=ephemeral)
 
 
+async def notify_user(user: discord.abc.User, content: str) -> bool:
+    try:
+        await user.send(content, allowed_mentions=discord.AllowedMentions.none())
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    return True
+
+
 async def log_event(bot: "GuardianBot", guild: discord.Guild, setting_field: str, title: str, *, description: str, color: discord.Color = discord.Color.blurple()) -> None:
     settings = await bot.database.setting(guild.id)
     channel_id = settings[setting_field]

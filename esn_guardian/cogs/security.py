@@ -32,6 +32,18 @@ class SecurityCog(commands.Cog):
     async def _security_case(self, guild: discord.Guild, target: discord.abc.User | None, action: str, reason: str, channel_id: int | None = None) -> int:
         case_id = await self.bot.database.create_case(guild.id, target.id if target else None, self.bot.user.id if self.bot.user else None, action, reason, channel_id)
         await log_event(self.bot, guild, "security_log_channel_id", f"Security: {action} | Case #{case_id}", description=f"Target: {target.mention if target else 'N/A'}\nReason: {reason}", color=discord.Color.red())
+        if guild.owner is not None:
+            target_text = f"{target} ({target.id})" if target else "N/A"
+            try:
+                await guild.owner.send(
+                    f"Security alert in **{guild.name}** (`{guild.id}`)\n"
+                    f"Case #{case_id}: {action}\n"
+                    f"Target: {target_text}\n"
+                    f"Reason: {reason}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                pass
         return case_id
 
     async def _audit_executor(self, guild: discord.Guild, action: discord.AuditLogAction, target_id: int) -> discord.User | discord.Member | None:
