@@ -1,0 +1,13 @@
+[project]
+name = "esn-guardian"
+version = "1.0.0"
+description = "ESN Guardian Discord security and community management bot"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.5,<3",
+    "aiosqlite>=0.20,<1",
+    "python-dotenv>=1.0,<2",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
