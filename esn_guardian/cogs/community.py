@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from datetime import UTC, datetime
 
@@ -8,18 +9,40 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, set_protected_footer, staff_only
+from esn_guardian.cogs.common import (
+    audit_log_actor,
+    format_member_details,
+    guild_owner_only,
+    guild_only,
+    log_event,
+    respond,
+    set_protected_footer,
+    staff_only,
+)
 
 SMP_INFO = "**Minecraft Bedrock**\nServer: **ESN SMP**\nIP: `esnsmp.ggwp.cc`\nPort: `17058`\nDiscord: https://discord.gg/huFsDxkZ2g"
-LOG_FIELDS = {"moderation": "moderation_log_channel_id", "security": "security_log_channel_id", "member": "member_log_channel_id", "message": "message_log_channel_id", "verification": "verification_log_channel_id", "system": "system_log_channel_id"}
+LOG_FIELDS = {
+    "moderation": "moderation_log_channel_id",
+    "security": "security_log_channel_id",
+    "member": "member_log_channel_id",
+    "message": "message_log_channel_id",
+    "verification": "verification_log_channel_id",
+    "system": "system_log_channel_id",
+    "guild": "guild_log_channel_id",
+    "voice": "voice_log_channel_id",
+    "invite": "invite_log_channel_id",
+    "role": "role_log_channel_id",
+    "command": "command_log_channel_id",
+}
 BEDROCK_RAKNET_MAGIC = bytes.fromhex("00ffff00fefefefefdfdfdfd12345678")
+LOG = logging.getLogger("esn_guardian.cogs.community")
 HELP_GUIDES = {
     "setup": "**ESN Guardian Setup**\n1. Give the bot View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Read Message History, and View Audit Log.\n2. Ensure the bot role is above every role it must manage.\n3. Run `/setup`.\n4. Set log routes with `/logs` for moderation, security, member, message, verification, and system events.\n5. Run `/security scan`, configure `/security raid`, then enable `/antinuke setup`.\n6. Configure `/verification setup`, then `/verification enable` if members must verify.\n7. Post staff controls with `/panel` and the community panel with `/esnpanel`.\n\nUse `/help section:<category>` for the full command catalogue.",
     "moderation": "**Moderation Commands**\n`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`\n`/clear`, `/purge`, `/slowmode`, `/nickname`, `/role`, `/massrole`\n`/case`, `/history`, `/lock`, `/unlock`, `/lockdown`, `/unlockdown`\n\nStaff permission is required. Every moderation action creates a case ID and can be sent to the moderation log channel.",
     "security": "**Security Commands**\nAutoMod: `/security automod`, `/security thresholds`, `/security links`, `/security allow-domain`, `/security remove-domain`, `/security add-word`, `/security remove-word`, `/security words`, `/security domains`, `/security check-link`, `/security reset-automod`\nRaid and review: `/security raid`, `/security raid-status`, `/security quarantine`, `/security release`, `/security member`, `/security cases`, `/security scan`, `/security status`, `/security trusted`\nAnti-nuke: `/antinuke setup`, `/antinuke enable`, `/antinuke disable`, `/antinuke status`, `/antinuke trust`, `/antinuke untrust`\n\nUse `/security scan` before enabling anti-nuke. It needs View Audit Log, Ban Members, Manage Channels, and Manage Roles.",
     "verification": "**Verification Commands**\n`/verification setup` posts the persistent VERIFY button and stores its message.\n`/verification enable` and `/verification disable` control access.\n`/verification status` shows roles and account-age settings.\n`/verification reset` clears verification records for one member or the whole server.\n`/verify` lets a member run the same checks without using the button.\n\nPut the verified role below the bot's highest role; configure the unverified role with restricted channel permissions.",
-    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/suggest`, `/poll`\nESN SMP: `/smp`, `/ip`, `/port`, `/status`, `/players`, `/discord`, `/smpannounce`, `/smpfaq`, `/joinhelp`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status` and `/players` perform a live Bedrock UDP query.",
-    "ads": "**Opt-In Advertising Commands**\n`/setup-ad` chooses this server's ad channel and cooldown.\n`/ad-on` explicitly opts the server in; `/ad-off` opts it out.\n`/ad-now` and `/smpannounce` send an approved message only to this server's configured opt-in channel.\n`/ad-status`, `/ad-cooldown`, `/ad-network`, `/advertisers`, and `/adstats` show local opt-in settings.\n`/report-ad` logs an advertising concern to staff.\n\nGuardian never sends advertisements to a server that has not opted in.",
+    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/suggest`, `/poll`\nESN SMP: `/smp`, `/ip`, `/port`, `/status`, `/players`, `/discord`, `/smpannounce`, `/joinhelp`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status` and `/players` perform a live Bedrock UDP query.",
+    "ads": "**Opt-In Advertising Commands**\n`/setup-ad` chooses this server's ad channel and cooldown.\n`/ad-on` explicitly opts the server in; `/ad-off` opts it out.\n`/smpannounce` sends an approved message only to this server's configured opt-in channel.\n`/ad-status` shows local opt-in settings.\n`/report-ad` logs an advertising concern to staff.\n\nGuardian never sends advertisements to a server that has not opted in.",
     "owner": "**Owner Commands**\n`/botstats`, `/servers`, `/broadcast`, `/maintenance`, `/blacklist`, `/unblacklist`\n\nOnly the Discord user ID configured as `BOT_OWNER_ID` can use these commands. `/maintenance` prevents normal guild commands until disabled. `/blacklist` removes Guardian from the specified guild and blocks future use.",
 }
 
@@ -85,6 +108,18 @@ class CommunityCog(commands.Cog):
         self.bot.add_view(ControlPanel(self.bot))
         self.bot.add_view(ControlPanel(self.bot, esn=True))
 
+    async def _send_member_notice(self, channel: discord.TextChannel, member: discord.Member, title: str, color: discord.Color) -> None:
+        details = format_member_details(member)[:4096]
+        embed = set_protected_footer(discord.Embed(title=title, description=details, color=color, timestamp=datetime.now(UTC)))
+        embed.set_thumbnail(url=member.display_avatar.url)
+        try:
+            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            try:
+                await channel.send(f"**{title}**\n{details}"[:2000], allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                LOG.exception("Could not send %s notice for %s (%s) in %s (%s)", title, member, member.id, member.guild.name, member.guild.id)
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         settings = await self.bot.database.setting(member.guild.id)
@@ -95,27 +130,105 @@ class CommunityCog(commands.Cog):
             except discord.HTTPException:
                 await log_event(self.bot, member.guild, "system_log_channel_id", "Autorole failure", description=f"Could not assign {autorole.mention} to {member.mention}.", color=discord.Color.red())
         channel = member.guild.get_channel(settings["welcome_channel_id"]) if settings["welcome_channel_id"] else None
-        if isinstance(channel, discord.TextChannel) and settings["welcome_message"]:
-            try:
-                await channel.send(settings["welcome_message"].replace("{user}", member.mention).replace("{server}", member.guild.name), allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-            except discord.HTTPException:
-                pass
-        await log_event(self.bot, member.guild, "member_log_channel_id", "Member joined", description=f"User: {member.mention} ({member.id})")
+        if isinstance(channel, discord.TextChannel):
+            await self._send_member_notice(channel, member, "Member joined", discord.Color.green())
+        await log_event(self.bot, member.guild, "member_log_channel_id", "Member joined", description=format_member_details(member), color=discord.Color.green())
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
         settings = await self.bot.database.setting(member.guild.id)
         channel = member.guild.get_channel(settings["goodbye_channel_id"]) if settings["goodbye_channel_id"] else None
-        if isinstance(channel, discord.TextChannel) and settings["goodbye_message"]:
-            try:
-                await channel.send(settings["goodbye_message"].replace("{user}", member.name).replace("{server}", member.guild.name), allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException:
-                pass
+        if isinstance(channel, discord.TextChannel):
+            await self._send_member_notice(channel, member, "Member left", discord.Color.orange())
+        await log_event(self.bot, member.guild, "member_log_channel_id", "Member left", description=format_member_details(member), color=discord.Color.orange())
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
+        if before.nick != after.nick:
+            await log_event(self.bot, after.guild, "member_log_channel_id", "Member nickname changed", description=f"User: {after.mention} ({after.id})\nBefore: {before.nick or 'None'}\nAfter: {after.nick or 'None'}\nTimezone: Unknown (Discord does not expose a user timezone via the API)", color=discord.Color.blurple())
+        if before.roles != after.roles:
+            added = [role for role in after.roles if role not in before.roles]
+            removed = [role for role in before.roles if role not in after.roles]
+            if added or removed:
+                actor = await audit_log_actor(after.guild, discord.AuditLogAction.member_role_update, after.id)
+                await log_event(self.bot, after.guild, "member_log_channel_id", "Member roles updated", description=f"User: {after.mention} ({after.id})\nAdded: {', '.join(role.mention for role in added) if added else 'None'}\nRemoved: {', '.join(role.mention for role in removed) if removed else 'None'}\nUpdated by: {actor}", color=discord.Color.blurple())
+        if before.timed_out_until != after.timed_out_until:
+            await log_event(self.bot, after.guild, "member_log_channel_id", "Member timeout updated", description=f"User: {after.mention} ({after.id})\nBefore: {before.timed_out_until or 'None'}\nAfter: {after.timed_out_until or 'None'}", color=discord.Color.orange())
+
+    @commands.Cog.listener()
+    async def on_user_update(self, before: discord.User, after: discord.User) -> None:
+        if before.name == after.name and before.global_name == after.global_name:
+            return
+        for guild in self.bot.guilds:
+            member = guild.get_member(after.id)
+            if member is None:
+                continue
+            await log_event(self.bot, guild, "member_log_channel_id", "User profile updated", description=f"User: {member.mention} ({member.id})\nUsername: {before.name} -> {after.name}\nGlobal name: {before.global_name or 'None'} -> {after.global_name or 'None'}\nTimezone: Unknown (Discord does not expose a user timezone via the API)", color=discord.Color.blurple())
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState) -> None:
+        if before.channel == after.channel and before.mute == after.mute and before.deaf == after.deaf and before.self_mute == after.self_mute and before.self_deaf == after.self_deaf:
+            return
+        description = (
+            f"User: {member.mention} ({member.id})\n"
+            f"Before: {before.channel.mention if before.channel else 'No voice channel'}\n"
+            f"After: {after.channel.mention if after.channel else 'No voice channel'}\n"
+            f"Mute: {before.mute} -> {after.mute}\n"
+            f"Deaf: {before.deaf} -> {after.deaf}\n"
+            f"Self mute: {before.self_mute} -> {after.self_mute}\n"
+            f"Self deaf: {before.self_deaf} -> {after.self_deaf}\n"
+            f"Timezone: Unknown (Discord does not expose a user timezone via the API)"
+        )
+        await log_event(self.bot, member.guild, "voice_log_channel_id", "Voice state updated", description=description, color=discord.Color.blue())
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
+        actor = await audit_log_actor(channel.guild, discord.AuditLogAction.channel_create, channel.id)
+        await log_event(self.bot, channel.guild, "guild_log_channel_id", "Channel created", description=f"Channel: {channel.mention if isinstance(channel, discord.abc.GuildChannel) else channel.name}\nType: {channel.type}\nCreated by: {actor}", color=discord.Color.green())
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
+        actor = await audit_log_actor(channel.guild, discord.AuditLogAction.channel_delete, channel.id)
+        await log_event(self.bot, channel.guild, "guild_log_channel_id", "Channel deleted", description=f"Channel: #{channel.name}\nType: {channel.type}\nDeleted by: {actor}", color=discord.Color.orange())
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel) -> None:
+        if before.name == after.name and before.position == after.position:
+            return
+        actor = await audit_log_actor(after.guild, discord.AuditLogAction.channel_update, after.id)
+        await log_event(self.bot, after.guild, "guild_log_channel_id", "Channel updated", description=f"Channel: #{before.name} -> #{after.name}\nType: {after.type}\nPosition: {before.position} -> {after.position}\nUpdated by: {actor}", color=discord.Color.blurple())
+
+    @commands.Cog.listener()
+    async def on_guild_role_create(self, role: discord.Role) -> None:
+        actor = await audit_log_actor(role.guild, discord.AuditLogAction.role_create, role.id)
+        await log_event(self.bot, role.guild, "role_log_channel_id", "Role created", description=f"Role: {role.mention}\nName: {role.name}\nColor: {role.color}\nPermissions: {role.permissions.value}\nCreated by: {actor}", color=discord.Color.green())
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role: discord.Role) -> None:
+        actor = await audit_log_actor(role.guild, discord.AuditLogAction.role_delete, role.id)
+        await log_event(self.bot, role.guild, "role_log_channel_id", "Role deleted", description=f"Role: {role.name}\nColor: {role.color}\nPermissions: {role.permissions.value}\nDeleted by: {actor}", color=discord.Color.orange())
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role) -> None:
+        if before.name == after.name and before.color == after.color and before.permissions == after.permissions:
+            return
+        actor = await audit_log_actor(after.guild, discord.AuditLogAction.role_update, after.id)
+        await log_event(self.bot, after.guild, "role_log_channel_id", "Role updated", description=f"Role: {after.mention}\nBefore: {before.name} | {before.color} | {before.permissions.value}\nAfter: {after.name} | {after.color} | {after.permissions.value}\nUpdated by: {actor}", color=discord.Color.blurple())
+
+    @commands.Cog.listener()
+    async def on_invite_create(self, invite: discord.Invite) -> None:
+        creator = invite.inviter or invite.guild.owner if invite.guild else None
+        await log_event(self.bot, invite.guild, "invite_log_channel_id", "Invite created", description=f"Code: {invite.code}\nChannel: {invite.channel.mention if invite.channel else 'Unknown'}\nCreated by: {creator.mention if creator else 'Unknown'}\nCreator ID: {creator.id if creator else 'Unknown'}\nMax age: {invite.max_age}s\nMax uses: {invite.max_uses}\nTemporary: {invite.temporary}", color=discord.Color.green())
+
+    @commands.Cog.listener()
+    async def on_invite_delete(self, invite: discord.Invite) -> None:
+        await log_event(self.bot, invite.guild, "invite_log_channel_id", "Invite deleted", description=f"Code: {invite.code}\nChannel: {invite.channel.mention if invite.channel else 'Unknown'}\nTemporary: {invite.temporary}\nUses: {invite.uses}", color=discord.Color.orange())
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message) -> None:
         if message.guild and not message.author.bot:
-            await log_event(self.bot, message.guild, "message_log_channel_id", "Message deleted", description=f"User: {message.author.mention} ({message.author.id})\nChannel: {message.channel.mention}\nContent: {message.content or '[no text]'}")
+            attachments = ", ".join(item.url for item in message.attachments) if message.attachments else "None"
+            await log_event(self.bot, message.guild, "message_log_channel_id", "Message deleted", description=f"User: {message.author.mention} ({message.author.id})\nChannel: {message.channel.mention}\nMessage ID: {message.id}\nContent: {message.content or '[no text]'}\nAttachments: {attachments}\nJump URL: {message.jump_url if hasattr(message, 'jump_url') else 'Unavailable'}")
 
     @commands.Cog.listener()
     async def on_bulk_message_delete(self, messages: list[discord.Message]) -> None:
@@ -123,12 +236,13 @@ class CommunityCog(commands.Cog):
             return
         guild = messages[0].guild
         channel = messages[0].channel
-        await log_event(self.bot, guild, "message_log_channel_id", "Bulk messages deleted", description=f"Count: {len(messages)}\nChannel: {channel.mention}")
+        authors = sorted({message.author.id for message in messages if not message.author.bot})
+        await log_event(self.bot, guild, "message_log_channel_id", "Bulk messages deleted", description=f"Count: {len(messages)}\nChannel: {channel.mention}\nAuthor IDs: {', '.join(str(author_id) for author_id in authors) if authors else 'No non-bot authors'}")
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
         if before.guild and not before.author.bot and before.content != after.content:
-            await log_event(self.bot, before.guild, "message_log_channel_id", "Message edited", description=f"User: {before.author.mention} ({before.author.id})\nChannel: {before.channel.mention}\nBefore: {before.content}\nAfter: {after.content}")
+            await log_event(self.bot, before.guild, "message_log_channel_id", "Message edited", description=f"User: {before.author.mention} ({before.author.id})\nChannel: {before.channel.mention}\nMessage ID: {before.id}\nBefore: {before.content or '[no text]'}\nAfter: {after.content or '[no text]'}\nJump URL: {after.jump_url if hasattr(after, 'jump_url') else 'Unavailable'}")
 
     async def _panel(self, interaction: discord.Interaction, esn: bool) -> None:
         assert interaction.guild is not None and isinstance(interaction.channel, discord.TextChannel)
@@ -208,37 +322,35 @@ class CommunityCog(commands.Cog):
         settings = await self.bot.database.setting(interaction.guild_id)
         await respond(interaction, f"Lockdown: {'active' if settings['lockdown_active'] else 'inactive'}\nWelcome: <#{settings['welcome_channel_id']}>\nAutorole: <@&{settings['autorole_id']}>\nAds: {'enabled' if settings['ad_enabled'] else 'disabled'}")
 
-    @app_commands.command(description="Configure welcome messages.")
+    @app_commands.command(description="Set the channel for automatic detailed join notices.")
     @guild_only()
-    @staff_only()
-    async def welcome(self, interaction: discord.Interaction, channel: discord.TextChannel, message: str) -> None:
+    @guild_owner_only()
+    async def welcome(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
         await self.bot.database.update_setting(interaction.guild_id, "welcome_channel_id", channel.id)
-        await self.bot.database.update_setting(interaction.guild_id, "welcome_message", message)
         try:
             await channel.send(
-                message.replace("{user}", "a new member").replace("{server}", interaction.guild.name),
+                embed=set_protected_footer(discord.Embed(title="Join notices configured", description="Future joins will include the member's user ID, account and server timestamps, names, roles, status, and available membership flags.", color=discord.Color.green(), timestamp=datetime.now(UTC))),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
-            await respond(interaction, "Welcome message was saved, but I could not post its preview. Check my View Channel and Send Messages permissions.")
+            await respond(interaction, "Join notice channel was saved, but I could not post a test entry. Check my View Channel and Send Messages permissions.")
             return
-        await respond(interaction, "Welcome message configured and preview posted.")
+        await respond(interaction, f"Detailed join notices will go to {channel.mention}.")
 
-    @app_commands.command(description="Configure goodbye messages.")
+    @app_commands.command(description="Set the channel for automatic detailed leave notices.")
     @guild_only()
-    @staff_only()
-    async def goodbye(self, interaction: discord.Interaction, channel: discord.TextChannel, message: str) -> None:
+    @guild_owner_only()
+    async def goodbye(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
         await self.bot.database.update_setting(interaction.guild_id, "goodbye_channel_id", channel.id)
-        await self.bot.database.update_setting(interaction.guild_id, "goodbye_message", message)
         try:
             await channel.send(
-                message.replace("{user}", "a departing member").replace("{server}", interaction.guild.name),
+                embed=set_protected_footer(discord.Embed(title="Leave notices configured", description="Future leaves will include the member's user ID, account and server timestamps, names, roles, status, and available membership flags.", color=discord.Color.orange(), timestamp=datetime.now(UTC))),
                 allowed_mentions=discord.AllowedMentions.none(),
             )
         except discord.HTTPException:
-            await respond(interaction, "Goodbye message was saved, but I could not post its preview. Check my View Channel and Send Messages permissions.")
+            await respond(interaction, "Leave notice channel was saved, but I could not post a test entry. Check my View Channel and Send Messages permissions.")
             return
-        await respond(interaction, "Goodbye message configured and preview posted.")
+        await respond(interaction, f"Detailed leave notices will go to {channel.mention}.")
 
     @app_commands.command(description="Configure the automatic member role.")
     @guild_only()
@@ -283,7 +395,7 @@ class CommunityCog(commands.Cog):
         await message.add_reaction("❌")
         await respond(interaction, "Poll posted.")
 
-    @app_commands.command(description="Set one of the six log channels.")
+    @app_commands.command(description="Set a detailed event log channel.")
     @guild_only()
     @staff_only()
     @app_commands.choices(category=[app_commands.Choice(name=name.title(), value=name) for name in LOG_FIELDS])
@@ -313,9 +425,6 @@ class CommunityCog(commands.Cog):
     async def discord(self, interaction: discord.Interaction) -> None: await respond(interaction, "https://discord.gg/huFsDxkZ2g")
     @app_commands.command(description="Show ESN SMP joining help.")
     async def joinhelp(self, interaction: discord.Interaction) -> None: await respond(interaction, "In Minecraft Bedrock, add `esnsmp.ggwp.cc` on port `17058`.")
-    @app_commands.command(description="Show ESN SMP frequently asked questions.")
-    async def smpfaq(self, interaction: discord.Interaction) -> None:
-        await self.joinhelp.callback(self, interaction)
 
     @app_commands.command(description="Configure this server's opt-in ad channel and cooldown.")
     @guild_only()
@@ -349,29 +458,6 @@ class CommunityCog(commands.Cog):
     async def ad_status(self, interaction: discord.Interaction) -> None:
         settings = await self.bot.database.setting(interaction.guild_id)
         await respond(interaction, f"Opt-in: {'yes' if settings['ad_enabled'] else 'no'}\nChannel: <#{settings['ad_channel_id']}>\nCooldown: {settings['ad_cooldown_seconds'] // 60} minutes")
-    @app_commands.command(description="Show the configured ad cooldown.")
-    @guild_only()
-    @staff_only()
-    async def ad_cooldown(self, interaction: discord.Interaction) -> None:
-        await self.ad_status.callback(self, interaction)
-
-    @app_commands.command(description="Show this server's ad-network status.")
-    @guild_only()
-    @staff_only()
-    async def ad_network(self, interaction: discord.Interaction) -> None:
-        await self.ad_status.callback(self, interaction)
-
-    @app_commands.command(description="Show ad-network advertiser information.")
-    @guild_only()
-    @staff_only()
-    async def advertisers(self, interaction: discord.Interaction) -> None:
-        await self.ad_status.callback(self, interaction)
-
-    @app_commands.command(description="Show local ad network statistics.")
-    @guild_only()
-    @staff_only()
-    async def adstats(self, interaction: discord.Interaction) -> None:
-        await self.ad_status.callback(self, interaction)
 
     @app_commands.command(description="Send a server-approved ESN SMP announcement to its configured ad channel.")
     @guild_only()
@@ -384,12 +470,6 @@ class CommunityCog(commands.Cog):
             return
         await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
         await respond(interaction, "Announcement sent.")
-
-    @app_commands.command(description="Send a server-approved ESN SMP announcement now.")
-    @guild_only()
-    @staff_only()
-    async def ad_now(self, interaction: discord.Interaction, message: str) -> None:
-        await self.smpannounce.callback(self, interaction, message)
 
     @app_commands.command(description="Report an ad-network issue to server staff.")
     @guild_only()

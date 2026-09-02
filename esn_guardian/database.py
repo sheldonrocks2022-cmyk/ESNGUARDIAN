@@ -44,6 +44,11 @@ class Database:
                 message_log_channel_id INTEGER,
                 verification_log_channel_id INTEGER,
                 system_log_channel_id INTEGER,
+                guild_log_channel_id INTEGER,
+                voice_log_channel_id INTEGER,
+                invite_log_channel_id INTEGER,
+                role_log_channel_id INTEGER,
+                command_log_channel_id INTEGER,
                 welcome_channel_id INTEGER,
                 welcome_message TEXT,
                 goodbye_channel_id INTEGER,
@@ -166,6 +171,17 @@ class Database:
             );
             """
         )
+        cursor = await connection.execute("PRAGMA table_info(guild_settings)")
+        existing_columns = {row["name"] for row in await cursor.fetchall()}
+        for column_name in (
+            "guild_log_channel_id",
+            "voice_log_channel_id",
+            "invite_log_channel_id",
+            "role_log_channel_id",
+            "command_log_channel_id",
+        ):
+            if column_name not in existing_columns:
+                await connection.execute(f"ALTER TABLE guild_settings ADD COLUMN {column_name} INTEGER")
         await connection.commit()
 
     async def execute(self, query: str, values: Iterable[Any] = ()) -> None:
@@ -198,6 +214,7 @@ class Database:
         allowed = {
             "moderation_log_channel_id", "security_log_channel_id", "member_log_channel_id",
             "message_log_channel_id", "verification_log_channel_id", "system_log_channel_id",
+            "guild_log_channel_id", "voice_log_channel_id", "invite_log_channel_id", "role_log_channel_id", "command_log_channel_id",
             "welcome_channel_id", "welcome_message", "goodbye_channel_id", "goodbye_message",
             "autorole_id", "lockdown_active", "lockdown_role_id", "ad_channel_id", "ad_enabled",
             "ad_cooldown_seconds", "ad_last_sent_at",

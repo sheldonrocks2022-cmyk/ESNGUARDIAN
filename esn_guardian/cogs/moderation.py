@@ -102,12 +102,6 @@ class ModerationCog(commands.Cog):
         await self._log_case(interaction, case_id, None, "CLEAR", f"Deleted {len(deleted)} messages in {interaction.channel.mention}")
         await respond(interaction, f"Deleted {len(deleted)} messages. Case #{case_id}.")
 
-    @app_commands.command(description="Delete recent messages.")
-    @guild_only()
-    @staff_only()
-    async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]) -> None:
-        await self.clear.callback(self, interaction, amount)
-
     @app_commands.command(description="Set channel slowmode in seconds.")
     @guild_only()
     @staff_only()
