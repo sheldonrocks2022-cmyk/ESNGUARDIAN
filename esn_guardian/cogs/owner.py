@@ -9,9 +9,16 @@ from discord.ext import commands
 from esn_guardian.cogs.common import notify_user, respond
 
 
+OWNER_IDS = {
+    1515077206886453469,
+    1392224478175690752,
+    1434663490160955407,
+}
+
+
 def owner_only() -> app_commands.check:
     async def predicate(interaction: discord.Interaction) -> bool:
-        return interaction.client.settings.owner_id is not None and interaction.user.id == interaction.client.settings.owner_id
+        return interaction.user.id in OWNER_IDS
     return app_commands.check(predicate)
 
 
@@ -56,8 +63,8 @@ class OwnerCog(commands.Cog):
         except ValueError:
             await respond(interaction, "Provide a numeric user ID.")
             return
-        if target_id == self.bot.settings.owner_id:
-            await respond(interaction, "The configured bot owner cannot be globally banned.")
+        if target_id in OWNER_IDS:
+            await respond(interaction, "A configured bot owner cannot be globally banned.")
             return
 
         await interaction.response.defer(ephemeral=True)
