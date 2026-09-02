@@ -11,6 +11,18 @@ if TYPE_CHECKING:
     from esn_guardian.main import GuardianBot
 
 LOG = logging.getLogger("esn_guardian.cogs")
+OBSIDIAN_BLUE = discord.Color(0x0B3D91)
+PROTECTED_FOOTER = "Protected by ESN Guardian"
+
+
+def set_protected_footer(embed: discord.Embed) -> discord.Embed:
+    embed.set_footer(text=PROTECTED_FOOTER)
+    return embed
+
+
+def command_embed(content: str, *, title: str = "ESN Guardian") -> discord.Embed:
+    embed = discord.Embed(title=title, description=content[:4096], color=OBSIDIAN_BLUE, timestamp=datetime.now(UTC))
+    return set_protected_footer(embed)
 
 
 def guild_only() -> app_commands.check:
@@ -33,10 +45,11 @@ def staff_only() -> app_commands.check:
 
 
 async def respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True) -> None:
+    embed = command_embed(content)
     if interaction.response.is_done():
-        await interaction.followup.send(content, ephemeral=ephemeral)
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
     else:
-        await interaction.response.send_message(content, ephemeral=ephemeral)
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 
 async def notify_user(user: discord.abc.User, content: str) -> bool:
@@ -56,6 +69,7 @@ async def log_event(bot: "GuardianBot", guild: discord.Guild, setting_field: str
     if not isinstance(channel, discord.TextChannel):
         return
     embed = discord.Embed(title=title, description=description[:4096], color=color, timestamp=datetime.now(UTC))
+    set_protected_footer(embed)
     try:
         await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):

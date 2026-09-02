@@ -100,7 +100,7 @@ class ModerationCog(commands.Cog):
         deleted = await interaction.channel.purge(limit=amount)
         case_id = await self._case(interaction, None, "CLEAR", f"Deleted {len(deleted)} messages")
         await self._log_case(interaction, case_id, None, "CLEAR", f"Deleted {len(deleted)} messages in {interaction.channel.mention}")
-        await interaction.followup.send(f"Deleted {len(deleted)} messages. Case #{case_id}.", ephemeral=True)
+        await respond(interaction, f"Deleted {len(deleted)} messages. Case #{case_id}.")
 
     @app_commands.command(description="Delete recent messages.")
     @guild_only()
@@ -171,7 +171,7 @@ class ModerationCog(commands.Cog):
                 continue
         case_id = await self._case(interaction, None, "MASSROLE", f"{'Removed' if remove else 'Added'} {role.name} for {changed} members")
         await self._log_case(interaction, case_id, None, "MASSROLE", f"{'Removed' if remove else 'Added'} {role.mention} for {changed} members")
-        await interaction.followup.send(f"Updated {changed} members. Case #{case_id}.", ephemeral=True)
+        await respond(interaction, f"Updated {changed} members. Case #{case_id}.")
 
 
 async def setup(bot: commands.Bot) -> None:

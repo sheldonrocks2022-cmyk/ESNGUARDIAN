@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, set_protected_footer, staff_only
 
 
 class VerificationView(discord.ui.View):
@@ -64,11 +64,11 @@ class VerificationCog(commands.Cog):
     async def setup(self, interaction: discord.Interaction, channel: discord.TextChannel, verified_role: discord.Role, unverified_role: discord.Role | None = None, minimum_account_age_days: app_commands.Range[int, 0, 365] = 0) -> None:
         assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True)
-        embed = discord.Embed(title="ESN Guardian Verification", description="Press VERIFY to complete verification.", color=discord.Color.green())
+        embed = set_protected_footer(discord.Embed(title="ESN Guardian Verification", description="Press VERIFY to complete verification.", color=discord.Color.green()))
         try:
             message = await channel.send(embed=embed, view=VerificationView(self.bot), allowed_mentions=discord.AllowedMentions.none())
         except (discord.Forbidden, discord.HTTPException):
-            await interaction.followup.send("I could not post in that channel.", ephemeral=True)
+            await respond(interaction, "I could not post in that channel.")
             return
         await self.bot.database.ensure_guild(interaction.guild.id)
         await self.bot.database.execute("UPDATE verification_config SET channel_id=?, message_id=?, verified_role_id=?, unverified_role_id=?, min_account_age_days=? WHERE guild_id=?", (channel.id, message.id, verified_role.id, unverified_role.id if unverified_role else None, minimum_account_age_days, interaction.guild.id))
@@ -112,7 +112,8 @@ class VerificationCog(commands.Cog):
     @guild_only()
     async def verify(self, interaction: discord.Interaction) -> None:
         view = VerificationView(self.bot)
-        await view.verify(interaction, next(child for child in view.children if isinstance(child, discord.ui.Button)))
+        button = next(child for child in view.children if isinstance(child, discord.ui.Button))
+        await button.callback(interaction)
 
 
 async def setup(bot: commands.Bot) -> None:

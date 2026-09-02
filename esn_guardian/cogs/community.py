@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, set_protected_footer, staff_only
 
 SMP_INFO = "**Minecraft Bedrock**\nServer: **ESN SMP**\nIP: `esnsmp.ggwp.cc`\nPort: `17058`\nDiscord: https://discord.gg/huFsDxkZ2g"
 LOG_FIELDS = {"moderation": "moderation_log_channel_id", "security": "security_log_channel_id", "member": "member_log_channel_id", "message": "message_log_channel_id", "verification": "verification_log_channel_id", "system": "system_log_channel_id"}
@@ -70,7 +70,7 @@ class ControlPanel(discord.ui.View):
                 if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
                     await respond(interaction, "Staff permission is required.")
                     return
-                await interaction.response.send_message("Use `/lockdown` to confirm the incident reason and lock channels.", ephemeral=True)
+                await respond(interaction, "Use `/lockdown` to confirm the incident reason and lock channels.")
             elif action in {"security", "automod", "verification", "logs", "settings", "ads", "statistics", "rules", "support", "help"}:
                 text = {"security": "Security controls: `/lock`, `/unlock`, `/lockdown`, `/unlockdown`.", "automod": "AutoMod is actively monitoring flood, mention, duplicate, caps, links, and configured blocked words.", "verification": "Configure with `/verification setup`, then `/verification enable`.", "logs": "Set each route with `/logs category:<name> channel:<channel>`.", "settings": "Use `/config` to inspect current server settings.", "ads": "Manage opt-in advertising with `/setup-ad`, `/ad-on`, `/ad-off`, and `/ad-status`.", "statistics": f"Serving {len(self.bot.guilds)} servers.", "rules": "Ask your server staff for the current rules.", "support": "Support: https://discord.gg/huFsDxkZ2g", "help": "Use `/help` for setup instructions and the full command guide."}[action]
                 await respond(interaction, text)
@@ -133,7 +133,8 @@ class CommunityCog(commands.Cog):
     async def _panel(self, interaction: discord.Interaction, esn: bool) -> None:
         assert interaction.guild is not None and isinstance(interaction.channel, discord.TextChannel)
         title = "ESN PANEL" if esn else "ESN GUARDIAN CONTROL PANEL"
-        message = await interaction.channel.send(embed=discord.Embed(title=title, color=discord.Color.blurple()), view=ControlPanel(self.bot, esn=esn))
+        embed = set_protected_footer(discord.Embed(title=title, color=discord.Color.blurple()))
+        message = await interaction.channel.send(embed=embed, view=ControlPanel(self.bot, esn=esn))
         await self.bot.database.execute("INSERT OR REPLACE INTO panel_messages (guild_id, panel_type, channel_id, message_id) VALUES (?, ?, ?, ?)", (interaction.guild.id, "esnpanel" if esn else "panel", message.channel.id, message.id))
         await respond(interaction, "Panel posted.")
 
@@ -213,7 +214,15 @@ class CommunityCog(commands.Cog):
     async def welcome(self, interaction: discord.Interaction, channel: discord.TextChannel, message: str) -> None:
         await self.bot.database.update_setting(interaction.guild_id, "welcome_channel_id", channel.id)
         await self.bot.database.update_setting(interaction.guild_id, "welcome_message", message)
-        await respond(interaction, "Welcome message configured.")
+        try:
+            await channel.send(
+                message.replace("{user}", "a new member").replace("{server}", interaction.guild.name),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            await respond(interaction, "Welcome message was saved, but I could not post its preview. Check my View Channel and Send Messages permissions.")
+            return
+        await respond(interaction, "Welcome message configured and preview posted.")
 
     @app_commands.command(description="Configure goodbye messages.")
     @guild_only()
@@ -221,7 +230,15 @@ class CommunityCog(commands.Cog):
     async def goodbye(self, interaction: discord.Interaction, channel: discord.TextChannel, message: str) -> None:
         await self.bot.database.update_setting(interaction.guild_id, "goodbye_channel_id", channel.id)
         await self.bot.database.update_setting(interaction.guild_id, "goodbye_message", message)
-        await respond(interaction, "Goodbye message configured.")
+        try:
+            await channel.send(
+                message.replace("{user}", "a departing member").replace("{server}", interaction.guild.name),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            await respond(interaction, "Goodbye message was saved, but I could not post its preview. Check my View Channel and Send Messages permissions.")
+            return
+        await respond(interaction, "Goodbye message configured and preview posted.")
 
     @app_commands.command(description="Configure the automatic member role.")
     @guild_only()
@@ -249,6 +266,7 @@ class CommunityCog(commands.Cog):
         assert isinstance(interaction.channel, discord.TextChannel)
         embed = discord.Embed(title="Suggestion", description=suggestion, color=discord.Color.gold())
         embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
+        set_protected_footer(embed)
         message = await interaction.channel.send(embed=embed)
         await message.add_reaction("👍")
         await message.add_reaction("👎")
@@ -259,7 +277,8 @@ class CommunityCog(commands.Cog):
     @staff_only()
     async def poll(self, interaction: discord.Interaction, question: str) -> None:
         assert isinstance(interaction.channel, discord.TextChannel)
-        message = await interaction.channel.send(embed=discord.Embed(title="Poll", description=question, color=discord.Color.teal()))
+        embed = set_protected_footer(discord.Embed(title="Poll", description=question, color=discord.Color.teal()))
+        message = await interaction.channel.send(embed=embed)
         await message.add_reaction("✅")
         await message.add_reaction("❌")
         await respond(interaction, "Poll posted.")
@@ -270,7 +289,15 @@ class CommunityCog(commands.Cog):
     @app_commands.choices(category=[app_commands.Choice(name=name.title(), value=name) for name in LOG_FIELDS])
     async def logs(self, interaction: discord.Interaction, category: app_commands.Choice[str], channel: discord.TextChannel) -> None:
         await self.bot.database.update_setting(interaction.guild_id, LOG_FIELDS[category.value], channel.id)
-        await respond(interaction, f"{category.name} logs will go to {channel.mention}.")
+        try:
+            await channel.send(
+                embed=set_protected_footer(discord.Embed(title=f"{category.name} logging configured", description="ESN Guardian can write to this log channel.", color=discord.Color.green())),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            await respond(interaction, f"{category.name} logs were saved, but I could not post a test entry. Check my View Channel and Send Messages permissions.")
+            return
+        await respond(interaction, f"{category.name} logs will go to {channel.mention}. Test entry posted.")
 
     @app_commands.command(description="Show ESN SMP connection information.")
     async def smp(self, interaction: discord.Interaction) -> None: await respond(interaction, SMP_INFO)

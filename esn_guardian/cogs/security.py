@@ -337,7 +337,7 @@ class SecurityCog(commands.Cog):
     async def lockdown(self, interaction: discord.Interaction, reason: str = "Manual lockdown") -> None:
         await interaction.response.defer(ephemeral=True)
         changed = await self._lockdown(interaction.guild, reason)
-        await interaction.followup.send("Lockdown enabled." if changed else "Lockdown is already active.", ephemeral=True)
+        await respond(interaction, "Lockdown enabled." if changed else "Lockdown is already active.")
 
     @app_commands.command(description="Restore channels after a lockdown.")
     @guild_only()
@@ -345,7 +345,7 @@ class SecurityCog(commands.Cog):
     async def unlockdown(self, interaction: discord.Interaction, reason: str = "Manual lockdown release") -> None:
         await interaction.response.defer(ephemeral=True)
         changed = await self._unlockdown(interaction.guild, reason)
-        await interaction.followup.send(f"Restored {changed} channels.", ephemeral=True)
+        await respond(interaction, f"Restored {changed} channels.")
 
     @security.command(name="automod", description="Enable or disable automatic message security enforcement.")
     @guild_only()

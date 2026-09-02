@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import notify_user, respond
+from esn_guardian.cogs.common import command_embed, notify_user, respond
 
 
 OWNER_IDS = {
@@ -50,7 +50,7 @@ class OwnerCog(commands.Cog):
         ) or "No servers."
         attachment = discord.File(io.BytesIO(server_list.encode("utf-8")), filename="servers.txt")
         await interaction.response.send_message(
-            f"Servers: {len(self.bot.guilds):,}\nCombined members: {total_members:,}",
+            embed=command_embed(f"Servers: {len(self.bot.guilds):,}\nCombined members: {total_members:,}", title="Connected servers"),
             file=attachment,
             ephemeral=True,
         )
@@ -86,10 +86,7 @@ class OwnerCog(commands.Cog):
             target_id,
             f"You have been globally banned by ESN Guardian.\nReason: {reason}",
         )
-        await interaction.followup.send(
-            f"Global ban saved for `{target_id}`. Banned in {banned} server(s); failed in {failed}.",
-            ephemeral=True,
-        )
+        await respond(interaction, f"Global ban saved for `{target_id}`. Banned in {banned} server(s); failed in {failed}.")
 
     @app_commands.command(description="Remove a user from the global-ban list.")
     @owner_only()
@@ -113,10 +110,7 @@ class OwnerCog(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 failed += 1
         await self._notify_user_by_id(target_id, "Your ESN Guardian global ban has been removed.")
-        await interaction.followup.send(
-            f"Removed `{target_id}` from the global-ban list. Unbanned in {unbanned} server(s); failed in {failed}.",
-            ephemeral=True,
-        )
+        await respond(interaction, f"Removed `{target_id}` from the global-ban list. Unbanned in {unbanned} server(s); failed in {failed}.")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
@@ -142,7 +136,7 @@ class OwnerCog(commands.Cog):
                     delivered += 1
                 except discord.HTTPException:
                     continue
-        await interaction.followup.send(f"Broadcast delivered to {delivered} configured system channels.", ephemeral=True)
+        await respond(interaction, f"Broadcast delivered to {delivered} configured system channels.")
 
     @app_commands.command(description="Enable or disable maintenance mode notice.")
     @owner_only()

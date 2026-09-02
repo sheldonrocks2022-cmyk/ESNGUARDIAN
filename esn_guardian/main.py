@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from esn_guardian.cogs.common import command_embed
 from esn_guardian.config import Settings
 from esn_guardian.database import Database
 
@@ -77,16 +78,16 @@ class GuardianBot(commands.Bot):
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.CheckFailure):
-            await interaction.response.send_message("This command is unavailable here, or you do not have permission to use it.", ephemeral=True)
+            await interaction.response.send_message(embed=command_embed("This command is unavailable here, or you do not have permission to use it.", title="Access denied"), ephemeral=True)
             return
         if isinstance(error, app_commands.CommandOnCooldown):
-            await interaction.response.send_message(f"Try again in {error.retry_after:.0f} seconds.", ephemeral=True)
+            await interaction.response.send_message(embed=command_embed(f"Try again in {error.retry_after:.0f} seconds.", title="Please wait"), ephemeral=True)
             return
         LOG.exception("Application command failed", exc_info=error)
         if interaction.response.is_done():
-            await interaction.followup.send("The command failed safely. Staff can check the system log.", ephemeral=True)
+            await interaction.followup.send(embed=command_embed("The command failed safely. Staff can check the system log.", title="Command unavailable"), ephemeral=True)
         else:
-            await interaction.response.send_message("The command failed safely. Staff can check the system log.", ephemeral=True)
+            await interaction.response.send_message(embed=command_embed("The command failed safely. Staff can check the system log.", title="Command unavailable"), ephemeral=True)
 
 
 def main() -> None:
