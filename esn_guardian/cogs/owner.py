@@ -26,14 +26,14 @@ class OwnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-    async def _notify_user_by_id(self, user_id: int, message: str) -> None:
+    async def _notify_user_by_id(self, user_id: int, message: str) -> bool:
         user = self.bot.get_user(user_id)
         if user is None:
             try:
                 user = await self.bot.fetch_user(user_id)
             except discord.HTTPException:
-                return
-        await notify_user(user, message)
+                return False
+        return await notify_user(user, message)
 
     @app_commands.command(description="Show bot-wide operational statistics.")
     @owner_only()
@@ -54,6 +54,38 @@ class OwnerCog(commands.Cog):
             file=attachment,
             ephemeral=True,
         )
+
+    @app_commands.command(description="Refresh slash commands in one server or every connected server.")
+    @owner_only()
+    async def synccommands(self, interaction: discord.Interaction, guild_id: str | None = None) -> None:
+        if guild_id is None:
+            guilds = list(self.bot.guilds)
+        else:
+            try:
+                target_id = int(guild_id)
+            except ValueError:
+                await respond(interaction, "Provide a numeric server ID, or leave it empty to sync every connected server.")
+                return
+            guild = self.bot.get_guild(target_id)
+            if guild is None:
+                await respond(interaction, "I am not connected to that server.")
+                return
+            guilds = [guild]
+
+        await interaction.response.defer(ephemeral=True)
+        synced = 0
+        failed = 0
+        command_count = 0
+        for guild in guilds:
+            try:
+                commands_synced = await self.bot.sync_guild_commands(guild)
+            except discord.HTTPException:
+                failed += 1
+            else:
+                synced += 1
+                command_count += len(commands_synced)
+        scope = f"server `{guild_id}`" if guild_id is not None else "all connected servers"
+        await respond(interaction, f"Synced {command_count} command(s) across {synced} {scope}; failed: {failed}.")
 
     @app_commands.command(description="Ban a user from every server served by the bot.")
     @owner_only()
@@ -142,7 +174,32 @@ class OwnerCog(commands.Cog):
     @owner_only()
     async def maintenance(self, interaction: discord.Interaction, enabled: bool) -> None:
         await self.bot.database.set_state_enabled("maintenance", enabled)
-        await respond(interaction, f"Maintenance mode {'enabled' if enabled else 'disabled'}. Use `/broadcast` to communicate the change.")
+        notification = (
+            "ESN Guardian maintenance has started. Normal server commands are temporarily unavailable."
+            if enabled
+            else "ESN Guardian maintenance has ended. Normal server commands are available again."
+        )
+        delivered = 0
+        for user_id in await self.bot.database.status_subscriber_ids("bot"):
+            if user_id == interaction.user.id:
+                continue
+            if await self._notify_user_by_id(user_id, notification):
+                delivered += 1
+        await respond(interaction, f"Maintenance mode {'enabled' if enabled else 'disabled'}. Notified {delivered} bot-status subscriber(s). Use `/broadcast` to communicate the change in servers.")
+
+    @app_commands.command(description="Send a direct status update to subscribers.")
+    @owner_only()
+    @app_commands.choices(topic=[
+        app_commands.Choice(name="ESN SMP", value="smp"),
+        app_commands.Choice(name="ESN Guardian", value="bot"),
+    ])
+    async def statusupdate(self, interaction: discord.Interaction, topic: app_commands.Choice[str], message: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        delivered = 0
+        for user_id in await self.bot.database.status_subscriber_ids(topic.value):
+            if await self._notify_user_by_id(user_id, f"{topic.name} status update:\n{message}"):
+                delivered += 1
+        await respond(interaction, f"Delivered the {topic.name} update to {delivered} subscriber(s).")
 
     @app_commands.command(description="Block a server from using the bot.")
     @owner_only()

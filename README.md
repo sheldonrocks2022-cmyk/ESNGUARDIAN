@@ -23,6 +23,10 @@ docker run -d --restart unless-stopped --env-file .env -v esn-guardian-data:/app
 
 Discord reconnects are handled by the library. API failures are caught at action boundaries and written to configured system/security channels when available.
 
+## Command Sync
+
+Guardian syncs slash commands to each connected server on startup. The configured bot owner can run `/synccommands` after a command change; leave `guild_id` empty to refresh every connected server, or provide a connected server's numeric ID to refresh only that server.
+
 ## RayNode Setup
 
 1. Use the existing public GitHub repository at `https://github.com/Ep1cPlays/ESNGUARDIAN`. It must contain every project file except `.env`, `.venv`, and `data/`. The required files include `main.py`, `requirements.txt`, `esn_guardian/`, `.gitignore`, and this README.

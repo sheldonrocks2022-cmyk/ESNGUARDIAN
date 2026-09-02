@@ -169,6 +169,12 @@ class Database:
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS status_subscriptions (
+                user_id INTEGER NOT NULL,
+                topic TEXT NOT NULL CHECK(topic IN ('smp', 'bot')),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(user_id, topic)
+            );
             """
         )
         cursor = await connection.execute("PRAGMA table_info(guild_settings)")
@@ -251,3 +257,23 @@ class Database:
             "ON CONFLICT(state_key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
             (state_key, "1" if enabled else "0"),
         )
+
+    async def subscribe_to_status(self, user_id: int, topic: str) -> None:
+        await self.execute(
+            "INSERT OR IGNORE INTO status_subscriptions (user_id, topic) VALUES (?, ?)",
+            (user_id, topic),
+        )
+
+    async def unsubscribe_from_status(self, user_id: int, topic: str) -> None:
+        await self.execute(
+            "DELETE FROM status_subscriptions WHERE user_id = ? AND topic = ?",
+            (user_id, topic),
+        )
+
+    async def status_subscriptions(self, user_id: int) -> set[str]:
+        rows = await self.fetchall("SELECT topic FROM status_subscriptions WHERE user_id = ?", (user_id,))
+        return {str(row["topic"]) for row in rows}
+
+    async def status_subscriber_ids(self, topic: str) -> list[int]:
+        rows = await self.fetchall("SELECT user_id FROM status_subscriptions WHERE topic = ?", (topic,))
+        return [int(row["user_id"]) for row in rows]

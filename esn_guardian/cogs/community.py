@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from esn_guardian.cogs.common import (
     audit_log_actor,
@@ -15,6 +15,7 @@ from esn_guardian.cogs.common import (
     guild_owner_only,
     guild_only,
     log_event,
+    notify_user,
     respond,
     set_protected_footer,
     staff_only,
@@ -41,9 +42,9 @@ HELP_GUIDES = {
     "moderation": "**Moderation Commands**\n`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`\n`/clear`, `/purge`, `/slowmode`, `/nickname`, `/role`, `/massrole`\n`/case`, `/history`, `/lock`, `/unlock`, `/lockdown`, `/unlockdown`\n\nStaff permission is required. Every moderation action creates a case ID and can be sent to the moderation log channel.",
     "security": "**Security Commands**\nAutoMod: `/security automod`, `/security thresholds`, `/security links`, `/security allow-domain`, `/security remove-domain`, `/security add-word`, `/security remove-word`, `/security words`, `/security domains`, `/security check-link`, `/security reset-automod`\nRaid and review: `/security raid`, `/security raid-status`, `/security quarantine`, `/security release`, `/security member`, `/security cases`, `/security scan`, `/security status`, `/security trusted`\nAnti-nuke: `/antinuke setup`, `/antinuke enable`, `/antinuke disable`, `/antinuke status`, `/antinuke trust`, `/antinuke untrust`\n\nUse `/security scan` before enabling anti-nuke. It needs View Audit Log, Ban Members, Manage Channels, and Manage Roles.",
     "verification": "**Verification Commands**\n`/verification setup` posts the persistent VERIFY button and stores its message.\n`/verification enable` and `/verification disable` control access.\n`/verification status` shows roles and account-age settings.\n`/verification reset` clears verification records for one member or the whole server.\n`/verify` lets a member run the same checks without using the button.\n\nPut the verified role below the bot's highest role; configure the unverified role with restricted channel permissions.",
-    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/suggest`, `/poll`\nESN SMP: `/smp`, `/ip`, `/port`, `/status`, `/players`, `/discord`, `/smpannounce`, `/joinhelp`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status` and `/players` perform a live Bedrock UDP query.",
+    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/suggest`, `/poll`\nESN SMP: `/smp`, `/ip`, `/port`, `/status smp`, `/status subscribe`, `/status unsubscribe`, `/players`, `/discord`, `/smpannounce`, `/joinhelp`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status smp` and `/players` perform a live Bedrock UDP query. Subscribe to `smp` for SMP updates or `bot` for Guardian maintenance notices.",
     "ads": "**Opt-In Advertising Commands**\n`/setup-ad` chooses this server's ad channel and cooldown.\n`/ad-on` explicitly opts the server in; `/ad-off` opts it out.\n`/smpannounce` sends an approved message only to this server's configured opt-in channel.\n`/ad-status` shows local opt-in settings.\n`/report-ad` logs an advertising concern to staff.\n\nGuardian never sends advertisements to a server that has not opted in.",
-    "owner": "**Owner Commands**\n`/botstats`, `/servers`, `/broadcast`, `/maintenance`, `/blacklist`, `/unblacklist`\n\nOnly the Discord user ID configured as `BOT_OWNER_ID` can use these commands. `/maintenance` prevents normal guild commands until disabled. `/blacklist` removes Guardian from the specified guild and blocks future use.",
+    "owner": "**Owner Commands**\n`/botstats`, `/servers`, `/synccommands`, `/broadcast`, `/maintenance`, `/statusupdate`, `/blacklist`, `/unblacklist`\n\nOnly the Discord user ID configured as `BOT_OWNER_ID` can use these commands. `/synccommands` refreshes slash commands in one connected server when given its ID, or in every connected server when left empty. `/maintenance` prevents normal guild commands until disabled and notifies bot-status subscribers. `/statusupdate` sends an SMP or Guardian update to opted-in users. `/blacklist` removes Guardian from the specified guild and blocks future use.",
 }
 
 
@@ -101,12 +102,19 @@ class ControlPanel(discord.ui.View):
 
 
 class CommunityCog(commands.Cog):
+    status_commands = app_commands.Group(name="status", description="Check SMP status and manage status notifications.")
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._smp_online: bool | None = None
 
     async def cog_load(self) -> None:
         self.bot.add_view(ControlPanel(self.bot))
         self.bot.add_view(ControlPanel(self.bot, esn=True))
+        self.smp_status_monitor.start()
+
+    def cog_unload(self) -> None:
+        self.smp_status_monitor.cancel()
 
     async def _send_member_notice(self, channel: discord.TextChannel, member: discord.Member, title: str, color: discord.Color) -> None:
         details = format_member_details(member)[:4096]
@@ -254,11 +262,52 @@ class CommunityCog(commands.Cog):
 
     async def _bedrock_status(self) -> str:
         try:
-            response = await self._bedrock_ping("esnsmp.ggwp.cc", 17058)
-            fields = self._parse_bedrock_pong(response)
+            fields = await self._bedrock_status_fields()
             return f"Online: yes\nPlayers: {fields[4]}/{fields[5]}\nMOTD: {fields[1]}\n{SMP_INFO}"
         except (asyncio.TimeoutError, OSError, ValueError):
             return f"Online: unavailable\nThe Bedrock server did not respond to a status query.\n{SMP_INFO}"
+
+    async def _bedrock_status_fields(self) -> list[str]:
+        response = await self._bedrock_ping("esnsmp.ggwp.cc", 17058)
+        return self._parse_bedrock_pong(response)
+
+    @tasks.loop(minutes=3)
+    async def smp_status_monitor(self) -> None:
+        try:
+            fields = await self._bedrock_status_fields()
+            is_online = True
+        except (asyncio.TimeoutError, OSError, ValueError):
+            fields = None
+            is_online = False
+
+        if self._smp_online is None:
+            self._smp_online = is_online
+            LOG.info("Initial ESN SMP status: %s", "online" if is_online else "unavailable")
+            return
+        if self._smp_online == is_online:
+            return
+
+        self._smp_online = is_online
+        message = (
+            f"ESN SMP is online. Players: {fields[4]}/{fields[5]}\nMOTD: {fields[1]}\n{SMP_INFO}"
+            if is_online and fields is not None
+            else f"ESN SMP is currently unavailable. The server did not respond to a status query.\n{SMP_INFO}"
+        )
+        delivered = 0
+        for user_id in await self.bot.database.status_subscriber_ids("smp"):
+            user = self.bot.get_user(user_id)
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                except discord.HTTPException:
+                    continue
+            if await notify_user(user, message):
+                delivered += 1
+        LOG.info("ESN SMP status changed to %s; notified %s subscriber(s)", "online" if is_online else "unavailable", delivered)
+
+    @smp_status_monitor.before_loop
+    async def before_smp_status_monitor(self) -> None:
+        await self.bot.wait_until_ready()
 
     @app_commands.command(description="Show the ESN Guardian setup and command guide.")
     @app_commands.choices(section=[app_commands.Choice(name=name.title(), value=name) for name in HELP_GUIDES])
@@ -417,8 +466,34 @@ class CommunityCog(commands.Cog):
     async def ip(self, interaction: discord.Interaction) -> None: await respond(interaction, "`esnsmp.ggwp.cc`")
     @app_commands.command(description="Show the ESN SMP port.")
     async def port(self, interaction: discord.Interaction) -> None: await respond(interaction, "`17058`")
-    @app_commands.command(description="Query the live ESN SMP Bedrock status.")
-    async def status(self, interaction: discord.Interaction) -> None: await respond(interaction, await self._bedrock_status())
+    @status_commands.command(name="smp", description="Query the live ESN SMP Bedrock status.")
+    async def smp_status(self, interaction: discord.Interaction) -> None:
+        await respond(interaction, await self._bedrock_status())
+
+    @status_commands.command(description="Subscribe to ESN SMP or Guardian status notifications.")
+    @app_commands.choices(topic=[
+        app_commands.Choice(name="ESN SMP updates", value="smp"),
+        app_commands.Choice(name="ESN Guardian maintenance notices", value="bot"),
+    ])
+    async def subscribe(self, interaction: discord.Interaction, topic: app_commands.Choice[str]) -> None:
+        await self.bot.database.subscribe_to_status(interaction.user.id, topic.value)
+        await respond(interaction, f"You will receive direct messages for {topic.name.lower()}. Use `/status unsubscribe` to stop them.")
+
+    @status_commands.command(description="Stop ESN SMP or Guardian status notifications.")
+    @app_commands.choices(topic=[
+        app_commands.Choice(name="ESN SMP updates", value="smp"),
+        app_commands.Choice(name="ESN Guardian maintenance notices", value="bot"),
+    ])
+    async def unsubscribe(self, interaction: discord.Interaction, topic: app_commands.Choice[str]) -> None:
+        await self.bot.database.unsubscribe_from_status(interaction.user.id, topic.value)
+        await respond(interaction, f"You will no longer receive direct messages for {topic.name.lower()}.")
+
+    @status_commands.command(description="Show your active ESN status notification subscriptions.")
+    async def subscriptions(self, interaction: discord.Interaction) -> None:
+        topics = await self.bot.database.status_subscriptions(interaction.user.id)
+        labels = {"smp": "ESN SMP updates", "bot": "ESN Guardian maintenance notices"}
+        subscribed = ", ".join(labels[topic] for topic in sorted(topics)) or "None"
+        await respond(interaction, f"Subscribed: {subscribed}")
     @app_commands.command(description="Query the live ESN SMP Bedrock player count.")
     async def players(self, interaction: discord.Interaction) -> None: await respond(interaction, await self._bedrock_status())
     @app_commands.command(description="Show the ESN SMP Discord.")

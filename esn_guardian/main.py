@@ -44,6 +44,10 @@ class GuardianBot(commands.Bot):
         await self.database.close()
         await super().close()
 
+    async def sync_guild_commands(self, guild: discord.Guild) -> list[app_commands.AppCommand]:
+        self.tree.copy_global_to(guild=guild)
+        return await self.tree.sync(guild=guild)
+
     async def on_ready(self) -> None:
         LOG.info("Connected as %s (%s) in %s guilds", self.user, self.user.id if self.user else "unknown", len(self.guilds))
         for guild in self.guilds:
@@ -51,9 +55,8 @@ class GuardianBot(commands.Bot):
         if not self._guild_commands_synced:
             guild_sync_succeeded = True
             for guild in self.guilds:
-                self.tree.copy_global_to(guild=guild)
                 try:
-                    synced_commands = await self.tree.sync(guild=guild)
+                    synced_commands = await self.sync_guild_commands(guild)
                 except discord.HTTPException:
                     guild_sync_succeeded = False
                     LOG.exception("Could not sync application commands for guild %s (%s)", guild.name, guild.id)
