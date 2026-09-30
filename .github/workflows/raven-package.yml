@@ -1,0 +1,33 @@
+name: Raven Host package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "esn_guardian/**"
+      - "main.py"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - "Dockerfile"
+      - ".env.example"
+      - ".github/workflows/raven-package.yml"
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Raven Host package
+        run: |
+          mkdir -p raven-package
+          cp -r esn_guardian raven-package/
+          cp main.py requirements.txt pyproject.toml Dockerfile .env.example raven-package/
+          printf "ESN Guardian Raven Host package\nCommit: %s\n" "$GITHUB_SHA" > raven-package/BUILD.txt
+      - name: Upload Raven Host ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ESN-Guardian-RavenHost-Latest
+          path: raven-package/
+          if-no-files-found: error
+          retention-days: 7
