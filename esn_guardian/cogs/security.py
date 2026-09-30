@@ -251,9 +251,82 @@ class SecurityCog(commands.Cog):
         await log_event(self.bot, member.guild, "security_log_channel_id", f"Security: QUARANTINE | Case #{case_id}", description=f"Target: {member.mention}\nReason: {reason}", color=discord.Color.orange())
         return True
 
+    async def _enforce_external_app_zero_tolerance(self, message: discord.Message) -> bool:
+        guild = message.guild
+        if guild is None:
+            return False
+
+        metadata = getattr(message, "interaction_metadata", None)
+        if metadata is None:
+            return False
+        try:
+            is_external_app = metadata.is_user_integration()
+        except (AttributeError, TypeError):
+            is_external_app = False
+        if not is_external_app:
+            return False
+
+        channel_id = getattr(message.channel, "id", None)
+        invoker = getattr(metadata, "user", None)
+        app_id = getattr(message, "application_id", None)
+        reason = f"Zero-tolerance external app use detected; application_id={app_id or 'unknown'}"
+
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+
+        if invoker is None:
+            await self._security_case(
+                guild,
+                None,
+                "EXTERNAL_APP_BAN_FAILED",
+                f"{reason}; Discord did not expose the invoking user",
+                channel_id,
+            )
+            return True
+
+        member = guild.get_member(invoker.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(invoker.id)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                member = None
+
+        if member is None:
+            await self._security_case(
+                guild,
+                invoker,
+                "EXTERNAL_APP_BAN_FAILED",
+                f"{reason}; invoking member could not be resolved",
+                channel_id,
+            )
+            return True
+
+        try:
+            await guild.ban(
+                member,
+                reason=f"ESN Guardian: {reason}",
+                delete_message_seconds=0,
+            )
+            await self._security_case(guild, member, "EXTERNAL_APP_BAN", reason, channel_id)
+        except (discord.Forbidden, discord.HTTPException):
+            await self._security_case(
+                guild,
+                member,
+                "EXTERNAL_APP_BAN_FAILED",
+                f"{reason}; Guardian could not ban the invoking member",
+                channel_id,
+            )
+        return True
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None or message.author.bot or not isinstance(message.author, discord.Member):
+        if message.guild is None:
+            return
+        if await self._enforce_external_app_zero_tolerance(message):
+            return
+        if message.author.bot or not isinstance(message.author, discord.Member):
             return
 
         await self.bot.database.ensure_guild(message.guild.id)
