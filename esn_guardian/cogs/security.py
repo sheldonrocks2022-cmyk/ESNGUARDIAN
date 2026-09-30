@@ -271,6 +271,8 @@ class SecurityCog(commands.Cog):
         app_id = getattr(message, "application_id", None)
         reason = f"Zero-tolerance external app use detected; application_id={app_id or 'unknown'}"
 
+        await self._block_external_app(guild, app_id, channel_id)
+
         try:
             await message.delete()
         except (discord.Forbidden, discord.NotFound, discord.HTTPException):
@@ -319,6 +321,68 @@ class SecurityCog(commands.Cog):
                 channel_id,
             )
         return True
+
+    async def _block_external_app(self, guild: discord.Guild, application_id: int | None, channel_id: int | None = None) -> None:
+        if application_id is None:
+            return
+
+        reason = "Zero-tolerance external app policy"
+        await self.bot.database.execute(
+            "INSERT INTO blocked_external_apps (guild_id, application_id, reason) VALUES (?, ?, ?) "
+            "ON CONFLICT(guild_id, application_id) DO UPDATE SET reason = excluded.reason, last_detected_at = CURRENT_TIMESTAMP",
+            (guild.id, application_id, reason),
+        )
+
+        app_member = guild.get_member(application_id)
+        if app_member is not None and getattr(app_member, "bot", False):
+            try:
+                await guild.ban(
+                    app_member,
+                    reason=f"ESN Guardian: blocked external application {application_id}",
+                    delete_message_seconds=0,
+                )
+                await self._security_case(
+                    guild,
+                    app_member,
+                    "EXTERNAL_APP_BOT_BAN",
+                    f"Blocked external application bot {application_id}",
+                    channel_id,
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                await self._security_case(
+                    guild,
+                    app_member,
+                    "EXTERNAL_APP_BOT_BAN_FAILED",
+                    f"Could not ban blocked external application bot {application_id}",
+                    channel_id,
+                )
+
+        try:
+            integrations = await guild.integrations()
+        except (discord.Forbidden, discord.HTTPException):
+            integrations = []
+
+        for integration in integrations:
+            integration_app = getattr(integration, "application", None)
+            if getattr(integration_app, "id", None) != application_id:
+                continue
+            try:
+                await integration.delete(reason=f"ESN Guardian: blocked external application {application_id}")
+                await self._security_case(
+                    guild,
+                    getattr(integration, "user", None),
+                    "EXTERNAL_APP_INTEGRATION_REMOVED",
+                    f"Removed server integration for blocked application {application_id}",
+                    channel_id,
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                await self._security_case(
+                    guild,
+                    getattr(integration, "user", None),
+                    "EXTERNAL_APP_INTEGRATION_REMOVE_FAILED",
+                    f"Could not remove server integration for blocked application {application_id}",
+                    channel_id,
+                )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -388,6 +452,33 @@ class SecurityCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         await self.bot.database.ensure_guild(member.guild.id)
+
+        if member.bot:
+            blocked_app = await self.bot.database.fetchone(
+                "SELECT application_id FROM blocked_external_apps WHERE guild_id = ? AND application_id = ?",
+                (member.guild.id, member.id),
+            )
+            if blocked_app is not None:
+                try:
+                    await member.guild.ban(
+                        member,
+                        reason=f"ESN Guardian: application {member.id} is permanently blocked",
+                        delete_message_seconds=0,
+                    )
+                    await self._security_case(
+                        member.guild,
+                        member,
+                        "EXTERNAL_APP_REBAN",
+                        f"Blocked application {member.id} attempted to join the server",
+                    )
+                except (discord.Forbidden, discord.HTTPException):
+                    await self._security_case(
+                        member.guild,
+                        member,
+                        "EXTERNAL_APP_REBAN_FAILED",
+                        f"Could not ban blocked application {member.id} after it joined",
+                    )
+                return
 
         antinuke = await self.bot.database.fetchone("SELECT enabled FROM anti_nuke_config WHERE guild_id = ?", (member.guild.id,))
         if member.bot and antinuke is not None and antinuke["enabled"]:
