@@ -3,7 +3,7 @@ from types import SimpleNamespace as NS
 import pytest
 
 from esn_guardian.cogs.esng_ai import ESNGuardianAICog, extract_esng_prompt
-from esn_guardian.cogs.owner import owner_only
+from esn_guardian.cogs.owner import OwnerCog
 
 
 @pytest.mark.parametrize(
@@ -46,9 +46,8 @@ async def test_esng_help_and_unknown_are_truthful():
 
 
 async def test_owner_check_accepts_configured_bot_owner():
-    check = owner_only()
     interaction = NS(
         user=NS(id=777),
         client=NS(settings=NS(owner_id=777)),
     )
-    assert await check.predicate(interaction)
+    assert await OwnerCog.botstats.checks[0](interaction)
