@@ -212,19 +212,6 @@ class OwnerCog(commands.Cog):
                 delivered += 1
         await respond(interaction, f"Maintenance mode {'enabled' if enabled else 'disabled'}. Notified {delivered} bot-status subscriber(s). Use `/broadcast` to communicate the change in servers.")
 
-    @app_commands.command(description="Send a direct status update to subscribers.")
-    @owner_only()
-    @app_commands.choices(topic=[
-        app_commands.Choice(name="ESN SMP", value="smp"),
-        app_commands.Choice(name="ESN Guardian", value="bot"),
-    ])
-    async def statusupdate(self, interaction: discord.Interaction, topic: app_commands.Choice[str], message: str) -> None:
-        await interaction.response.defer(ephemeral=True)
-        delivered = 0
-        for user_id in await self.bot.database.status_subscriber_ids(topic.value):
-            if await self._notify_user_by_id(user_id, f"{topic.name} status update:\n{message}"):
-                delivered += 1
-        await respond(interaction, f"Delivered the {topic.name} update to {delivered} subscriber(s).")
 
     @app_commands.command(description="Block a server from using the bot.")
     @owner_only()
