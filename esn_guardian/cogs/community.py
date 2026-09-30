@@ -114,6 +114,7 @@ class CommunityCog(commands.Cog):
         self.bot.add_view(ControlPanel(self.bot))
 
     def cog_unload(self) -> None:
+        pass
 
     async def _send_member_notice(self, channel: discord.TextChannel, member: discord.Member, title: str, color: discord.Color) -> None:
         details = format_member_details(member)[:4096]
