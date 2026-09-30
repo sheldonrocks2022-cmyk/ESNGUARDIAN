@@ -831,6 +831,11 @@ class SecurityCog(commands.Cog):
             "WHERE guild_id = ?",
             (interaction.guild_id,),
         )
+        advanced = self.bot.get_cog("AdvancedSecurityCog")
+        if advanced is not None and interaction.guild is not None and hasattr(advanced, "harden_guild"):
+            changed, failed = await advanced.harden_guild(interaction.guild)
+            await respond(interaction, f"Secure baseline applied with advanced protection. External-app permission entries changed: {changed}; failed: {failed}. Current bots, webhooks, and integrations were saved as the trusted baseline.")
+            return
         await respond(interaction, "Secure baseline applied. Existing strict-link allowlists and quarantine-role configuration were preserved.")
 
     @security.command(name="status", description="Show the current AutoMod and anti-nuke policy.")
