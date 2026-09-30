@@ -104,7 +104,6 @@ class ControlPanel(discord.ui.View):
 
 
 class CommunityCog(commands.Cog):
-    status_commands = app_commands.Group(name="status", description="Check SMP status and manage status notifications.")
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -114,10 +113,8 @@ class CommunityCog(commands.Cog):
     async def cog_load(self) -> None:
         self.bot.add_view(ControlPanel(self.bot))
         self.bot.add_view(ControlPanel(self.bot, esn=True))
-        self.smp_status_monitor.start()
 
     def cog_unload(self) -> None:
-        self.smp_status_monitor.cancel()
 
     async def _send_member_notice(self, channel: discord.TextChannel, member: discord.Member, title: str, color: discord.Color) -> None:
         details = format_member_details(member)[:4096]
@@ -431,18 +428,6 @@ class CommunityCog(commands.Cog):
         await respond(interaction, "Autorole updated." if role else "Autorole disabled.")
 
 
-    @app_commands.command(description="Submit a suggestion for staff and the community.")
-    @guild_only()
-    async def suggest(self, interaction: discord.Interaction, suggestion: str) -> None:
-        assert isinstance(interaction.channel, discord.TextChannel)
-        embed = discord.Embed(title="Suggestion", description=suggestion, color=discord.Color.gold())
-        embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
-        set_protected_footer(embed)
-        message = await interaction.channel.send(embed=embed)
-        await message.add_reaction("👍")
-        await message.add_reaction("👎")
-        await respond(interaction, "Suggestion posted.")
-
 
     @app_commands.command(description="Set a detailed event log channel.")
     @guild_only()
@@ -460,69 +445,7 @@ class CommunityCog(commands.Cog):
             return
         await respond(interaction, f"{category.name} logs will go to {channel.mention}. Test entry posted.")
 
-    @app_commands.command(description="Show ESN SMP connection information.")
-    async def smp(self, interaction: discord.Interaction) -> None: await respond(interaction, SMP_INFO)
-    @status_commands.command(name="smp", description="Query the live ESN SMP Bedrock status.")
-    async def smp_status(self, interaction: discord.Interaction) -> None:
-        await respond(interaction, await self._bedrock_status())
 
-    @status_commands.command(description="Subscribe to ESN SMP or Guardian status notifications.")
-    @app_commands.choices(topic=[
-        app_commands.Choice(name="ESN SMP updates", value="smp"),
-        app_commands.Choice(name="ESN Guardian maintenance notices", value="bot"),
-    ])
-    async def subscribe(self, interaction: discord.Interaction, topic: app_commands.Choice[str]) -> None:
-        await self.bot.database.subscribe_to_status(interaction.user.id, topic.value)
-        await respond(interaction, f"You will receive direct messages for {topic.name.lower()}. Use `/status unsubscribe` to stop them.")
-
-    @status_commands.command(description="Stop ESN SMP or Guardian status notifications.")
-    @app_commands.choices(topic=[
-        app_commands.Choice(name="ESN SMP updates", value="smp"),
-        app_commands.Choice(name="ESN Guardian maintenance notices", value="bot"),
-    ])
-    async def unsubscribe(self, interaction: discord.Interaction, topic: app_commands.Choice[str]) -> None:
-        await self.bot.database.unsubscribe_from_status(interaction.user.id, topic.value)
-        await respond(interaction, f"You will no longer receive direct messages for {topic.name.lower()}.")
-
-    @status_commands.command(description="Show your active ESN status notification subscriptions.")
-    async def subscriptions(self, interaction: discord.Interaction) -> None:
-        topics = await self.bot.database.status_subscriptions(interaction.user.id)
-        labels = {"smp": "ESN SMP updates", "bot": "ESN Guardian maintenance notices"}
-        subscribed = ", ".join(labels[topic] for topic in sorted(topics)) or "None"
-        await respond(interaction, f"Subscribed: {subscribed}")
-    @app_commands.command(description="Show the ESN SMP Discord.")
-    async def discord(self, interaction: discord.Interaction) -> None: await respond(interaction, "https://discord.gg/huFsDxkZ2g")
-
-
-
-
-
-    @app_commands.command(description="Send an SMP announcement with a server-wide cooldown.")
-    @guild_only()
-    @staff_only()
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def smpannounce(self, interaction: discord.Interaction, channel: discord.TextChannel, message: app_commands.Range[str, 1, 2000]) -> None:
-        if channel.guild.id != interaction.guild_id or not channel.permissions_for(interaction.user).send_messages:
-            await respond(interaction, "Choose a channel in this server where you can send messages.")
-            return
-        await interaction.response.defer(ephemeral=True)
-        async with self.announcement_locks[interaction.guild_id]:
-            settings = await self.bot.database.setting(interaction.guild_id)
-            now = datetime.now(UTC)
-            last = settings["ad_last_sent_at"]
-            if last:
-                elapsed = (now - datetime.fromisoformat(last).replace(tzinfo=UTC)).total_seconds()
-                remaining = settings["ad_cooldown_seconds"] - elapsed
-                if remaining > 0:
-                    await respond(interaction, f"Wait {int(remaining) + 1} seconds before the next announcement.")
-                    return
-            try:
-                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
-            except discord.HTTPException:
-                await respond(interaction, "I could not send the announcement. Check my channel permissions.")
-                return
-            await self.bot.database.update_setting(interaction.guild_id, "ad_last_sent_at", now.isoformat())
-            await respond(interaction, "Announcement sent.")
 
     @app_commands.command(description="Show Guardian health and connection status.")
     async def health(self, interaction: discord.Interaction) -> None:
