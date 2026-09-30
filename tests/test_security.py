@@ -148,3 +148,49 @@ async def test_all_extensions_load_offline(tmp_path):
         assert bot.tree.get_command('security') is not None
     finally:
         await bot.close()
+
+
+async def test_external_user_app_triggers_immediate_ban():
+    member = NS(id=3)
+    guild = NS(
+        id=1,
+        owner_id=1,
+        get_member=lambda user_id: member if user_id == 3 else None,
+        fetch_member=AsyncMock(),
+        ban=AsyncMock(),
+    )
+    metadata = NS(user=NS(id=3), is_user_integration=lambda: True)
+    message = NS(
+        guild=guild,
+        interaction_metadata=metadata,
+        application_id=123456789,
+        channel=NS(id=4),
+        delete=AsyncMock(),
+    )
+    cog = SecurityCog(NS(user=NS(id=99)))
+    cog._security_case = AsyncMock()
+
+    assert await cog._enforce_external_app_zero_tolerance(message) is True
+    message.delete.assert_awaited_once()
+    guild.ban.assert_awaited_once()
+    assert guild.ban.call_args.args[0] is member
+    assert cog._security_case.call_args.args[2] == "EXTERNAL_APP_BAN"
+
+
+async def test_server_installed_app_does_not_trigger_external_app_ban():
+    guild = NS(id=1, owner_id=1, ban=AsyncMock())
+    metadata = NS(user=NS(id=3), is_user_integration=lambda: False)
+    message = NS(
+        guild=guild,
+        interaction_metadata=metadata,
+        application_id=123456789,
+        channel=NS(id=4),
+        delete=AsyncMock(),
+    )
+    cog = SecurityCog(NS(user=NS(id=99)))
+    cog._security_case = AsyncMock()
+
+    assert await cog._enforce_external_app_zero_tolerance(message) is False
+    message.delete.assert_not_awaited()
+    guild.ban.assert_not_awaited()
+    cog._security_case.assert_not_awaited()
