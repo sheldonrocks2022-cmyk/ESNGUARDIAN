@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
@@ -9,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target
 
 URL_RE = re.compile(r"(?:https?://|discord(?:app)?\.com/invite/|discord\.gg/)[^\s]+", re.IGNORECASE)
 SUSPICIOUS_DOMAINS = ("discord-gift", "steamcommuniity", "dlscord", "bit.ly/")
@@ -27,6 +28,7 @@ class SecurityCog(commands.Cog):
         self.bot = bot
         self.messages: dict[tuple[int, int], deque[tuple[datetime, str]]] = defaultdict(deque)
         self.joins: dict[int, deque[datetime]] = defaultdict(deque)
+        self.lockdown_locks = defaultdict(asyncio.Lock)
         self.audit_events: dict[tuple[int, int], deque[datetime]] = defaultdict(deque)
 
     async def _security_case(self, guild: discord.Guild, target: discord.abc.User | None, action: str, reason: str, channel_id: int | None = None) -> int:
@@ -92,6 +94,8 @@ class SecurityCog(commands.Cog):
             executor = await self._audit_executor(guild, audit_action, target_id)
         if await self._is_trusted_executor(guild, executor):
             return
+        if executor is None:
+            return  # Never attribute a voluntary leave or missing audit entry to an actor.
         now = datetime.now(UTC)
         events = self.audit_events[(guild.id, executor.id)]
         events.append(now)
@@ -117,10 +121,10 @@ class SecurityCog(commands.Cog):
         )
         violations = int(prior["count"]) if prior is not None else 0
         try:
+            await message.delete()
             if violations == 0:
                 await self._security_case(message.guild, message.author, "AUTOMOD_WARN", reason, message.channel.id)
                 return
-            await message.delete()
             if violations == 1:
                 await self._security_case(message.guild, message.author, "AUTOMOD_DELETE", reason, message.channel.id)
             elif violations == 2:
@@ -139,7 +143,7 @@ class SecurityCog(commands.Cog):
         config = await self.bot.database.fetchone("SELECT quarantine_role_id FROM raid_config WHERE guild_id = ?", (member.guild.id,))
         role = member.guild.get_role(config["quarantine_role_id"]) if config and config["quarantine_role_id"] else None
         bot_member = member.guild.me
-        if role is None or bot_member is None or role >= bot_member.top_role:
+        if role is None or not safe_public_role(role, member.guild) or member.id == member.guild.owner_id:
             await self._security_case(member.guild, member, "QUARANTINE_ALERT", f"Could not quarantine member: {reason}")
             return False
         try:
@@ -276,14 +280,24 @@ class SecurityCog(commands.Cog):
         await log_event(self.bot, member.guild, "member_log_channel_id", "Member left", description=f"User: {member} ({member.id})")
         await self._check_nuke_action(member.guild, discord.AuditLogAction.kick, member.id, "member kick")
 
-    async def _lockdown(self, guild: discord.Guild, reason: str) -> bool:
+    async def _lockdown(self, guild: discord.Guild, reason: str):
+        async with self.lockdown_locks[guild.id]:
+            return await self._lockdown_locked(guild, reason)
+
+    async def _lockdown_locked(self, guild: discord.Guild, reason: str) -> bool:
         settings = await self.bot.database.setting(guild.id)
         if settings["lockdown_active"]:
             return False
         changed = 0
         for channel in guild.text_channels:
             try:
-                await channel.set_permissions(guild.default_role, send_messages=False, reason=reason)
+                overwrite = channel.overwrites_for(guild.default_role)
+                await self.bot.database.execute(
+                    "INSERT OR IGNORE INTO lockdown_overwrites (guild_id, channel_id, send_messages) VALUES (?, ?, ?)",
+                    (guild.id, channel.id, overwrite.send_messages),
+                )
+                overwrite.send_messages = False
+                await channel.set_permissions(guild.default_role, overwrite=overwrite, reason=reason)
                 changed += 1
             except (discord.Forbidden, discord.HTTPException):
                 continue
@@ -291,15 +305,29 @@ class SecurityCog(commands.Cog):
         await self._security_case(guild, None, "LOCKDOWN", f"{reason}; channels secured: {changed}")
         return True
 
-    async def _unlockdown(self, guild: discord.Guild, reason: str) -> int:
+    async def _unlockdown(self, guild: discord.Guild, reason: str):
+        async with self.lockdown_locks[guild.id]:
+            return await self._unlockdown_locked(guild, reason)
+
+    async def _unlockdown_locked(self, guild: discord.Guild, reason: str) -> int:
         changed = 0
         for channel in guild.text_channels:
             try:
-                await channel.set_permissions(guild.default_role, send_messages=None, reason=reason)
+                saved = await self.bot.database.fetchone(
+                    "SELECT send_messages FROM lockdown_overwrites WHERE guild_id = ? AND channel_id = ?",
+                    (guild.id, channel.id),
+                )
+                if saved is None:
+                    continue
+                overwrite = channel.overwrites_for(guild.default_role)
+                overwrite.send_messages = None if saved["send_messages"] is None else bool(saved["send_messages"])
+                await channel.set_permissions(guild.default_role, overwrite=overwrite, reason=reason)
+                await self.bot.database.execute("DELETE FROM lockdown_overwrites WHERE guild_id = ? AND channel_id = ?", (guild.id, channel.id))
                 changed += 1
             except (discord.Forbidden, discord.HTTPException):
                 continue
-        await self.bot.database.update_setting(guild.id, "lockdown_active", 0)
+        pending = await self.bot.database.fetchone("SELECT 1 FROM lockdown_overwrites WHERE guild_id = ?", (guild.id,))
+        await self.bot.database.update_setting(guild.id, "lockdown_active", int(pending is not None))
         await self._security_case(guild, None, "UNLOCKDOWN", f"{reason}; channels restored: {changed}")
         return changed
 
@@ -448,7 +476,7 @@ class SecurityCog(commands.Cog):
         if quarantine_role is not None:
             assert interaction.guild is not None
             bot_member = interaction.guild.me
-            if bot_member is None or quarantine_role >= bot_member.top_role:
+            if not safe_public_role(quarantine_role, interaction.guild):
                 await respond(interaction, "The quarantine role must be below my highest role.")
                 return
         await self.bot.database.execute("UPDATE raid_config SET enabled = ?, join_limit = ?, join_window_seconds = ?, min_account_age_days = ?, quarantine_role_id = ? WHERE guild_id = ?", (int(enabled), join_limit, join_window_seconds, minimum_account_age_days, quarantine_role.id if quarantine_role else None, interaction.guild_id))
@@ -467,6 +495,8 @@ class SecurityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def security_quarantine(self, interaction: discord.Interaction, member: discord.Member, reason: str = "Manual security review") -> None:
+        if not await require_target(interaction, member):
+            return
         if await self._quarantine(member, reason, interaction.user.id):
             await respond(interaction, f"Quarantined {member.mention}.")
         else:
@@ -476,6 +506,8 @@ class SecurityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def security_release(self, interaction: discord.Interaction, member: discord.Member, reason: str = "Security review completed") -> None:
+        if not await require_target(interaction, member):
+            return
         config = await self.bot.database.fetchone("SELECT quarantine_role_id FROM raid_config WHERE guild_id = ?", (interaction.guild_id,))
         role = interaction.guild.get_role(config["quarantine_role_id"]) if config and config["quarantine_role_id"] else None
         if role is None or role not in member.roles:
@@ -544,7 +576,7 @@ class SecurityCog(commands.Cog):
 
     @antinuke.command(name="setup", description="Enable anti-nuke with a destructive-action threshold.")
     @guild_only()
-    @staff_only()
+    @guild_owner_only()
     async def antinuke_setup(self, interaction: discord.Interaction, action_limit: app_commands.Range[int, 2, 10] = 3, window_seconds: app_commands.Range[int, 5, 120] = 15) -> None:
         await self.bot.database.ensure_guild(interaction.guild_id)
         await self.bot.database.execute("UPDATE anti_nuke_config SET enabled = 1, action_limit = ?, window_seconds = ? WHERE guild_id = ?", (action_limit, window_seconds, interaction.guild_id))
@@ -552,7 +584,7 @@ class SecurityCog(commands.Cog):
 
     @antinuke.command(name="enable", description="Enable previously configured anti-nuke protection.")
     @guild_only()
-    @staff_only()
+    @guild_owner_only()
     async def antinuke_enable(self, interaction: discord.Interaction) -> None:
         await self.bot.database.ensure_guild(interaction.guild_id)
         await self.bot.database.execute("UPDATE anti_nuke_config SET enabled = 1 WHERE guild_id = ?", (interaction.guild_id,))
@@ -560,7 +592,7 @@ class SecurityCog(commands.Cog):
 
     @antinuke.command(name="disable", description="Disable anti-nuke protection.")
     @guild_only()
-    @staff_only()
+    @guild_owner_only()
     async def antinuke_disable(self, interaction: discord.Interaction) -> None:
         await self.bot.database.ensure_guild(interaction.guild_id)
         await self.bot.database.execute("UPDATE anti_nuke_config SET enabled = 0 WHERE guild_id = ?", (interaction.guild_id,))
@@ -568,14 +600,14 @@ class SecurityCog(commands.Cog):
 
     @antinuke.command(name="trust", description="Allow a trusted recovery administrator to bypass anti-nuke containment.")
     @guild_only()
-    @staff_only()
+    @guild_owner_only()
     async def antinuke_trust(self, interaction: discord.Interaction, user: discord.User) -> None:
         await self.bot.database.execute("INSERT OR REPLACE INTO anti_nuke_trusted_users (guild_id, user_id, added_by_id) VALUES (?, ?, ?)", (interaction.guild_id, user.id, interaction.user.id))
         await respond(interaction, f"Trusted {user.mention} for anti-nuke protection.")
 
     @antinuke.command(name="untrust", description="Remove a user's anti-nuke trusted status.")
     @guild_only()
-    @staff_only()
+    @guild_owner_only()
     async def antinuke_untrust(self, interaction: discord.Interaction, user: discord.User) -> None:
         await self.bot.database.execute("DELETE FROM anti_nuke_trusted_users WHERE guild_id = ? AND user_id = ?", (interaction.guild_id, user.id))
         await respond(interaction, f"Removed anti-nuke trust for {user.mention}.")

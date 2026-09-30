@@ -28,7 +28,7 @@ class GuardianBot(commands.Bot):
         intents.members = True
         intents.message_content = True
         intents.moderation = True
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
+        super().__init__(command_prefix="!", intents=intents, help_command=None, allowed_mentions=discord.AllowedMentions.none())
         self.settings = settings
         self.database = Database(settings.database_path)
         self.started_at = datetime.now(UTC)

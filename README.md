@@ -55,3 +55,20 @@ It attributes channel deletions, role creations/deletions, bans, kicks, dangerou
 ## Advanced AutoMod And Raid Protection
 
 Use `/security thresholds`, `/security links`, and `/security automod` to configure flood, mention, caps, invite, and strict-link enforcement for each server. Strict link mode uses the persisted `/security allow-domain` allowlist. Use `/security raid` to configure join-rate detection, suspicious account age, and a quarantine role. The quarantine role must be below the bot's highest role and should deny access to sensitive channels through your server's role permissions.
+### Security hardening
+
+Moderation actions require the caller's matching Discord permission and respect
+both the caller's and bot's role hierarchy. The server owner alone can change
+anti-nuke enablement and trust. Verification, autoroles and quarantine reject
+privileged or managed roles, including configurations whose roles later change.
+Verification buttons honor maintenance and guild blacklisting. AutoMod deletes
+violating messages on the first strike while retaining warning-first escalation.
+Lockdown preserves unrelated channel overwrites and stores the previous
+`send_messages` value in SQLite for restoration across restarts; failed restores
+remain pending. Unknown audit actors are never counted or banned.
+
+Run `python -m pip install -r requirements.txt pytest pytest-asyncio pip-audit`,
+then `python -m pytest -q` and `python -m pip_audit -r requirements.txt`.
+GitHub Actions runs these checks on pushes and pull requests.
+These are offline regression tests; live Discord enforcement still requires
+correct bot permissions and a role above the members it needs to moderate.

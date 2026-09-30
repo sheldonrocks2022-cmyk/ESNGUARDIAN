@@ -19,6 +19,8 @@ from esn_guardian.cogs.common import (
     respond,
     set_protected_footer,
     staff_only,
+    safe_public_role,
+    require_role,
 )
 
 SMP_INFO = "**Minecraft Bedrock**\nServer: **ESN SMP**\nIP: `esnsmp.ggwp.cc`\nPort: `17058`\nDiscord: https://discord.gg/huFsDxkZ2g"
@@ -132,7 +134,7 @@ class CommunityCog(commands.Cog):
     async def on_member_join(self, member: discord.Member) -> None:
         settings = await self.bot.database.setting(member.guild.id)
         autorole = member.guild.get_role(settings["autorole_id"]) if settings["autorole_id"] else None
-        if autorole:
+        if autorole and safe_public_role(autorole, member.guild):
             try:
                 await member.add_roles(autorole, reason="ESN Guardian autorole")
             except discord.HTTPException:
@@ -405,6 +407,12 @@ class CommunityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def autorole(self, interaction: discord.Interaction, role: discord.Role | None = None) -> None:
+        if role is not None:
+            if not safe_public_role(role, interaction.guild):
+                await respond(interaction, "Autoroles must be non-privileged roles below the allowed hierarchy.")
+                return
+            if not await require_role(interaction, role):
+                return
         await self.bot.database.update_setting(interaction.guild_id, "autorole_id", role.id if role else None)
         await respond(interaction, "Autorole updated." if role else "Autorole disabled.")
 

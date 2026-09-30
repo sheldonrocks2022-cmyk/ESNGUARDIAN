@@ -177,3 +177,44 @@ async def discord_action(interaction: discord.Interaction, operation: object, su
         await respond(interaction, success)
         return True
     return False
+
+
+HIGH_RISK_PERMISSIONS = (
+    "administrator", "manage_guild", "manage_roles", "manage_channels",
+    "manage_webhooks", "ban_members", "kick_members", "moderate_members",
+)
+
+
+def safe_public_role(role: discord.Role, guild: discord.Guild) -> bool:
+    return (
+        role.guild.id == guild.id and not role.is_default() and not role.managed
+        and guild.me is not None and role < guild.me.top_role
+        and not any(getattr(role.permissions, name) for name in HIGH_RISK_PERMISSIONS)
+    )
+
+
+def can_target(guild: discord.Guild, actor: discord.Member, member: discord.Member) -> bool:
+    return (
+        member.guild.id == guild.id and actor.guild.id == guild.id
+        and member.id not in {guild.owner_id, actor.id, guild.me.id if guild.me else 0}
+        and guild.me is not None and member.top_role < guild.me.top_role
+        and (actor.id == guild.owner_id or member.top_role < actor.top_role)
+    )
+
+
+async def require_target(interaction: discord.Interaction, member: discord.Member) -> bool:
+    if interaction.guild is None or not can_target(interaction.guild, interaction.user, member):
+        await respond(interaction, "You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.")
+        return False
+    return True
+
+
+async def require_role(interaction: discord.Interaction, role: discord.Role) -> bool:
+    guild = interaction.guild
+    if (guild is None or role.guild.id != guild.id or role.is_default() or role.managed
+        or guild.me is None or role >= guild.me.top_role
+        or (interaction.user.id != guild.owner_id and role >= interaction.user.top_role)
+        or (interaction.user.id != guild.owner_id and any(getattr(role.permissions, name) for name in HIGH_RISK_PERMISSIONS))):
+        await respond(interaction, "That role is privileged, managed, or above the allowed role hierarchy.")
+        return False
+    return True

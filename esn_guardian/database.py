@@ -36,6 +36,12 @@ class Database:
         connection = self._require_connection()
         await connection.executescript(
             """
+            CREATE TABLE IF NOT EXISTS lockdown_overwrites (
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                send_messages INTEGER,
+                PRIMARY KEY (guild_id, channel_id)
+            );
             CREATE TABLE IF NOT EXISTS guild_settings (
                 guild_id INTEGER PRIMARY KEY,
                 moderation_log_channel_id INTEGER,

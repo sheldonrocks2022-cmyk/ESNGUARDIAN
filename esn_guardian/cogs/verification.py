@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, set_protected_footer, staff_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, set_protected_footer, staff_only, safe_public_role
 
 
 class VerificationView(discord.ui.View):
@@ -18,6 +18,10 @@ class VerificationView(discord.ui.View):
     async def verify(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await respond(interaction, "Verification is available only in a server.")
+            return
+        if (await self.bot.database.is_guild_blacklisted(interaction.guild.id)
+            or await self.bot.database.state_enabled("maintenance")):
+            await respond(interaction, "Verification is currently unavailable.")
             return
         config = await self.bot.database.fetchone("SELECT * FROM verification_config WHERE guild_id = ?", (interaction.guild.id,))
         if config is None or not config["enabled"]:
@@ -33,7 +37,9 @@ class VerificationView(discord.ui.View):
             return
         verified_role = interaction.guild.get_role(config["verified_role_id"]) if config["verified_role_id"] else None
         unverified_role = interaction.guild.get_role(config["unverified_role_id"]) if config["unverified_role_id"] else None
-        if verified_role is None:
+        if (verified_role is None or not safe_public_role(verified_role, interaction.guild)
+            or (unverified_role is not None and not safe_public_role(unverified_role, interaction.guild))
+            or verified_role == unverified_role):
             await respond(interaction, "Verification is incomplete: ask staff to configure the verified role.")
             return
         try:
@@ -63,6 +69,13 @@ class VerificationCog(commands.Cog):
     @staff_only()
     async def setup(self, interaction: discord.Interaction, channel: discord.TextChannel, verified_role: discord.Role, unverified_role: discord.Role | None = None, minimum_account_age_days: app_commands.Range[int, 0, 365] = 0) -> None:
         assert interaction.guild is not None
+        if (not safe_public_role(verified_role, interaction.guild)
+            or (unverified_role is not None and not safe_public_role(unverified_role, interaction.guild))
+            or verified_role == unverified_role
+            or (interaction.user.id != interaction.guild.owner_id
+                and any(role >= interaction.user.top_role for role in (verified_role, unverified_role) if role is not None))):
+            await respond(interaction, "Choose distinct, non-privileged, unmanaged roles below your role and my role.")
+            return
         await interaction.response.defer(ephemeral=True)
         embed = set_protected_footer(discord.Embed(title="ESN Guardian Verification", description="Press VERIFY to complete verification.", color=discord.Color.green()))
         try:

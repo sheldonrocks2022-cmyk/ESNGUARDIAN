@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import discord_action, guild_only, log_event, notify_user, respond, staff_only
+from esn_guardian.cogs.common import discord_action, guild_only, log_event, notify_user, respond, staff_only, require_target, require_role, can_target
 
 
 class ModerationCog(commands.Cog):
@@ -31,6 +31,8 @@ class ModerationCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str) -> None:
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "WARN", reason)
         await self.bot.database.execute("INSERT INTO warnings (case_id, guild_id, user_id) VALUES (?, ?, ?)", (case_id, interaction.guild_id, member.id))
         await self._log_case(interaction, case_id, member, "WARN", reason)
@@ -47,7 +49,10 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Timeout a member.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(moderate_members=True)
     async def timeout(self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: str) -> None:
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "TIMEOUT", reason)
         if await discord_action(interaction, member.timeout(timedelta(minutes=minutes), reason=f"Case #{case_id}: {reason}"), f"Timed out {member.mention}. Case #{case_id}."):
             await self._log_case(interaction, case_id, member, "TIMEOUT", reason)
@@ -55,7 +60,10 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Remove a member timeout.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(moderate_members=True)
     async def untimeout(self, interaction: discord.Interaction, member: discord.Member, reason: str = "Timeout removed") -> None:
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "UNTIMEOUT", reason)
         if await discord_action(interaction, member.timeout(None, reason=f"Case #{case_id}: {reason}"), f"Removed timeout for {member.mention}. Case #{case_id}."):
             await self._log_case(interaction, case_id, member, "UNTIMEOUT", reason)
@@ -63,7 +71,10 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Kick a member.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(kick_members=True)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str) -> None:
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "KICK", reason)
         if await discord_action(interaction, member.kick(reason=f"Case #{case_id}: {reason}"), f"Kicked {member}. Case #{case_id}."):
             await self._log_case(interaction, case_id, member, "KICK", reason)
@@ -71,7 +82,10 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Ban a member.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(ban_members=True)
     async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str, delete_message_days: app_commands.Range[int, 0, 7] = 0) -> None:
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "BAN", reason)
         if await discord_action(interaction, interaction.guild.ban(member, reason=f"Case #{case_id}: {reason}", delete_message_seconds=delete_message_days * 86400), f"Banned {member}. Case #{case_id}."):
             await self._log_case(interaction, case_id, member, "BAN", reason)
@@ -79,6 +93,7 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Unban a user by ID.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(ban_members=True)
     async def unban(self, interaction: discord.Interaction, user_id: str, reason: str = "Unbanned") -> None:
         try:
             user = await self.bot.fetch_user(int(user_id))
@@ -92,6 +107,7 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Delete recent messages.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(manage_messages=True)
     async def clear(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]) -> None:
         if not isinstance(interaction.channel, discord.TextChannel):
             await respond(interaction, "This command requires a text channel.")
@@ -105,6 +121,7 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Set channel slowmode in seconds.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(manage_channels=True)
     async def slowmode(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]) -> None:
         if not isinstance(interaction.channel, discord.TextChannel):
             await respond(interaction, "This command requires a text channel.")
@@ -134,7 +151,10 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Change a member nickname.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(manage_nicknames=True)
     async def nickname(self, interaction: discord.Interaction, member: discord.Member, nickname: str | None, reason: str = "Nickname changed") -> None:
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "NICKNAME", reason)
         if await discord_action(interaction, member.edit(nick=nickname, reason=f"Case #{case_id}: {reason}"), f"Updated nickname. Case #{case_id}."):
             await self._log_case(interaction, case_id, member, "NICKNAME", reason)
@@ -142,7 +162,12 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Add or remove a role from a member.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def role(self, interaction: discord.Interaction, member: discord.Member, role: discord.Role, remove: bool = False, reason: str = "Role updated") -> None:
+        if not await require_role(interaction, role):
+            return
+        if not await require_target(interaction, member):
+            return
         case_id = await self._case(interaction, member, "ROLE_REMOVE" if remove else "ROLE_ADD", reason)
         action = member.remove_roles(role, reason=f"Case #{case_id}: {reason}") if remove else member.add_roles(role, reason=f"Case #{case_id}: {reason}")
         if await discord_action(interaction, action, f"Role updated for {member.mention}. Case #{case_id}."):
@@ -151,12 +176,15 @@ class ModerationCog(commands.Cog):
     @app_commands.command(description="Add or remove a role for all eligible members.")
     @guild_only()
     @staff_only()
+    @app_commands.checks.has_permissions(manage_roles=True)
     async def massrole(self, interaction: discord.Interaction, role: discord.Role, remove: bool = False, include_bots: bool = False) -> None:
+        if not await require_role(interaction, role):
+            return
         assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True)
         changed = 0
         for member in interaction.guild.members:
-            if (member.bot and not include_bots) or role >= interaction.guild.me.top_role:
+            if (member.bot and not include_bots) or not can_target(interaction.guild, interaction.user, member):
                 continue
             try:
                 await (member.remove_roles(role, reason=f"Mass role by {interaction.user}") if remove else member.add_roles(role, reason=f"Mass role by {interaction.user}"))
