@@ -19,6 +19,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.verification",
     "esn_guardian.cogs.community",
     "esn_guardian.cogs.tickets",
+    "esn_guardian.cogs.esng_ai",
     "esn_guardian.cogs.owner",
 )
 
