@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
 from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
@@ -13,7 +14,11 @@ from discord.ext import commands
 from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target
 
 URL_RE = re.compile(r"(?:https?://|discord(?:app)?\.com/invite/|discord\.gg/)[^\s]+", re.IGNORECASE)
-SUSPICIOUS_DOMAINS = ("discord-gift", "steamcommuniity", "dlscord", "bit.ly/")
+SUSPICIOUS_DOMAIN_TOKENS = (
+    "discord-gift", "discordgift", "free-nitro", "freenitro", "nitro-gift",
+    "steamcommuniity", "steamcomrnunity", "dlscord", "dicsord", "discorcl",
+)
+SUSPICIOUS_SHORTENERS = {"bit.ly", "tinyurl.com", "is.gd", "rb.gy", "cutt.ly"}
 HIGH_RISK_PERMISSIONS = (
     "administrator", "manage_guild", "manage_roles", "manage_channels", "manage_webhooks",
     "ban_members", "kick_members", "moderate_members",
@@ -30,6 +35,8 @@ class SecurityCog(commands.Cog):
         self.joins: dict[int, deque[datetime]] = defaultdict(deque)
         self.lockdown_locks = defaultdict(asyncio.Lock)
         self.audit_events: dict[tuple[int, int], deque[datetime]] = defaultdict(deque)
+        self.raid_mode_until: dict[int, datetime] = {}
+        self._audit_access_warned_at: dict[int, datetime] = {}
 
     async def _security_case(self, guild: discord.Guild, target: discord.abc.User | None, action: str, reason: str, channel_id: int | None = None) -> int:
         case_id = await self.bot.database.create_case(guild.id, target.id if target else None, self.bot.user.id if self.bot.user else None, action, reason, channel_id)
@@ -49,13 +56,28 @@ class SecurityCog(commands.Cog):
         return case_id
 
     async def _audit_executor(self, guild: discord.Guild, action: discord.AuditLogAction, target_id: int) -> discord.User | discord.Member | None:
-        await asyncio.sleep(1)
-        try:
-            async for entry in guild.audit_logs(action=action, limit=5, after=datetime.now(UTC) - timedelta(minutes=1)):
-                if getattr(entry.target, "id", None) == target_id:
-                    return entry.user
-        except (discord.Forbidden, discord.HTTPException):
-            await log_event(self.bot, guild, "security_log_channel_id", "Anti-nuke audit access unavailable", description="Grant View Audit Log to attribute destructive actions.", color=discord.Color.orange())
+        for delay in (0.6, 1.2, 2.0):
+            await asyncio.sleep(delay)
+            try:
+                async for entry in guild.audit_logs(action=action, limit=10, after=datetime.now(UTC) - timedelta(minutes=2)):
+                    if getattr(entry.target, "id", None) == target_id and entry.user is not None:
+                        return entry.user
+            except discord.Forbidden:
+                now = datetime.now(UTC)
+                last = self._audit_access_warned_at.get(guild.id)
+                if last is None or now - last >= timedelta(minutes=10):
+                    self._audit_access_warned_at[guild.id] = now
+                    await log_event(
+                        self.bot,
+                        guild,
+                        "security_log_channel_id",
+                        "Anti-nuke audit access unavailable",
+                        description="Grant View Audit Log to attribute destructive actions.",
+                        color=discord.Color.orange(),
+                    )
+                return None
+            except discord.HTTPException:
+                continue
         return None
 
     async def _is_trusted_executor(self, guild: discord.Guild, executor: discord.User | discord.Member | None) -> bool:
@@ -78,58 +100,132 @@ class SecurityCog(commands.Cog):
         )
 
     @staticmethod
-    def _has_unallowed_url(content: str, allowed_domains: set[str]) -> bool:
+    def _normalize_domain(value: str) -> str:
+        candidate = value.casefold().strip().rstrip(".")
+        try:
+            return candidate.encode("idna").decode("ascii")
+        except UnicodeError:
+            return candidate
+
+    @classmethod
+    def _has_unallowed_url(cls, content: str, allowed_domains: set[str]) -> bool:
+        normalized_allowed = {cls._normalize_domain(domain) for domain in allowed_domains}
         for value in URL_RE.findall(content):
             parsed = urlparse(value if "://" in value else f"https://{value}")
-            host = (parsed.hostname or "").casefold()
-            if host and not any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains):
+            host = cls._normalize_domain(parsed.hostname or "")
+            if host and not any(host == domain or host.endswith(f".{domain}") for domain in normalized_allowed):
                 return True
         return False
 
-    async def _check_nuke_action(self, guild: discord.Guild, audit_action: discord.AuditLogAction, target_id: int, action_name: str, executor: discord.User | discord.Member | None = None) -> None:
+    @classmethod
+    def _suspicious_url_reason(cls, content: str) -> str | None:
+        for value in URL_RE.findall(content):
+            parsed = urlparse(value if "://" in value else f"https://{value}")
+            host = cls._normalize_domain(parsed.hostname or "")
+            if not host:
+                continue
+            if parsed.username or parsed.password:
+                return "Suspicious link with embedded credentials detected"
+            if host in SUSPICIOUS_SHORTENERS:
+                return "URL shortener detected"
+            if any(token in host for token in SUSPICIOUS_DOMAIN_TOKENS):
+                return "Known phishing-style domain detected"
+            if host.startswith("xn--"):
+                return "Punycode lookalike domain detected"
+            try:
+                ipaddress.ip_address(host.strip("[]"))
+            except ValueError:
+                pass
+            else:
+                return "Direct IP link detected"
+        return None
+
+    async def _check_nuke_action(
+        self,
+        guild: discord.Guild,
+        audit_action: discord.AuditLogAction,
+        target_id: int,
+        action_name: str,
+        executor: discord.User | discord.Member | None = None,
+        *,
+        allow_unattributed: bool = False,
+    ) -> None:
         config = await self.bot.database.fetchone("SELECT * FROM anti_nuke_config WHERE guild_id = ?", (guild.id,))
         if config is None or not config["enabled"]:
             return
         if executor is None:
             executor = await self._audit_executor(guild, audit_action, target_id)
-        if await self._is_trusted_executor(guild, executor):
+        if executor is not None and await self._is_trusted_executor(guild, executor):
             return
-        if executor is None:
-            return  # Never attribute a voluntary leave or missing audit entry to an actor.
+        if executor is None and not allow_unattributed:
+            return
+
         now = datetime.now(UTC)
-        events = self.audit_events[(guild.id, executor.id)]
+        actor_id = executor.id if executor is not None else 0
+        events = self.audit_events[(guild.id, actor_id)]
         events.append(now)
         while events and now - events[0] > timedelta(seconds=config["window_seconds"]):
             events.popleft()
+
+        actor_text = str(executor) if executor is not None else "unattributed actor"
         if len(events) < config["action_limit"]:
-            await self._security_case(guild, executor, "ANTINUKE_ALERT", f"{action_name} by {executor} ({len(events)}/{config['action_limit']} actions)")
+            await self._security_case(
+                guild,
+                executor,
+                "ANTINUKE_ALERT" if executor is not None else "ANTINUKE_UNATTRIBUTED",
+                f"{action_name} by {actor_text} ({len(events)}/{config['action_limit']} actions)",
+            )
             return
+
         events.clear()
-        try:
-            await guild.ban(executor, reason=f"ESN Guardian anti-nuke: {action_name} threshold exceeded", delete_message_seconds=0)
-            await self._security_case(guild, executor, "ANTINUKE_BAN", f"Banned after {config['action_limit']} destructive actions in {config['window_seconds']} seconds")
-        except (discord.Forbidden, discord.HTTPException):
-            await self._security_case(guild, executor, "ANTINUKE_CONTAINMENT_FAILED", f"Could not ban after destructive action threshold: {action_name}")
+        if executor is not None:
+            try:
+                await guild.ban(executor, reason=f"ESN Guardian anti-nuke: {action_name} threshold exceeded", delete_message_seconds=0)
+                await self._security_case(
+                    guild,
+                    executor,
+                    "ANTINUKE_BAN",
+                    f"Banned after {config['action_limit']} destructive actions in {config['window_seconds']} seconds",
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                await self._security_case(guild, executor, "ANTINUKE_CONTAINMENT_FAILED", f"Could not ban after destructive action threshold: {action_name}")
+        else:
+            await self._security_case(
+                guild,
+                None,
+                "ANTINUKE_UNATTRIBUTED",
+                f"Destructive-action threshold reached for {action_name}, but Discord audit logs did not expose the actor in time.",
+            )
         await self._lockdown(guild, f"Automatic anti-nuke lockdown: {action_name} threshold exceeded")
 
-    async def _enforce_message_violation(self, message: discord.Message, reason: str) -> None:
+    async def _enforce_message_violation(self, message: discord.Message, reason: str, *, escalate: bool = True) -> None:
         if message.guild is None or not isinstance(message.author, discord.Member):
             return
+
+        try:
+            await message.delete()
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            pass
+
+        if not escalate:
+            await self._security_case(message.guild, message.author, "AUTOMOD_STAFF_BLOCK", reason, message.channel.id)
+            return
+
         prior = await self.bot.database.fetchone(
-            "SELECT COUNT(*) AS count FROM cases WHERE guild_id = ? AND target_id = ? AND action LIKE 'AUTOMOD_%'",
+            "SELECT COUNT(*) AS count FROM cases WHERE guild_id = ? AND target_id = ? "
+            "AND action LIKE 'AUTOMOD_%' AND created_at >= datetime('now', '-30 days')",
             (message.guild.id, message.author.id),
         )
         violations = int(prior["count"]) if prior is not None else 0
         try:
-            await message.delete()
             if violations == 0:
                 await self._security_case(message.guild, message.author, "AUTOMOD_WARN", reason, message.channel.id)
-                return
-            if violations == 1:
-                await self._security_case(message.guild, message.author, "AUTOMOD_DELETE", reason, message.channel.id)
-            elif violations == 2:
+            elif violations == 1:
                 await message.author.timeout(timedelta(minutes=10), reason=f"ESN Guardian: {reason}")
-                await self._security_case(message.guild, message.author, "AUTOMOD_TIMEOUT", reason, message.channel.id)
+                await self._security_case(message.guild, message.author, "AUTOMOD_TIMEOUT", f"{reason}; 10 minute timeout", message.channel.id)
+            elif violations == 2:
+                await message.author.timeout(timedelta(hours=1), reason=f"ESN Guardian: {reason}")
+                await self._security_case(message.guild, message.author, "AUTOMOD_TIMEOUT", f"{reason}; 1 hour timeout", message.channel.id)
             elif violations == 3:
                 await message.author.kick(reason=f"ESN Guardian: {reason}")
                 await self._security_case(message.guild, message.author, "AUTOMOD_KICK", reason, message.channel.id)
@@ -137,7 +233,7 @@ class SecurityCog(commands.Cog):
                 await message.guild.ban(message.author, reason=f"ESN Guardian: {reason}", delete_message_seconds=0)
                 await self._security_case(message.guild, message.author, "AUTOMOD_BAN", reason, message.channel.id)
         except (discord.Forbidden, discord.HTTPException):
-            await self._security_case(message.guild, message.author, "AUTOMOD_ALERT", f"Could not enforce: {reason}", message.channel.id)
+            await self._security_case(message.guild, message.author, "AUTOMOD_ALERT", f"Could not fully enforce: {reason}", message.channel.id)
 
     async def _quarantine(self, member: discord.Member, reason: str, moderator_id: int | None = None) -> bool:
         config = await self.bot.database.fetchone("SELECT quarantine_role_id FROM raid_config WHERE guild_id = ?", (member.guild.id,))
@@ -159,78 +255,189 @@ class SecurityCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None or message.author.bot or not isinstance(message.author, discord.Member):
             return
-        if message.author.guild_permissions.manage_messages:
-            return
-        now = datetime.now(UTC)
-        key = (message.guild.id, message.author.id)
+
         await self.bot.database.ensure_guild(message.guild.id)
         config = await self.bot.database.fetchone("SELECT * FROM security_config WHERE guild_id = ?", (message.guild.id,))
         assert config is not None
         if not config["automod_enabled"]:
             return
+
+        now = datetime.now(UTC)
+        key = (message.guild.id, message.author.id)
+        normalized = message.content.casefold().strip()
         window = self.messages[key]
-        window.append((now, message.content.casefold().strip()))
+        window.append((now, normalized))
         while window and now - window[0][0] > timedelta(seconds=config["flood_window_seconds"]):
             window.popleft()
-        content = message.content.casefold()
+
+        allowed_domains = {
+            row["domain"]
+            for row in await self.bot.database.fetchall("SELECT domain FROM allowed_domains WHERE guild_id = ?", (message.guild.id,))
+        }
+        dangerous_violation = self._suspicious_url_reason(message.content)
+        has_invite = (
+            "discord.gg/" in normalized
+            or "discord.com/invite/" in normalized
+            or "discordapp.com/invite/" in normalized
+        )
+        if dangerous_violation is None and config["block_invites"] and has_invite:
+            dangerous_violation = "Unauthorized invite link"
+        if dangerous_violation is None and config["strict_links"] and self._has_unallowed_url(message.content, allowed_domains):
+            dangerous_violation = "External link is not allowlisted"
+
+        is_staff = (
+            message.author.guild_permissions.manage_messages
+            or message.author.guild_permissions.manage_guild
+            or message.author.guild_permissions.administrator
+        )
+        if dangerous_violation is not None:
+            await self._enforce_message_violation(message, dangerous_violation, escalate=not is_staff)
+            return
+        if is_staff:
+            return
+
         bad_words = await self.bot.database.fetchall("SELECT word FROM bad_words WHERE guild_id = ?", (message.guild.id,))
-        allowed_domains = {row["domain"] for row in await self.bot.database.fetchall("SELECT domain FROM allowed_domains WHERE guild_id = ?", (message.guild.id,))}
         violation = None
         if len(window) >= config["flood_limit"]:
             violation = "Message flood detected"
         elif len(message.mentions) + len(message.role_mentions) >= config["max_mentions"]:
             violation = "Mass mentions detected"
-        elif len(content) >= 12 and sum(character.isupper() for character in message.content) * 100 / max(len(message.content), 1) >= config["caps_percentage"]:
+        elif len(message.content) >= 12 and sum(character.isupper() for character in message.content) * 100 / max(len(message.content), 1) >= config["caps_percentage"]:
             violation = "Excessive capitals detected"
-        elif sum(1 for _, prior in window if prior == content) >= 3:
+        elif sum(1 for _, prior in window if prior == normalized) >= 3:
             violation = "Repeated message detected"
-        elif any(domain in content for domain in SUSPICIOUS_DOMAINS):
-            violation = "Known suspicious link pattern"
-        elif config["block_invites"] and URL_RE.search(content) and ("discord.gg/" in content or "discord.com/invite/" in content):
-            violation = "Unauthorized invite link"
-        elif config["strict_links"] and self._has_unallowed_url(content, allowed_domains):
-            violation = "External link is not allowlisted"
-        elif any(row["word"] in content for row in bad_words):
+        elif any(str(row["word"]) in normalized for row in bad_words):
             violation = "Blocked word detected"
+
         if violation:
             await self._enforce_message_violation(message, violation)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         await self.bot.database.ensure_guild(member.guild.id)
+
+        antinuke = await self.bot.database.fetchone("SELECT enabled FROM anti_nuke_config WHERE guild_id = ?", (member.guild.id,))
+        if member.bot and antinuke is not None and antinuke["enabled"]:
+            executor = await self._audit_executor(member.guild, discord.AuditLogAction.bot_add, member.id)
+            if not await self._is_trusted_executor(member.guild, executor):
+                try:
+                    await member.kick(reason="ESN Guardian anti-nuke: untrusted bot addition")
+                    await self._security_case(member.guild, executor, "BOT_ADD_BLOCKED", f"Removed untrusted bot {member} ({member.id})")
+                except (discord.Forbidden, discord.HTTPException):
+                    await self._security_case(member.guild, executor, "ANTINUKE_CONTAINMENT_FAILED", f"Could not remove untrusted bot {member} ({member.id})")
+                await self._check_nuke_action(
+                    member.guild,
+                    discord.AuditLogAction.bot_add,
+                    member.id,
+                    "untrusted bot addition",
+                    executor,
+                    allow_unattributed=True,
+                )
+                return
+
         config = await self.bot.database.fetchone("SELECT * FROM raid_config WHERE guild_id = ?", (member.guild.id,))
         assert config is not None
-        if not config["enabled"]:
+        if not config["enabled"] or member.bot:
             return
+
         now = datetime.now(UTC)
         joins = self.joins[member.guild.id]
         joins.append(now)
         while joins and now - joins[0] > timedelta(seconds=config["join_window_seconds"]):
             joins.popleft()
+
+        reasons: list[str] = []
         account_age = now - member.created_at
         if account_age < timedelta(days=config["min_account_age_days"]):
             await self._security_case(member.guild, member, "SUSPICIOUS_JOIN", f"Account age: {account_age.days} days")
-            await self._quarantine(member, f"Account is younger than {config['min_account_age_days']} days")
+            reasons.append(f"Account is younger than {config['min_account_age_days']} days")
+
+        raid_until = self.raid_mode_until.get(member.guild.id)
+        if raid_until is not None and raid_until > now:
+            reasons.append("Server is in active raid containment mode")
+        elif raid_until is not None:
+            self.raid_mode_until.pop(member.guild.id, None)
+
         if len(joins) >= config["join_limit"]:
+            self.raid_mode_until[member.guild.id] = now + timedelta(minutes=5)
+            reasons.append(f"Join surge exceeded {config['join_limit']} members/{config['join_window_seconds']}s")
+            await self._security_case(member.guild, None, "RAID_MODE", "Raid containment mode enabled for 5 minutes")
             await self._lockdown(member.guild, f"Automatic raid lockdown: join rate exceeded {config['join_limit']} members/{config['join_window_seconds']}s")
+
+        if reasons:
+            await self._quarantine(member, "; ".join(dict.fromkeys(reasons)))
+
+    async def _check_webhook_change(self, channel: discord.abc.GuildChannel) -> None:
+        await asyncio.sleep(0.8)
+        for audit_action in (
+            discord.AuditLogAction.webhook_create,
+            discord.AuditLogAction.webhook_update,
+            discord.AuditLogAction.webhook_delete,
+        ):
+            try:
+                async for entry in channel.guild.audit_logs(action=audit_action, limit=5, after=datetime.now(UTC) - timedelta(minutes=1)):
+                    extra_channel = getattr(entry.extra, "channel", None)
+                    target_channel = getattr(entry.target, "channel", None)
+                    known_ids = {
+                        getattr(extra_channel, "id", None),
+                        getattr(target_channel, "id", None),
+                        getattr(entry.target, "channel_id", None),
+                    }
+                    known_ids.discard(None)
+                    if known_ids and channel.id not in known_ids:
+                        continue
+                    target_id = getattr(entry.target, "id", channel.id)
+                    await self._check_nuke_action(
+                        channel.guild,
+                        audit_action,
+                        target_id,
+                        f"webhook {audit_action.name}",
+                        entry.user,
+                        allow_unattributed=True,
+                    )
+                    return
+            except (discord.Forbidden, discord.HTTPException):
+                continue
 
     @commands.Cog.listener()
     async def on_webhooks_update(self, channel: discord.abc.GuildChannel) -> None:
         await self._security_case(channel.guild, None, "WEBHOOK_CHANGE", f"Webhook update in #{channel.name}", channel.id)
+        await self._check_webhook_change(channel)
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel) -> None:
+        await self._check_nuke_action(
+            channel.guild,
+            discord.AuditLogAction.channel_create,
+            channel.id,
+            "channel creation",
+            allow_unattributed=True,
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel) -> None:
+        if before.overwrites != after.overwrites:
+            await self._check_nuke_action(
+                after.guild,
+                discord.AuditLogAction.channel_update,
+                after.id,
+                "channel permission update",
+                allow_unattributed=True,
+            )
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel) -> None:
         await self._security_case(channel.guild, None, "CHANNEL_DELETE", f"Channel deleted: {channel.name}", channel.id)
-        await self._check_nuke_action(channel.guild, discord.AuditLogAction.channel_delete, channel.id, "channel deletion")
+        await self._check_nuke_action(channel.guild, discord.AuditLogAction.channel_delete, channel.id, "channel deletion", allow_unattributed=True)
 
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role) -> None:
-        await self._check_nuke_action(role.guild, discord.AuditLogAction.role_create, role.id, "role creation")
+        await self._check_nuke_action(role.guild, discord.AuditLogAction.role_create, role.id, "role creation", allow_unattributed=True)
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role) -> None:
         await self._security_case(role.guild, None, "ROLE_DELETE", f"Role deleted: {role.name}")
-        await self._check_nuke_action(role.guild, discord.AuditLogAction.role_delete, role.id, "role deletion")
+        await self._check_nuke_action(role.guild, discord.AuditLogAction.role_delete, role.id, "role deletion", allow_unattributed=True)
 
     @commands.Cog.listener()
     async def on_guild_role_update(self, before: discord.Role, after: discord.Role) -> None:
@@ -245,7 +452,7 @@ class SecurityCog(commands.Cog):
                         await self._security_case(after.guild, executor, "ANTINUKE_ROLE_REVERT", f"Reverted dangerous permissions added to {after.name}")
                     except (discord.Forbidden, discord.HTTPException):
                         await self._security_case(after.guild, executor, "ANTINUKE_ROLE_REVERT_FAILED", f"Could not revert dangerous permissions on {after.name}")
-                await self._check_nuke_action(after.guild, discord.AuditLogAction.role_update, after.id, "dangerous role permission escalation", executor)
+                await self._check_nuke_action(after.guild, discord.AuditLogAction.role_update, after.id, "dangerous role permission escalation", executor, allow_unattributed=True)
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
@@ -268,17 +475,21 @@ class SecurityCog(commands.Cog):
                 await self._security_case(after.guild, executor, "ANTINUKE_ROLE_ASSIGNMENT_UNMANAGEABLE", f"Dangerous role assigned to {after.mention}, but it is above my role")
         except (discord.Forbidden, discord.HTTPException):
             await self._security_case(after.guild, executor, "ANTINUKE_ROLE_ASSIGNMENT_REVERT_FAILED", f"Could not remove dangerous roles from {after.mention}")
-        await self._check_nuke_action(after.guild, discord.AuditLogAction.member_role_update, after.id, "dangerous role assignment", executor)
+        await self._check_nuke_action(after.guild, discord.AuditLogAction.member_role_update, after.id, "dangerous role assignment", executor, allow_unattributed=True)
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User | discord.Member) -> None:
         await log_event(self.bot, guild, "member_log_channel_id", "Member banned", description=f"User: {user.mention} ({user.id})", color=discord.Color.orange())
-        await self._check_nuke_action(guild, discord.AuditLogAction.ban, user.id, "member ban")
+        await self._check_nuke_action(guild, discord.AuditLogAction.ban, user.id, "member ban", allow_unattributed=True)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
         await log_event(self.bot, member.guild, "member_log_channel_id", "Member left", description=f"User: {member} ({member.id})")
         await self._check_nuke_action(member.guild, discord.AuditLogAction.kick, member.id, "member kick")
+
+    @commands.Cog.listener()
+    async def on_member_unban(self, guild: discord.Guild, user: discord.User) -> None:
+        await self._check_nuke_action(guild, discord.AuditLogAction.unban, user.id, "member unban", allow_unattributed=True)
 
     async def _lockdown(self, guild: discord.Guild, reason: str):
         async with self.lockdown_locks[guild.id]:
@@ -436,6 +647,28 @@ class SecurityCog(commands.Cog):
         await self.bot.database.execute("DELETE FROM bad_words WHERE guild_id = ? AND word = ?", (interaction.guild_id, word.casefold().strip()))
         await respond(interaction, "Blocked word or phrase removed.")
 
+    @security.command(name="harden", description="Apply Guardian's recommended secure baseline.")
+    @guild_only()
+    @guild_owner_only()
+    async def security_harden(self, interaction: discord.Interaction) -> None:
+        await self.bot.database.ensure_guild(interaction.guild_id)
+        await self.bot.database.execute(
+            "UPDATE security_config SET automod_enabled = 1, flood_limit = 5, flood_window_seconds = 10, "
+            "max_mentions = 5, caps_percentage = 80, block_invites = 1 WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
+        await self.bot.database.execute(
+            "UPDATE anti_nuke_config SET enabled = 1, action_limit = 2, window_seconds = 15 WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
+        await self.bot.database.execute(
+            "UPDATE raid_config SET enabled = 1, join_limit = 8, join_window_seconds = 30, "
+            "min_account_age_days = CASE WHEN min_account_age_days < 3 THEN 3 ELSE min_account_age_days END "
+            "WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
+        await respond(interaction, "Secure baseline applied. Existing strict-link allowlists and quarantine-role configuration were preserved.")
+
     @security.command(name="status", description="Show the current AutoMod and anti-nuke policy.")
     @guild_only()
     @staff_only()
@@ -455,10 +688,21 @@ class SecurityCog(commands.Cog):
         if bot_member is None:
             await respond(interaction, "I cannot inspect my server member record yet. Retry shortly.")
             return
-        required = ("view_audit_log", "manage_messages", "moderate_members", "kick_members", "ban_members", "manage_roles", "manage_channels")
+        required = ("view_audit_log", "manage_messages", "moderate_members", "kick_members", "ban_members", "manage_roles", "manage_channels", "manage_webhooks")
         missing = [permission.replace("_", " ") for permission in required if not getattr(bot_member.guild_permissions, permission)]
         manageable = sum(1 for role in interaction.guild.roles if not role.managed and role < bot_member.top_role)
-        await respond(interaction, f"Security scan\nMissing permissions: {', '.join(missing) if missing else 'none'}\nRoles below bot: {manageable}\nBot top role: {bot_member.top_role.name}\nAudit attribution: {'ready' if 'view audit log' not in missing else 'unavailable'}")
+        risky_above = [
+            role.name
+            for role in interaction.guild.roles
+            if role > bot_member.top_role and not role.managed and self._has_high_risk_permissions(role)
+        ]
+        await respond(
+            interaction,
+            f"Security scan\nMissing permissions: {', '.join(missing) if missing else 'none'}\n"
+            f"Roles below bot: {manageable}\nBot top role: {bot_member.top_role.name}\n"
+            f"High-risk roles above bot: {', '.join(risky_above[:10]) if risky_above else 'none'}\n"
+            f"Audit attribution: {'ready' if 'view audit log' not in missing else 'unavailable'}",
+        )
 
     @security.command(name="cases", description="Show recent AutoMod, anti-nuke, and security cases.")
     @guild_only()

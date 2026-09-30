@@ -18,7 +18,11 @@ OWNER_IDS = {
 
 def owner_only() -> app_commands.check:
     async def predicate(interaction: discord.Interaction) -> bool:
-        return interaction.user.id in OWNER_IDS
+        configured_owner = getattr(getattr(interaction.client, "settings", None), "owner_id", None)
+        allowed = set(OWNER_IDS)
+        if configured_owner is not None:
+            allowed.add(int(configured_owner))
+        return interaction.user.id in allowed
     return app_commands.check(predicate)
 
 

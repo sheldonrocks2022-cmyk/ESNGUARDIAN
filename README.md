@@ -29,7 +29,7 @@ Guardian syncs slash commands to each connected server on startup. The configure
 
 ## RayNode Setup
 
-1. Use the existing public GitHub repository at `https://github.com/Ep1cPlays/ESNGUARDIAN`. It must contain every project file except `.env`, `.venv`, and `data/`. The required files include `main.py`, `requirements.txt`, `esn_guardian/`, `.gitignore`, and this README.
+1. Use the existing public GitHub repository at `https://github.com/sheldonrocks2022-cmyk/ESNGUARDIAN`. It must contain every project file except `.env`, `.venv`, and `data/`. The required files include `main.py`, `requirements.txt`, `esn_guardian/`, `.gitignore`, and this README.
 2. On the GitHub repository page, select **Code**, choose **HTTPS**, and copy the URL ending in `.git`. Use that URL in RayNode's repository field.
 3. Use the `main` Git branch unless you deliberately use a different branch.
 4. In RayNode, set **APP PY FILE** to `main.py`.
@@ -44,7 +44,7 @@ RayNode must keep the project folder and `data/` directory between restarts for 
 
 ## Anti-Nuke
 
-Anti-nuke is disabled by default. A server administrator can enable it with:
+Anti-nuke is disabled by default. The server owner can enable it with:
 
 ```text
 /antinuke setup action_limit:3 window_seconds:15
@@ -65,7 +65,7 @@ Verification buttons honor maintenance and guild blacklisting. AutoMod deletes
 violating messages on the first strike while retaining warning-first escalation.
 Lockdown preserves unrelated channel overwrites and stores the previous
 `send_messages` value in SQLite for restoration across restarts; failed restores
-remain pending. Unknown audit actors are never counted or banned.
+remain pending. Unknown audit actors are never guessed or banned; repeated clearly destructive unattributed events can still trigger containment.
 
 Run `python -m pip install -r requirements.txt pytest pytest-asyncio pip-audit`,
 then `python -m pytest -q` and `python -m pip_audit -r requirements.txt`.
@@ -99,3 +99,35 @@ correct bot permissions and a role above the members it needs to moderate.
 - Settings and tables migrate automatically without dropping existing data.
   New commands sync when the bot starts. GitHub's Security checks workflow also
   supports manual runs after any account-level Actions restrictions are resolved.
+
+
+### ESNG AI
+
+Guardian includes a local, no-API-cost assistant inspired by the ESN Store AI design.
+It ignores normal Discord conversation and only responds when a message begins with
+`ESNG` (case-insensitive), such as `ESNG security status`, `ESNG anti-nuke`,
+`ESNG tickets`, or `ESNG store`.
+
+The assistant reads Guardian's live server configuration for security-status answers,
+reports bot uptime/latency, explains verified Guardian features, and refuses to invent
+unknown settings or commands. It does not require an OpenAI key or any external AI
+service. A per-user cooldown prevents trigger spam.
+
+### Security hardening v2
+
+The hardened security engine retries audit-log attribution, contains bursts of
+unattributed destructive actions without guessing an attacker, counts webhook abuse,
+channel creation/deletion and channel-permission changes, blocks untrusted bot
+additions when anti-nuke is enabled, and watches unbans.
+
+Dangerous link checks now normalize IDN domains and detect common phishing-lookalike
+patterns, shorteners, direct-IP URLs, embedded URL credentials and punycode hostnames.
+Staff keep their normal nuisance-filter exemption, but dangerous links and configured
+link policy still apply; Guardian deletes those messages and logs a staff security case
+without automatically escalating a legitimate staff member to kick/ban.
+
+AutoMod escalation uses only the previous 30 days of AutoMod cases. Raid detection
+adds a short containment window after a join surge. `/security scan` now checks
+Manage Webhooks and reports high-risk roles above Guardian. The server owner can apply
+the recommended baseline with `/security harden`. Bot-wide owner commands honor the
+configured `BOT_OWNER_ID` in addition to recovery owner IDs.
