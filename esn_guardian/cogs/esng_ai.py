@@ -305,7 +305,7 @@ class ESNGuardianAICog(commands.Cog):
         return (
             "I do not have a verified answer for that yet. Try ESNG help. "
             f"For live ESN information, use {WEBSITE_URL}. "
-            "I will not invent prices, checkout links, security settings, commands, or private data."
+            "I won't invent prices, checkout links, security settings, commands, or private data."
         )
 
     @commands.Cog.listener()
