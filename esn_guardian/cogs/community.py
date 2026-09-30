@@ -41,12 +41,12 @@ LOG_FIELDS = {
 BEDROCK_RAKNET_MAGIC = bytes.fromhex("00ffff00fefefefefdfdfdfd12345678")
 LOG = logging.getLogger("esn_guardian.cogs.community")
 HELP_GUIDES = {
-    "setup": "**ESN Guardian Setup**\n1. Give the bot View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Read Message History, and View Audit Log.\n2. Ensure the bot role is above every role it must manage.\n3. Settings initialize automatically.\n4. Set log routes with `/logs` for moderation, security, member, message, verification, and system events.\n5. Run `/security scan`, configure `/security raid`, then enable `/antinuke setup`.\n6. Configure `/verification setup`, then `/verification enable` if members must verify.\n7. Post staff controls with `/panel` and the community panel with `/esnpanel`.\n\nUse `/help section:<category>` for the full command catalogue.",
+    "setup": "**ESN Guardian Setup**\n1. Give Guardian View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Manage Webhooks, Read Message History, and View Audit Log.\n2. Put Guardian above every role it must protect.\n3. Run `/security harden` to enable the secure baseline, external-app lock, recovery snapshot, bot approval, webhook/integration guards, credential protection, and rollback.\n4. Set log routes with `/logs`.\n5. Configure verification and tickets if your server uses them.\n6. Run `/guardian audit` and keep the security score clean.\n\nUse `/help section:<category>` for the command catalogue.",
     "moderation": "**Moderation Commands**\n`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`\n`/clear`, `/slowmode`, `/nickname`, `/role`, `/massrole`\n`/case`, `/history`,  `/lockdown`, `/unlockdown`\n\nStaff permission is required. Every moderation action creates a case ID and can be sent to the moderation log channel.",
-    "security": "**Security Commands**\nAutoMod: `/security automod`, `/security thresholds`, `/security links`, `/security allow-domain`, `/security remove-domain`, `/security add-word`, `/security remove-word`, `/security words`, `/security domains`, `/security check-link`, `/security reset-automod`\nRaid and review: `/security raid`, `/security raid-status`, `/security quarantine`, `/security release`, `/security member`, `/security cases`, `/security scan`, `/security status`, `/security trusted`\nAnti-nuke: `/antinuke setup`, `/antinuke enable`, `/antinuke disable`, `/antinuke status`, `/antinuke trust`, `/antinuke untrust`\n\nUse `/security scan` before enabling anti-nuke. It needs View Audit Log, Ban Members, Manage Channels, and Manage Roles.",
+    "security": "**Security Commands**\nCore: `/security harden`, `/security status`, `/security scan`, `/security cases`\nAutoMod: `/security automod`, `/security thresholds`, `/security links`, `/security allow-domain`, `/security remove-domain`, `/security add-word`, `/security remove-word`, `/security words`, `/security domains`, `/security check-link`, `/security reset-automod`\nRaid: `/security raid`, `/security raid-status`, `/security quarantine`, `/security release`, `/security member`\nAnti-nuke: `/antinuke setup`, `/antinuke enable`, `/antinuke disable`, `/antinuke status`, `/antinuke trust`, `/antinuke untrust`\nAdvanced: `/guardian audit`, `/guardian status`, `/guardian snapshot`, `/guardian approve-bot`, `/guardian unapprove-bot`, `/guardian panic`\n\nUse `/security harden` first, then `/guardian audit`.",
     "verification": "**Verification Commands**\n`/verification setup` posts the persistent VERIFY button and stores its message.\n`/verification enable` and `/verification disable` control access.\n`/verification status` shows roles and account-age settings.\n`/verification reset` clears verification records for one member or the whole server.\n`/verify` lets a member run the same checks without using the button.\n\nPut the verified role below the bot's highest role; configure the unverified role with restricted channel permissions.",
-    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/ticket-close`, `/ticket-config`, `/suggest`\nESN SMP: `/smp`, `/status smp`, `/status subscribe`, `/status unsubscribe`, `/discord`, `/smpannounce`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status smp` performs a live Bedrock UDP query. Subscribe to `smp` for SMP updates or `bot` for Guardian maintenance notices. Staff can use `/smpannounce channel:<channel> message:<text>`; announcements share a server-wide cooldown (60 minutes by default).",
-    "owner": "**Owner Commands**\n`/botstats`, `/servers`, `/synccommands`, `/broadcast`, `/maintenance`, `/statusupdate`, `/blacklist`, `/unblacklist`\n\nOnly the Discord user ID configured as `BOT_OWNER_ID` can use these commands. `/synccommands` refreshes slash commands in one connected server when given its ID, or in every connected server when left empty. `/maintenance` prevents normal guild commands until disabled and notifies bot-status subscribers. `/statusupdate` sends an SMP or Guardian update to opted-in users. `/blacklist` removes Guardian from the specified guild and blocks future use.",
+    "community": "**Community Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`\nCommunity: `/ticket`, `/ticket-close`, `/ticket-config`, `/suggest`\nStaff utility: `/smpannounce`\n\nWebsite information, live ESN status, SMP connection details, store information, and general ESN links now stay on the ESN website instead of duplicating them inside Guardian.",
+    "owner": "**Owner Commands**\n`/botstats`, `/backupdb`, `/backupstatus`, `/servers`, `/synccommands`, `/broadcast`, `/maintenance`, `/blacklist`, `/unblacklist`\n\nOnly the configured bot owner can use these operational commands.",
 }
 
 
@@ -112,7 +112,6 @@ class CommunityCog(commands.Cog):
 
     async def cog_load(self) -> None:
         self.bot.add_view(ControlPanel(self.bot))
-        self.bot.add_view(ControlPanel(self.bot, esn=True))
 
     def cog_unload(self) -> None:
 
@@ -349,14 +348,6 @@ class CommunityCog(commands.Cog):
             return
         await self._panel(interaction, False)
 
-    @app_commands.command(description="Post the persistent ESN community panel.")
-    @guild_only()
-    async def esnpanel(self, interaction: discord.Interaction) -> None:
-        if not isinstance(interaction.channel, discord.TextChannel):
-            await respond(interaction, "This command requires a text channel.")
-            return
-        await self._panel(interaction, True)
-
 
     @app_commands.command(description="Show the configured server settings.")
     @guild_only()
@@ -447,11 +438,6 @@ class CommunityCog(commands.Cog):
 
 
 
-    @app_commands.command(description="Show Guardian health and connection status.")
-    async def health(self, interaction: discord.Interaction) -> None:
-        database_ok = self.bot.database.connection is not None
-        uptime = datetime.now(UTC) - self.bot.started_at
-        await respond(interaction, f"Bot: online\nDatabase: {'online' if database_ok else 'offline'}\nDiscord latency: {round(self.bot.latency * 1000)}ms\nUptime: {str(uptime).split('.')[0]}\nServers: {len(self.bot.guilds)}\nSecurity, automation, and verification: loaded")
 
 
 async def setup(bot: commands.Bot) -> None:
