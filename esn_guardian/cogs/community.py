@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections import defaultdict
 from datetime import UTC, datetime
 
 import discord
@@ -40,12 +41,11 @@ LOG_FIELDS = {
 BEDROCK_RAKNET_MAGIC = bytes.fromhex("00ffff00fefefefefdfdfdfd12345678")
 LOG = logging.getLogger("esn_guardian.cogs.community")
 HELP_GUIDES = {
-    "setup": "**ESN Guardian Setup**\n1. Give the bot View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Read Message History, and View Audit Log.\n2. Ensure the bot role is above every role it must manage.\n3. Run `/setup`.\n4. Set log routes with `/logs` for moderation, security, member, message, verification, and system events.\n5. Run `/security scan`, configure `/security raid`, then enable `/antinuke setup`.\n6. Configure `/verification setup`, then `/verification enable` if members must verify.\n7. Post staff controls with `/panel` and the community panel with `/esnpanel`.\n\nUse `/help section:<category>` for the full command catalogue.",
-    "moderation": "**Moderation Commands**\n`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`\n`/clear`, `/purge`, `/slowmode`, `/nickname`, `/role`, `/massrole`\n`/case`, `/history`, `/lock`, `/unlock`, `/lockdown`, `/unlockdown`\n\nStaff permission is required. Every moderation action creates a case ID and can be sent to the moderation log channel.",
+    "setup": "**ESN Guardian Setup**\n1. Give the bot View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Read Message History, and View Audit Log.\n2. Ensure the bot role is above every role it must manage.\n3. Settings initialize automatically.\n4. Set log routes with `/logs` for moderation, security, member, message, verification, and system events.\n5. Run `/security scan`, configure `/security raid`, then enable `/antinuke setup`.\n6. Configure `/verification setup`, then `/verification enable` if members must verify.\n7. Post staff controls with `/panel` and the community panel with `/esnpanel`.\n\nUse `/help section:<category>` for the full command catalogue.",
+    "moderation": "**Moderation Commands**\n`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`\n`/clear`, `/slowmode`, `/nickname`, `/role`, `/massrole`\n`/case`, `/history`,  `/lockdown`, `/unlockdown`\n\nStaff permission is required. Every moderation action creates a case ID and can be sent to the moderation log channel.",
     "security": "**Security Commands**\nAutoMod: `/security automod`, `/security thresholds`, `/security links`, `/security allow-domain`, `/security remove-domain`, `/security add-word`, `/security remove-word`, `/security words`, `/security domains`, `/security check-link`, `/security reset-automod`\nRaid and review: `/security raid`, `/security raid-status`, `/security quarantine`, `/security release`, `/security member`, `/security cases`, `/security scan`, `/security status`, `/security trusted`\nAnti-nuke: `/antinuke setup`, `/antinuke enable`, `/antinuke disable`, `/antinuke status`, `/antinuke trust`, `/antinuke untrust`\n\nUse `/security scan` before enabling anti-nuke. It needs View Audit Log, Ban Members, Manage Channels, and Manage Roles.",
     "verification": "**Verification Commands**\n`/verification setup` posts the persistent VERIFY button and stores its message.\n`/verification enable` and `/verification disable` control access.\n`/verification status` shows roles and account-age settings.\n`/verification reset` clears verification records for one member or the whole server.\n`/verify` lets a member run the same checks without using the button.\n\nPut the verified role below the bot's highest role; configure the unverified role with restricted channel permissions.",
-    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/suggest`, `/poll`\nESN SMP: `/smp`, `/ip`, `/port`, `/status smp`, `/status subscribe`, `/status unsubscribe`, `/players`, `/discord`, `/smpannounce`, `/joinhelp`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status smp` and `/players` perform a live Bedrock UDP query. Subscribe to `smp` for SMP updates or `bot` for Guardian maintenance notices.",
-    "ads": "**Opt-In Advertising Commands**\n`/setup-ad` chooses this server's ad channel and cooldown.\n`/ad-on` explicitly opts the server in; `/ad-off` opts it out.\n`/smpannounce` sends an approved message only to this server's configured opt-in channel.\n`/ad-status` shows local opt-in settings.\n`/report-ad` logs an advertising concern to staff.\n\nGuardian never sends advertisements to a server that has not opted in.",
+    "community": "**Community And SMP Commands**\nConfiguration: `/config`, `/welcome`, `/goodbye`, `/autorole`, `/logs`, `/panel`, `/esnpanel`, `/health`\nCommunity: `/ticket`, `/ticket-close`, `/ticket-config`, `/suggest`\nESN SMP: `/smp`, `/status smp`, `/status subscribe`, `/status unsubscribe`, `/discord`, `/smpannounce`\n\nSMP host: `esnsmp.ggwp.cc:17058`. `/status smp` performs a live Bedrock UDP query. Subscribe to `smp` for SMP updates or `bot` for Guardian maintenance notices. Staff can use `/smpannounce channel:<channel> message:<text>`; announcements share a server-wide cooldown (60 minutes by default).",
     "owner": "**Owner Commands**\n`/botstats`, `/servers`, `/synccommands`, `/broadcast`, `/maintenance`, `/statusupdate`, `/blacklist`, `/unblacklist`\n\nOnly the Discord user ID configured as `BOT_OWNER_ID` can use these commands. `/synccommands` refreshes slash commands in one connected server when given its ID, or in every connected server when left empty. `/maintenance` prevents normal guild commands until disabled and notifies bot-status subscribers. `/statusupdate` sends an SMP or Guardian update to opted-in users. `/blacklist` removes Guardian from the specified guild and blocks future use.",
 }
 
@@ -74,7 +74,7 @@ class ControlPanel(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
         self.esn = esn
-        labels = (("SMP", "smp"), ("Status", "status"), ("Players", "players"), ("Ads", "ads"), ("Security", "security"), ("Rules", "rules"), ("Discord", "discord"), ("Support", "support")) if esn else (("Security", "security"), ("AutoMod", "automod"), ("Verification", "verification"), ("Logs", "logs"), ("Settings", "settings"), ("Lockdown", "lockdown"), ("Statistics", "statistics"), ("Help", "help"))
+        labels = (("SMP", "smp"), ("Status", "status"), ("Security", "security"), ("Rules", "rules"), ("Discord", "discord"), ("Support", "support")) if esn else (("Security", "security"), ("AutoMod", "automod"), ("Verification", "verification"), ("Logs", "logs"), ("Settings", "settings"), ("Lockdown", "lockdown"), ("Statistics", "statistics"), ("Help", "help"))
         for label, action in labels:
             button = discord.ui.Button(label=label, custom_id=f"esn_guardian:{'esn' if esn else 'control'}:{action}", style=discord.ButtonStyle.danger if action == "lockdown" else discord.ButtonStyle.secondary)
             button.callback = self._callback(action)
@@ -98,7 +98,7 @@ class ControlPanel(discord.ui.View):
                     return
                 await respond(interaction, "Use `/lockdown` to confirm the incident reason and lock channels.")
             elif action in {"security", "automod", "verification", "logs", "settings", "ads", "statistics", "rules", "support", "help"}:
-                text = {"security": "Security controls: `/lock`, `/unlock`, `/lockdown`, `/unlockdown`.", "automod": "AutoMod is actively monitoring flood, mention, duplicate, caps, links, and configured blocked words.", "verification": "Configure with `/verification setup`, then `/verification enable`.", "logs": "Set each route with `/logs category:<name> channel:<channel>`.", "settings": "Use `/config` to inspect current server settings.", "ads": "Manage opt-in advertising with `/setup-ad`, `/ad-on`, `/ad-off`, and `/ad-status`.", "statistics": f"Serving {len(self.bot.guilds)} servers.", "rules": "Ask your server staff for the current rules.", "support": "Support: https://discord.gg/huFsDxkZ2g", "help": "Use `/help` for setup instructions and the full command guide."}[action]
+                text = {"security": "Security controls:  `/lockdown`, `/unlockdown`.", "automod": "AutoMod is actively monitoring flood, mention, duplicate, caps, links, and configured blocked words.", "verification": "Configure with `/verification setup`, then `/verification enable`.", "logs": "Set each route with `/logs category:<name> channel:<channel>`.", "settings": "Use `/config` to inspect current server settings.", "ads": "Advertising controls have been retired. Staff can use `/smpannounce`.", "statistics": f"Serving {len(self.bot.guilds)} servers.", "rules": "Ask your server staff for the current rules.", "support": "Support: https://discord.gg/huFsDxkZ2g", "help": "Use `/help` for setup instructions and the full command guide."}[action]
                 await respond(interaction, text)
         return callback
 
@@ -109,6 +109,7 @@ class CommunityCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._smp_online: bool | None = None
+        self.announcement_locks = defaultdict(asyncio.Lock)
 
     async def cog_load(self) -> None:
         self.bot.add_view(ControlPanel(self.bot))
@@ -359,19 +360,32 @@ class CommunityCog(commands.Cog):
             return
         await self._panel(interaction, True)
 
-    @app_commands.command(description="Initialize ESN Guardian settings for this server.")
-    @guild_only()
-    @staff_only()
-    async def setup(self, interaction: discord.Interaction) -> None:
-        await self.bot.database.ensure_guild(interaction.guild_id)
-        await respond(interaction, "Server settings initialized. Configure logs, verification, welcome, and roles with their slash commands.")
 
     @app_commands.command(description="Show the configured server settings.")
     @guild_only()
     @staff_only()
     async def config(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
         settings = await self.bot.database.setting(interaction.guild_id)
-        await respond(interaction, f"Lockdown: {'active' if settings['lockdown_active'] else 'inactive'}\nWelcome: <#{settings['welcome_channel_id']}>\nAutorole: <@&{settings['autorole_id']}>\nAds: {'enabled' if settings['ad_enabled'] else 'disabled'}")
+        sections = ["Server settings"]
+        sections.extend(f"{key.replace('_', ' ').title()}: {value if value is not None else 'Not set'}"
+                        for key, value in dict(settings).items()
+                        if key not in {"guild_id", "ad_enabled", "ad_channel_id", "created_at", "updated_at"})
+        for table, label in (("security_config", "AutoMod"), ("anti_nuke_config", "Anti-nuke"),
+                             ("raid_config", "Raid"), ("verification_config", "Verification"),
+                             ("ticket_config", "Tickets")):
+            row = await self.bot.database.fetchone(f"SELECT * FROM {table} WHERE guild_id = ?", (interaction.guild_id,))
+            sections.append(f"\n{label}")
+            sections.extend(f"{key.replace('_', ' ').title()}: {value if value is not None else 'Not set'}"
+                            for key, value in dict(row or {}).items() if key != "guild_id")
+        text = "\n".join(sections)
+        # Split on lines so every setting remains visible, even with long templates.
+        while text:
+            split = text.rfind("\n", 0, 3900) if len(text) > 3900 else len(text)
+            if split <= 0:
+                split = 3900
+            await respond(interaction, text[:split])
+            text = text[split:].lstrip("\n")
 
     @app_commands.command(description="Set the channel for automatic detailed join notices.")
     @guild_only()
@@ -416,18 +430,6 @@ class CommunityCog(commands.Cog):
         await self.bot.database.update_setting(interaction.guild_id, "autorole_id", role.id if role else None)
         await respond(interaction, "Autorole updated." if role else "Autorole disabled.")
 
-    @app_commands.command(description="Create a private support ticket channel.")
-    @guild_only()
-    async def ticket(self, interaction: discord.Interaction, subject: str) -> None:
-        assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
-        overwrites = {interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False), interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True), interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
-        try:
-            channel = await interaction.guild.create_text_channel(f"ticket-{interaction.user.id}", topic=f"Ticket: {subject}", overwrites=overwrites, reason="ESN Guardian support ticket")
-        except discord.HTTPException:
-            await respond(interaction, "I could not create a ticket channel. Check my Manage Channels permission.")
-            return
-        await channel.send(f"{interaction.user.mention}\nSubject: {subject}", allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
-        await respond(interaction, f"Ticket created: {channel.mention}")
 
     @app_commands.command(description="Submit a suggestion for staff and the community.")
     @guild_only()
@@ -441,16 +443,6 @@ class CommunityCog(commands.Cog):
         await message.add_reaction("👎")
         await respond(interaction, "Suggestion posted.")
 
-    @app_commands.command(description="Create a vote with approve and reject reactions.")
-    @guild_only()
-    @staff_only()
-    async def poll(self, interaction: discord.Interaction, question: str) -> None:
-        assert isinstance(interaction.channel, discord.TextChannel)
-        embed = set_protected_footer(discord.Embed(title="Poll", description=question, color=discord.Color.teal()))
-        message = await interaction.channel.send(embed=embed)
-        await message.add_reaction("✅")
-        await message.add_reaction("❌")
-        await respond(interaction, "Poll posted.")
 
     @app_commands.command(description="Set a detailed event log channel.")
     @guild_only()
@@ -470,10 +462,6 @@ class CommunityCog(commands.Cog):
 
     @app_commands.command(description="Show ESN SMP connection information.")
     async def smp(self, interaction: discord.Interaction) -> None: await respond(interaction, SMP_INFO)
-    @app_commands.command(description="Show the ESN SMP IP.")
-    async def ip(self, interaction: discord.Interaction) -> None: await respond(interaction, "`esnsmp.ggwp.cc`")
-    @app_commands.command(description="Show the ESN SMP port.")
-    async def port(self, interaction: discord.Interaction) -> None: await respond(interaction, "`17058`")
     @status_commands.command(name="smp", description="Query the live ESN SMP Bedrock status.")
     async def smp_status(self, interaction: discord.Interaction) -> None:
         await respond(interaction, await self._bedrock_status())
@@ -502,63 +490,39 @@ class CommunityCog(commands.Cog):
         labels = {"smp": "ESN SMP updates", "bot": "ESN Guardian maintenance notices"}
         subscribed = ", ".join(labels[topic] for topic in sorted(topics)) or "None"
         await respond(interaction, f"Subscribed: {subscribed}")
-    @app_commands.command(description="Query the live ESN SMP Bedrock player count.")
-    async def players(self, interaction: discord.Interaction) -> None: await respond(interaction, await self._bedrock_status())
     @app_commands.command(description="Show the ESN SMP Discord.")
     async def discord(self, interaction: discord.Interaction) -> None: await respond(interaction, "https://discord.gg/huFsDxkZ2g")
-    @app_commands.command(description="Show ESN SMP joining help.")
-    async def joinhelp(self, interaction: discord.Interaction) -> None: await respond(interaction, "In Minecraft Bedrock, add `esnsmp.ggwp.cc` on port `17058`.")
 
-    @app_commands.command(description="Configure this server's opt-in ad channel and cooldown.")
+
+
+
+
+    @app_commands.command(description="Send an SMP announcement with a server-wide cooldown.")
     @guild_only()
     @staff_only()
-    async def setup_ad(self, interaction: discord.Interaction, channel: discord.TextChannel, cooldown_minutes: app_commands.Range[int, 5, 10080] = 60) -> None:
-        await self.bot.database.update_setting(interaction.guild_id, "ad_channel_id", channel.id)
-        await self.bot.database.update_setting(interaction.guild_id, "ad_cooldown_seconds", cooldown_minutes * 60)
-        await respond(interaction, "Ad channel and cooldown configured. Use `/ad-on` to opt in.")
-
-    @app_commands.command(description="Opt this server into the ESN ad network.")
-    @guild_only()
-    @staff_only()
-    async def ad_on(self, interaction: discord.Interaction) -> None:
-        settings = await self.bot.database.setting(interaction.guild_id)
-        if not settings["ad_channel_id"]:
-            await respond(interaction, "Configure an ad channel first with `/setup-ad`.")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def smpannounce(self, interaction: discord.Interaction, channel: discord.TextChannel, message: app_commands.Range[str, 1, 2000]) -> None:
+        if channel.guild.id != interaction.guild_id or not channel.permissions_for(interaction.user).send_messages:
+            await respond(interaction, "Choose a channel in this server where you can send messages.")
             return
-        await self.bot.database.update_setting(interaction.guild_id, "ad_enabled", 1)
-        await respond(interaction, "This server has opted in to the ad network.")
-
-    @app_commands.command(description="Opt this server out of the ESN ad network.")
-    @guild_only()
-    @staff_only()
-    async def ad_off(self, interaction: discord.Interaction) -> None:
-        await self.bot.database.update_setting(interaction.guild_id, "ad_enabled", 0)
-        await respond(interaction, "This server has opted out of the ad network.")
-
-    @app_commands.command(description="Show this server's ad network configuration.")
-    @guild_only()
-    @staff_only()
-    async def ad_status(self, interaction: discord.Interaction) -> None:
-        settings = await self.bot.database.setting(interaction.guild_id)
-        await respond(interaction, f"Opt-in: {'yes' if settings['ad_enabled'] else 'no'}\nChannel: <#{settings['ad_channel_id']}>\nCooldown: {settings['ad_cooldown_seconds'] // 60} minutes")
-
-    @app_commands.command(description="Send a server-approved ESN SMP announcement to its configured ad channel.")
-    @guild_only()
-    @staff_only()
-    async def smpannounce(self, interaction: discord.Interaction, message: str) -> None:
-        settings = await self.bot.database.setting(interaction.guild_id)
-        channel = interaction.guild.get_channel(settings["ad_channel_id"]) if settings["ad_channel_id"] else None
-        if not settings["ad_enabled"] or not isinstance(channel, discord.TextChannel):
-            await respond(interaction, "Ads are not enabled and configured for this server.")
-            return
-        await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
-        await respond(interaction, "Announcement sent.")
-
-    @app_commands.command(description="Report an ad-network issue to server staff.")
-    @guild_only()
-    async def report_ad(self, interaction: discord.Interaction, details: str) -> None:
-        await log_event(self.bot, interaction.guild, "security_log_channel_id", "Ad report", description=f"Reporter: {interaction.user.mention}\nDetails: {details}")
-        await respond(interaction, "Your report was logged for staff.")
+        await interaction.response.defer(ephemeral=True)
+        async with self.announcement_locks[interaction.guild_id]:
+            settings = await self.bot.database.setting(interaction.guild_id)
+            now = datetime.now(UTC)
+            last = settings["ad_last_sent_at"]
+            if last:
+                elapsed = (now - datetime.fromisoformat(last).replace(tzinfo=UTC)).total_seconds()
+                remaining = settings["ad_cooldown_seconds"] - elapsed
+                if remaining > 0:
+                    await respond(interaction, f"Wait {int(remaining) + 1} seconds before the next announcement.")
+                    return
+            try:
+                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                await respond(interaction, "I could not send the announcement. Check my channel permissions.")
+                return
+            await self.bot.database.update_setting(interaction.guild_id, "ad_last_sent_at", now.isoformat())
+            await respond(interaction, "Announcement sent.")
 
     @app_commands.command(description="Show Guardian health and connection status.")
     async def health(self, interaction: discord.Interaction) -> None:

@@ -36,6 +36,17 @@ class Database:
         connection = self._require_connection()
         await connection.executescript(
             """
+            CREATE TABLE IF NOT EXISTS ticket_config (
+                guild_id INTEGER PRIMARY KEY,
+                support_role_id INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS tickets (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                channel_id INTEGER UNIQUE,
+                opened_at REAL NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
             CREATE TABLE IF NOT EXISTS lockdown_overwrites (
                 guild_id INTEGER NOT NULL,
                 channel_id INTEGER NOT NULL,
@@ -214,6 +225,7 @@ class Database:
         await self.execute("INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)", (guild_id,))
         await self.execute("INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)", (guild_id,))
         await self.execute("INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)", (guild_id,))
+        await self.execute("INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)", (guild_id,))
         await self.execute("INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)", (guild_id,))
 
     async def setting(self, guild_id: int) -> aiosqlite.Row:

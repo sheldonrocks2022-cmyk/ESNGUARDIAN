@@ -72,3 +72,30 @@ then `python -m pytest -q` and `python -m pip_audit -r requirements.txt`.
 GitHub Actions runs these checks on pushes and pull requests.
 These are offline regression tests; live Discord enforcement still requires
 correct bot permissions and a role above the members it needs to moderate.
+
+### Streamlined commands and support tickets
+
+- Use `/smp` for the address, port, and Discord link, and `/status smp` for live
+  status and player counts. Redundant `/ip`, `/port`, `/players`, `/joinhelp`,
+  manual `/setup`, and basic `/poll` commands were removed.
+- Ad-network setup, opt-in/out, status and reporting commands were retired.
+  `/smpannounce channel:<channel> message:<text>` remains for staff with Manage
+  Server and Manage Messages. The caller must be able to send in the selected
+  channel. Announcements suppress mentions and share a persistent per-server
+  cooldown (60 minutes by default; existing configured cooldowns are retained).
+  Concurrent sends are serialized; failed Discord sends do not consume cooldown.
+- `/config` now shows stored server, logging, AutoMod, anti-nuke, raid,
+  verification and ticket settings in private responses.
+- Staff first use `/ticket-config support_role:<role>` to choose support access.
+  `/ticket subject:<text>` creates a private channel for the opener, support role
+  and bot. Discord administrators retain their normal access. Each member can
+  have one open ticket, with at most 25 open tickets per server and a 60-second
+  opening cooldown. Records survive restarts.
+- `/ticket-close` works inside an active ticket for its opener, configured support
+  staff, or members with Manage Server. It preserves the private channel history
+  and makes the opener's channel access read-only; Discord administrators can
+  override channel denies. Staff may delete the archived channel when appropriate.
+  Changing the configured support role only changes access for new tickets.
+- Settings and tables migrate automatically without dropping existing data.
+  New commands sync when the bot starts. GitHub's Security checks workflow also
+  supports manual runs after any account-level Actions restrictions are resolved.
