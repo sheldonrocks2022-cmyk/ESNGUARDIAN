@@ -71,6 +71,10 @@ class AdvancedSecurityCog(commands.Cog):
                 snapshot_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""",
+            """CREATE TABLE IF NOT EXISTS guardian_baseline_state (
+                guild_id INTEGER PRIMARY KEY,
+                initialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
         ):
             await self.bot.database.execute(statement)
         self.snapshot_loop.start()
@@ -375,8 +379,59 @@ class AdvancedSecurityCog(commands.Cog):
                     await self._case(guild, getattr(webhook, "user", None), "WEBHOOK_DESTROY_FAILED", f"Could not delete unauthorized webhook {webhook.name or webhook.id}", getattr(current, "id", None))
         return deleted
 
+    async def _ensure_safe_baseline(self, guild: discord.Guild) -> None:
+        """Trust everything already present once, so a Guardian upgrade never attacks an existing server."""
+        row = await self.bot.database.fetchone(
+            "SELECT 1 FROM guardian_baseline_state WHERE guild_id = ?",
+            (guild.id,),
+        )
+        if row is not None:
+            return
+
+        # Existing bots are a migration baseline. Only bots added after this point
+        # are subject to the approval gate.
+        for member in guild.members:
+            if not member.bot or (self.bot.user is not None and member.id == self.bot.user.id):
+                continue
+            await self.bot.database.execute(
+                "INSERT OR IGNORE INTO approved_bots (guild_id, bot_id, approved_by_id) VALUES (?, ?, ?)",
+                (guild.id, member.id, guild.owner_id),
+            )
+
+        # Existing webhooks are also preserved on first upgraded startup.
+        for channel in guild.channels:
+            if not hasattr(channel, "webhooks"):
+                continue
+            try:
+                webhooks = await channel.webhooks()
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+            for webhook in webhooks:
+                await self.bot.database.execute(
+                    "INSERT OR IGNORE INTO approved_webhooks (guild_id, webhook_id) VALUES (?, ?)",
+                    (guild.id, webhook.id),
+                )
+
+        # Most importantly: never treat pre-existing integrations as hostile.
+        try:
+            integrations = await guild.integrations()
+        except (discord.Forbidden, discord.HTTPException):
+            integrations = []
+        for integration in integrations:
+            application = getattr(integration, "application", None)
+            await self.bot.database.execute(
+                "INSERT OR IGNORE INTO approved_integrations (guild_id, integration_id, application_id) VALUES (?, ?, ?)",
+                (guild.id, integration.id, getattr(application, "id", None)),
+            )
+
+        await self.bot.database.execute(
+            "INSERT OR REPLACE INTO guardian_baseline_state (guild_id) VALUES (?)",
+            (guild.id,),
+        )
+
     async def _remove_unapproved_integrations(self, guild: discord.Guild) -> int:
         async with self._integration_locks[guild.id]:
+            await self._ensure_safe_baseline(guild)
             rows = await self.bot.database.fetchall(
                 "SELECT integration_id, application_id FROM approved_integrations WHERE guild_id = ?",
                 (guild.id,),
@@ -391,6 +446,15 @@ class AdvancedSecurityCog(commands.Cog):
             for integration in integrations:
                 application = getattr(integration, "application", None)
                 app_id = getattr(application, "id", None)
+                integration_user = getattr(integration, "user", None)
+
+                # Guardian must never delete its own Discord integration.
+                if self.bot.user is not None and (
+                    app_id == self.bot.user.id
+                    or getattr(integration_user, "id", None) == self.bot.user.id
+                ):
+                    continue
+
                 if integration.id in approved_ids or (app_id is not None and app_id in approved_apps):
                     continue
                 try:
@@ -643,6 +707,11 @@ class AdvancedSecurityCog(commands.Cog):
     @integration_guard_loop.before_loop
     async def before_integration_guard_loop(self) -> None:
         await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try:
+                await self._ensure_safe_baseline(guild)
+            except Exception:
+                continue
 
     @guardian.command(name="snapshot", description="Save a trusted recovery snapshot and approve current bots/webhooks/integrations.")
     @guild_only()
