@@ -17,11 +17,11 @@ LOG = logging.getLogger("esn_guardian")
 EXTENSIONS = (
     "esn_guardian.cogs.moderation",
     "esn_guardian.cogs.security",
+    "esn_guardian.cogs.advanced_security",
     "esn_guardian.cogs.hardening",
     "esn_guardian.cogs.verification",
     "esn_guardian.cogs.community",
     "esn_guardian.cogs.tickets",
-    "esn_guardian.cogs.esng_ai",
     "esn_guardian.cogs.owner",
 )
 
