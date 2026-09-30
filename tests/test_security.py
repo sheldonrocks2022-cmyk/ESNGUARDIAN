@@ -167,8 +167,10 @@ async def test_external_user_app_triggers_immediate_ban():
         channel=NS(id=4),
         delete=AsyncMock(),
     )
-    cog = SecurityCog(NS(user=NS(id=99)))
+    db = NS(execute=AsyncMock())
+    cog = SecurityCog(NS(user=NS(id=99), database=db))
     cog._security_case = AsyncMock()
+    cog._block_external_app = AsyncMock()
 
     assert await cog._enforce_external_app_zero_tolerance(message) is True
     message.delete.assert_awaited_once()
@@ -187,10 +189,47 @@ async def test_server_installed_app_does_not_trigger_external_app_ban():
         channel=NS(id=4),
         delete=AsyncMock(),
     )
-    cog = SecurityCog(NS(user=NS(id=99)))
+    cog = SecurityCog(NS(user=NS(id=99), database=NS(execute=AsyncMock())))
     cog._security_case = AsyncMock()
+    cog._block_external_app = AsyncMock()
 
     assert await cog._enforce_external_app_zero_tolerance(message) is False
     message.delete.assert_not_awaited()
     guild.ban.assert_not_awaited()
     cog._security_case.assert_not_awaited()
+
+
+async def test_external_app_is_persistently_blocked_and_bot_is_banned():
+    app_member = NS(id=123456789, bot=True)
+    guild = NS(
+        id=1,
+        get_member=lambda user_id: app_member if user_id == 123456789 else None,
+        ban=AsyncMock(),
+        integrations=AsyncMock(return_value=[]),
+    )
+    db = NS(execute=AsyncMock())
+    cog = SecurityCog(NS(database=db, user=NS(id=99)))
+    cog._security_case = AsyncMock()
+
+    await cog._block_external_app(guild, 123456789, 4)
+
+    db.execute.assert_awaited_once()
+    guild.ban.assert_awaited_once()
+    assert guild.ban.call_args.args[0] is app_member
+    assert cog._security_case.call_args.args[2] == "EXTERNAL_APP_BOT_BAN"
+
+
+async def test_blocked_external_app_bot_is_rebanned_on_join():
+    db = NS(
+        ensure_guild=AsyncMock(),
+        fetchone=AsyncMock(return_value={"application_id": 123456789}),
+    )
+    guild = NS(id=1, ban=AsyncMock())
+    member = NS(id=123456789, bot=True, guild=guild)
+    cog = SecurityCog(NS(database=db, user=NS(id=99)))
+    cog._security_case = AsyncMock()
+
+    await cog.on_member_join(member)
+
+    guild.ban.assert_awaited_once()
+    assert cog._security_case.call_args.args[2] == "EXTERNAL_APP_REBAN"
