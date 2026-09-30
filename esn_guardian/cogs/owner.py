@@ -44,6 +44,27 @@ class OwnerCog(commands.Cog):
     async def botstats(self, interaction: discord.Interaction) -> None:
         await respond(interaction, f"Servers: {len(self.bot.guilds)}\nUsers cached: {len(self.bot.users)}\nLatency: {round(self.bot.latency * 1000)}ms\nDatabase: {'online' if self.bot.database.connection else 'offline'}")
 
+    @app_commands.command(description="Create a verified backup of Guardian's SQLite database.")
+    @owner_only()
+    async def backupdb(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        try:
+            path = await self.bot.database.backup("manual")
+        except Exception:
+            await respond(interaction, "Database backup failed. Check the Raven console for the logged error.")
+            return
+        await respond(interaction, f"Database backup created: `{path.name if path else 'unavailable'}`.")
+
+    @app_commands.command(description="Show Guardian database backup status.")
+    @owner_only()
+    async def backupstatus(self, interaction: discord.Interaction) -> None:
+        info = self.bot.database.backup_info()
+        latest = info["latest"] or "none yet"
+        await respond(
+            interaction,
+            f"Database: `{info['database']}`\nBackups kept: {info['count']}\nLatest backup: `{latest}`",
+        )
+
     @app_commands.command(description="List servers currently served by the bot.")
     @owner_only()
     async def servers(self, interaction: discord.Interaction) -> None:

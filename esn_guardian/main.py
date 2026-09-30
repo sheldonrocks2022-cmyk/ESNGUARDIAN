@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 
 import discord
@@ -36,13 +37,35 @@ class GuardianBot(commands.Bot):
         self.started_at = datetime.now(UTC)
         self._guild_commands_synced = False
         self._global_commands_cleared = False
+        self._backup_task: asyncio.Task[None] | None = None
 
     async def setup_hook(self) -> None:
         await self.database.connect()
         for extension in EXTENSIONS:
             await self.load_extension(extension)
+        self._backup_task = asyncio.create_task(self._database_backup_loop(), name="guardian-database-backups")
+
+    async def _database_backup_loop(self) -> None:
+        try:
+            await self.wait_until_ready()
+            while not self.is_closed():
+                await asyncio.sleep(6 * 60 * 60)
+                try:
+                    backup_path = await self.database.backup("scheduled")
+                except Exception:
+                    LOG.exception("Automatic Guardian database backup failed")
+                else:
+                    if backup_path is not None:
+                        LOG.info("Guardian database backup created: %s", backup_path)
+        except asyncio.CancelledError:
+            raise
 
     async def close(self) -> None:
+        if self._backup_task is not None:
+            self._backup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._backup_task
+            self._backup_task = None
         await self.database.close()
         await super().close()
 
