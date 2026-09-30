@@ -260,6 +260,15 @@ class Database:
                 PRIMARY KEY(guild_id, user_id),
                 FOREIGN KEY(guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS blocked_external_apps (
+                guild_id INTEGER NOT NULL,
+                application_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                blocked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(guild_id, application_id),
+                FOREIGN KEY(guild_id) REFERENCES guild_settings(guild_id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS security_config (
                 guild_id INTEGER PRIMARY KEY,
                 automod_enabled INTEGER NOT NULL DEFAULT 1,
