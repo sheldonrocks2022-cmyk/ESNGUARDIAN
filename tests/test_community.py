@@ -109,8 +109,8 @@ async def test_command_cleanup_and_ticket_registration(tmp_path):
     try:
         await bot._async_setup_hook(); await bot.setup_hook()
         names={command.name for command in bot.tree.get_commands()}
-        assert {'ticket','ticket-close','ticket-config','smp','smpannounce','config'} <= names
-        assert not ({'players','ip','port','joinhelp','setup','poll','setup_ad','ad_on','ad_off','ad_status','report_ad'} & names)
+        assert {'ticket','ticket-close','ticket-config','smpannounce','config','guardian'} <= names
+        assert not ({'smp','status','discord','health','esnpanel','players','ip','port','joinhelp','setup','poll','setup_ad','ad_on','ad_off','ad_status','report_ad'} & names)
     finally:
         await bot.close()
 
