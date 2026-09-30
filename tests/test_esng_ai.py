@@ -51,3 +51,35 @@ async def test_owner_check_accepts_configured_bot_owner():
         client=NS(settings=NS(owner_id=777)),
     )
     assert await OwnerCog.botstats.checks[0](interaction)
+
+
+
+async def test_esng_store_budget_and_checkout_answers():
+    bot = NS()
+    cog = ESNGuardianAICog(bot)
+    guild = NS(id=1)
+
+    budget = await cog._answer(guild, "what can I get for $1")
+    assert "Season Pass Relic Bundle" in budget
+    assert "Riftwalker Bundle" in budget
+    assert "buy.stripe.com" in budget
+
+    warden = await cog._answer(guild, "warden checkout")
+    assert "Immortal Warden Bundle" in warden
+    assert "buy.stripe.com" in warden
+
+
+async def test_esng_website_navigation_answers():
+    bot = NS()
+    cog = ESNGuardianAICog(bot)
+    guild = NS(id=1)
+
+    builder = await cog._answer(guild, "website builder")
+    assert "esnoffical.com/website-builder" in builder
+
+    domains = await cog._answer(guild, "domains")
+    assert "esnoffical.com/domains" in domains
+
+    pages = await cog._answer(guild, "website links")
+    assert "Store Ai" in pages
+    assert "Diagnostics" in pages
