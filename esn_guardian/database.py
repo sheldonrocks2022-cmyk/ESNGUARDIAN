@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+import sqlite3
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,20 +16,121 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.connection: aiosqlite.Connection | None = None
+        self.backup_dir = self.path.parent / "backups"
+        self.last_backup_path: Path | None = None
 
     async def connect(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self._recover_if_needed)
         self.connection = await aiosqlite.connect(self.path)
         self.connection.row_factory = aiosqlite.Row
         await self.connection.execute("PRAGMA journal_mode = WAL")
         await self.connection.execute("PRAGMA foreign_keys = ON")
         await self.connection.execute("PRAGMA busy_timeout = 5000")
         await self._migrate()
+        await self.backup("startup")
 
     async def close(self) -> None:
         if self.connection is not None:
-            await self.connection.close()
-            self.connection = None
+            try:
+                await self.backup("shutdown")
+            finally:
+                await self.connection.close()
+                self.connection = None
+
+    @staticmethod
+    def _backup_timestamp() -> str:
+        return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+
+    @staticmethod
+    def _clean_backup_reason(reason: str) -> str:
+        clean = "".join(character if character.isalnum() or character in {"-", "_"} else "-" for character in reason.casefold())
+        return clean.strip("-")[:32] or "snapshot"
+
+    @staticmethod
+    def _sqlite_file_ok(path: Path) -> bool:
+        if not path.exists() or path.stat().st_size == 0:
+            return False
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(str(path), timeout=5)
+            row = connection.execute("PRAGMA quick_check").fetchone()
+            return bool(row and row[0] == "ok")
+        except sqlite3.DatabaseError:
+            return False
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _recover_if_needed(self) -> None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return
+        if self._sqlite_file_ok(self.path):
+            return
+
+        candidates = sorted(
+            self.backup_dir.glob(f"{self.path.stem}-*.db"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        source = next((candidate for candidate in candidates if self._sqlite_file_ok(candidate)), None)
+        if source is None:
+            raise RuntimeError(
+                f"Guardian database is corrupt and no valid backup exists in {self.backup_dir}. "
+                "The database was not reset automatically."
+            )
+
+        corrupt_path = self.path.with_name(f"{self.path.name}.corrupt-{self._backup_timestamp()}")
+        shutil.move(self.path, corrupt_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{self.path}{suffix}")
+            if sidecar.exists():
+                sidecar.unlink()
+        shutil.copy2(source, self.path)
+        if not self._sqlite_file_ok(self.path):
+            raise RuntimeError("Guardian restored a database backup, but the restored file failed SQLite integrity checking.")
+
+    async def backup(self, reason: str = "scheduled", *, keep: int = 20) -> Path | None:
+        if self.connection is None:
+            return None
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        clean_reason = self._clean_backup_reason(reason)
+        backup_path = self.backup_dir / f"{self.path.stem}-{self._backup_timestamp()}-{clean_reason}.db"
+
+        async with aiosqlite.connect(backup_path) as target:
+            await self.connection.backup(target)
+            row = await (await target.execute("PRAGMA quick_check")).fetchone()
+            if not row or row[0] != "ok":
+                raise RuntimeError(f"Backup integrity check failed for {backup_path.name}")
+
+        backups = sorted(
+            self.backup_dir.glob(f"{self.path.stem}-*.db"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in backups[max(keep, 3):]:
+            try:
+                stale.unlink()
+            except FileNotFoundError:
+                pass
+
+        self.last_backup_path = backup_path
+        return backup_path
+
+    def backup_info(self) -> dict[str, Any]:
+        backups = sorted(
+            self.backup_dir.glob(f"{self.path.stem}-*.db"),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        latest = backups[0] if backups else None
+        return {
+            "count": len(backups),
+            "latest": latest.name if latest else None,
+            "directory": str(self.backup_dir),
+            "database": str(self.path),
+        }
 
     def _require_connection(self) -> aiosqlite.Connection:
         if self.connection is None:
