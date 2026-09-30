@@ -439,6 +439,52 @@ class CommunityCog(commands.Cog):
 
 
 
+    @app_commands.command(description="Submit a suggestion for staff and the community.")
+    @guild_only()
+    async def suggest(self, interaction: discord.Interaction, suggestion: app_commands.Range[str, 1, 1800]) -> None:
+        if not isinstance(interaction.channel, discord.TextChannel):
+            await respond(interaction, "Use this command in a text channel.")
+            return
+        embed = discord.Embed(title="Suggestion", description=suggestion, color=discord.Color.gold())
+        embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
+        set_protected_footer(embed)
+        try:
+            message = await interaction.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await message.add_reaction("👍")
+            await message.add_reaction("👎")
+        except discord.HTTPException:
+            await respond(interaction, "I could not post that suggestion. Check my channel permissions.")
+            return
+        await respond(interaction, "Suggestion posted.")
+
+    @app_commands.command(description="Send an SMP announcement with a server-wide cooldown.")
+    @guild_only()
+    @staff_only()
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def smpannounce(self, interaction: discord.Interaction, channel: discord.TextChannel, message: app_commands.Range[str, 1, 2000]) -> None:
+        if channel.guild.id != interaction.guild_id or not channel.permissions_for(interaction.user).send_messages:
+            await respond(interaction, "Choose a channel in this server where you can send messages.")
+            return
+        await interaction.response.defer(ephemeral=True)
+        async with self.announcement_locks[interaction.guild_id]:
+            settings = await self.bot.database.setting(interaction.guild_id)
+            now = datetime.now(UTC)
+            last = settings["ad_last_sent_at"]
+            if last:
+                elapsed = (now - datetime.fromisoformat(last).replace(tzinfo=UTC)).total_seconds()
+                remaining = settings["ad_cooldown_seconds"] - elapsed
+                if remaining > 0:
+                    await respond(interaction, f"Wait {int(remaining) + 1} seconds before the next announcement.")
+                    return
+            try:
+                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                await respond(interaction, "I could not send the announcement. Check my channel permissions.")
+                return
+            await self.bot.database.update_setting(interaction.guild_id, "ad_last_sent_at", now.isoformat())
+            await respond(interaction, "Announcement sent.")
+
+
 
 
 async def setup(bot: commands.Bot) -> None:
