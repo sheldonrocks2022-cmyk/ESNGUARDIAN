@@ -236,7 +236,7 @@ class ESNGuardianAICog(commands.Cog):
                 "Staff configure it with /security raid."
             )
 
-        if _contains(p, "automod", "spam", "phishing", "links", "invite"):
+        if _contains(p, "automod", "spam", "phishing", "dangerous link", "link security", "invite blocking"):
             return (
                 "**AutoMod** checks flood spam, repeated messages, mass mentions, caps, blocked words, Discord invites, "
                 "strict-link allowlists, and phishing-style links. Dangerous-link checks also apply to staff messages."
