@@ -44,7 +44,7 @@ RayNode must keep the project folder and `data/` directory between restarts for 
 
 ## Anti-Nuke
 
-Anti-nuke is disabled by default. A server administrator can enable it with:
+Anti-nuke is disabled by default. The server owner can enable it with:
 
 ```text
 /antinuke setup action_limit:3 window_seconds:15
@@ -65,7 +65,7 @@ Verification buttons honor maintenance and guild blacklisting. AutoMod deletes
 violating messages on the first strike while retaining warning-first escalation.
 Lockdown preserves unrelated channel overwrites and stores the previous
 `send_messages` value in SQLite for restoration across restarts; failed restores
-remain pending. Unknown audit actors are never counted or banned.
+remain pending. Unknown audit actors are never guessed or banned; repeated clearly destructive unattributed events can still trigger containment.
 
 Run `python -m pip install -r requirements.txt pytest pytest-asyncio pip-audit`,
 then `python -m pytest -q` and `python -m pip_audit -r requirements.txt`.
