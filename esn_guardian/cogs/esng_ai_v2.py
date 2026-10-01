@@ -54,40 +54,6 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             sections.append(await overwatch.integrity_report(guild))
 
 
-        if resilience is not None:
-            if _contains(
-                p,
-                "resilience status",
-                "recovery readiness",
-                "guardian readiness",
-                "are backups ready",
-                "self health",
-                "self-health",
-                "defense readiness",
-            ):
-                return await resilience.status_report(guild)
-
-            if _contains(
-                p,
-                "security drill",
-                "resilience drill",
-                "run a drill",
-                "test defenses",
-                "test guardian",
-                "readiness drill",
-            ):
-                return await resilience.drill_report(guild)
-
-            if _contains(
-                p,
-                "recovery plan",
-                "recovery steps",
-                "how do we recover",
-                "recovery readiness plan",
-                "what if guardian fails",
-            ):
-                return await resilience.recovery_plan(guild)
-
         if sentinel is not None:
             sections.append(await sentinel.live_report(guild))
 
@@ -125,6 +91,41 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "Try: ESNG full security report • ESNG sentinel status • ESNG explain signal #3 • "
                 "ESNG analyze subject 123456789012345678 • ESNG are events correlated • ESNG explain case #12"
             )
+
+
+        if resilience is not None:
+            if _contains(
+                p,
+                "resilience status",
+                "recovery readiness",
+                "guardian readiness",
+                "are backups ready",
+                "self health",
+                "self-health",
+                "defense readiness",
+            ):
+                return await resilience.status_report(guild)
+
+            if _contains(
+                p,
+                "security drill",
+                "resilience drill",
+                "run a drill",
+                "test defenses",
+                "test guardian",
+                "readiness drill",
+            ):
+                return await resilience.drill_report(guild)
+
+            if _contains(
+                p,
+                "recovery plan",
+                "recovery steps",
+                "how do we recover",
+                "recovery readiness plan",
+                "what if guardian fails",
+            ):
+                return await resilience.recovery_plan(guild)
 
         if sentinel is not None:
             signal_match = SIGNAL_RE.search(prompt)
