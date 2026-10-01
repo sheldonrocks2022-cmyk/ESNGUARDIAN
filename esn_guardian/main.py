@@ -19,6 +19,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.security",
     "esn_guardian.cogs.advanced_security",
     "esn_guardian.cogs.security_intelligence",
+    "esn_guardian.cogs.security_overwatch",
     "esn_guardian.cogs.verification",
     "esn_guardian.cogs.community",
     "esn_guardian.cogs.esng_ai_v2",
