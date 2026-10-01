@@ -20,7 +20,7 @@ def test_anomaly_score_increases_with_correlation():
         burst_count=1,
         category_count=1,
         target_count=1,
-        actor_case_count=1,
+        subject_case_count=1,
         rare_action=False,
     )
     correlated = anomaly_score(
@@ -28,7 +28,7 @@ def test_anomaly_score_increases_with_correlation():
         burst_count=8,
         category_count=4,
         target_count=6,
-        actor_case_count=12,
+        subject_case_count=12,
         rare_action=True,
     )
     assert quiet < correlated
