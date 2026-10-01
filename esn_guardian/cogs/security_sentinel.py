@@ -41,14 +41,14 @@ def anomaly_score(
     base_weight: int,
     burst_count: int,
     category_count: int,
-    target_count: int,
+    surface_count: int,
     subject_case_count: int,
     rare_action: bool,
 ) -> int:
     score = max(0, int(base_weight)) * 5
     score += max(0, burst_count - 2) * 4
     score += max(0, category_count - 1) * 9
-    score += max(0, target_count - 2) * 3
+    score += max(0, surface_count - 2) * 3
     score += min(15, max(0, subject_case_count - 3) * 2)
     if rare_action:
         score += 8
@@ -171,20 +171,20 @@ class SecuritySentinelCog(commands.Cog):
             return {
                 "burst_count": 1,
                 "category_count": 1,
-                "target_count": 0,
+                "surface_count": 0,
                 "subject_case_count": 0,
                 "categories": set(),
             }
 
         rows = await self.bot.database.fetchall(
-            "SELECT action, target_id FROM cases "
+            "SELECT action, target_id, channel_id FROM cases "
             "WHERE guild_id = ? AND (target_id = ? OR (target_id IS NULL AND moderator_id = ?)) AND case_id <= ? "
             "AND created_at >= datetime('now', '-5 minutes') "
             "ORDER BY case_id DESC LIMIT 50",
             (guild_id, subject_id, subject_id, case_id),
         )
         categories = {classify_action(str(row["action"])) for row in rows}
-        targets = {int(row["target_id"]) for row in rows if row["target_id"] is not None}
+        surfaces = {int(row["channel_id"]) for row in rows if row["channel_id"] is not None}
         profile = await self.bot.database.fetchone(
             "SELECT total_cases FROM guardian_sentinel_subject_profile WHERE guild_id = ? AND subject_id = ?",
             (guild_id, subject_id),
@@ -192,7 +192,7 @@ class SecuritySentinelCog(commands.Cog):
         return {
             "burst_count": max(1, len(rows)),
             "category_count": max(1, len(categories)),
-            "target_count": len(targets),
+            "surface_count": len(surfaces),
             "subject_case_count": int(profile["total_cases"]) if profile is not None else 0,
             "categories": categories,
         }
@@ -221,7 +221,7 @@ class SecuritySentinelCog(commands.Cog):
             base_weight=case_weight(action),
             burst_count=int(context["burst_count"]),
             category_count=int(context["category_count"]),
-            target_count=int(context["target_count"]),
+            surface_count=int(context["surface_count"]),
             subject_case_count=int(context["subject_case_count"]),
             rare_action=rare_action,
         )
@@ -233,7 +233,7 @@ class SecuritySentinelCog(commands.Cog):
             "base_weight": case_weight(action),
             "burst_count": context["burst_count"],
             "category_count": context["category_count"],
-            "target_count": context["target_count"],
+            "surface_count": context["surface_count"],
             "subject_case_count": context["subject_case_count"],
             "rare_action": rare_action,
             "chain": chain_summary(categories),
@@ -381,7 +381,7 @@ class SecuritySentinelCog(commands.Cog):
         )
 
         if profile is None and not rows:
-            return f"Sentinel has no behavioral profile for actor {subject_id} in this server."
+            return f"Sentinel has no behavioral profile for subject {subject_id} in this server."
 
         categories = Counter(str(row["category"]) for row in rows)
         recent_peak = max((int(row["score"]) for row in rows), default=0)
@@ -438,11 +438,11 @@ class SecuritySentinelCog(commands.Cog):
             f"**Sentinel signal #{signal_id}**\n"
             f"Case: #{row['case_id']}\n"
             f"Action: {row['action']} ({row['category']})\n"
-            f"Actor: {row['subject_id'] or 'unknown'} • Target: {row['target_id'] or 'none'}\n"
+            f"Subject: {row['subject_id'] or 'unknown'} • Target: {row['target_id'] or 'none'}\n"
             f"Score: {row['score']}/100 ({row['severity']})\n"
             f"5-minute burst: {explanation.get('burst_count', 'unknown')}\n"
             f"Distinct correlated categories: {explanation.get('category_count', 'unknown')}\n"
-            f"Target spread: {explanation.get('target_count', 'unknown')}\n"
+            f"Surface spread: {explanation.get('surface_count', 'unknown')}\n"
             f"Rare action bonus: {'yes' if explanation.get('rare_action') else 'no'}\n"
             f"Correlation chain: {explanation.get('chain', 'unknown')}\n"
             "This score is explainable advisory intelligence; Guardian's deterministic protections make enforcement decisions."
