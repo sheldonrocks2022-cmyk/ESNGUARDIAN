@@ -9,20 +9,24 @@ from esn_guardian.cogs.esng_ai import ESNGuardianAICog, _contains
 
 
 CASE_RE = re.compile(r"\bcase\s*#?\s*(\d+)\b", re.IGNORECASE)
+SIGNAL_RE = re.compile(r"\bsignal\s*#?\s*(\d+)\b", re.IGNORECASE)
 MEMBER_RE = re.compile(
-    r"(?:<@!?(\d{15,22})>|\b(?:user|member|account)\s+(\d{15,22})\b)",
+    r"(?:<@!?(\d{15,22})>|\b(?:user|member|account|actor)\s+(\d{15,22})\b)",
     re.IGNORECASE,
 )
 
 
 class ESNGuardianAI2Cog(ESNGuardianAICog):
-    """ESNG Intelligence v3: live Guardian reasoning over server security state."""
+    """ESNG Intelligence v4: live multi-layer Guardian security reasoning."""
 
     def _intel(self):
         return self.bot.get_cog("SecurityIntelligenceCog")
 
     def _overwatch(self):
         return self.bot.get_cog("SecurityOverwatchCog")
+
+    def _sentinel(self):
+        return self.bot.get_cog("SecuritySentinelCog")
 
     @staticmethod
     def _member_id(prompt: str) -> int | None:
@@ -38,32 +42,126 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
     async def _full_security_report(self, guild: discord.Guild) -> str:
         intel = self._intel()
         overwatch = self._overwatch()
+        sentinel = self._sentinel()
         sections: list[str] = []
+
         if overwatch is not None:
             sections.append(await overwatch.posture_report(guild))
             sections.append(await overwatch.integrity_report(guild))
+
+        if sentinel is not None:
+            sections.append(await sentinel.live_report(guild))
+
         if intel is not None:
             sections.append(await intel.threat_report(guild))
             recommendations = await intel.recommendations(guild)
-            sections.append("**Guardian next actions**\n" + "\n".join(f"• {item}" for item in recommendations))
-        return "\n\n".join(sections)[:4000] if sections else "Guardian live intelligence is not ready yet."
+            sections.append(
+                "**Guardian next actions**\n"
+                + "\n".join(f"• {item}" for item in recommendations)
+            )
+
+        return (
+            "\n\n".join(sections)[:4000]
+            if sections
+            else "Guardian live intelligence is not ready yet."
+        )
 
     async def _answer(self, guild: discord.Guild, prompt: str) -> str:
         p = prompt.casefold().strip()
         intel = self._intel()
         overwatch = self._overwatch()
+        sentinel = self._sentinel()
 
         if not p or _contains(p, "help", "what can you do", "what do you know"):
             return (
-                "**ESNG Intelligence v3**\n"
-                "I can use Guardian's live server state instead of guessing.\n"
-                "Security: threat reports, attack detection, defense posture, integrity checks, incident sessions, "
-                "policy-drift detection, recent cases, member security profiles, backups, anti-nuke, raids, external apps, "
-                "webhooks, integrations, credential protection, and recommendations.\n"
-                "ESN: products, prices, checkout, services, Website Builder, Domains, Arcade, Tools, Nexus, diagnostics, updates, and official links.\n"
-                "Try: ESNG full security report • ESNG integrity check • ESNG is security getting worse • "
-                "ESNG explain case #12 • ESNG analyze member 123456789012345678"
+                "**ESNG Intelligence v4**\n"
+                "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
+                "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
+                "Sentinel anomaly signals, actor behavior, multi-step attack chains, member history, backups, anti-nuke, "
+                "raids, external apps, webhooks, integrations, credential protection, and ESN knowledge.\n"
+                "Try: ESNG full security report • ESNG sentinel status • ESNG explain signal #3 • "
+                "ESNG analyze actor 123456789012345678 • ESNG are events correlated • ESNG explain case #12"
             )
+
+        if sentinel is not None:
+            signal_match = SIGNAL_RE.search(prompt)
+            if signal_match and _contains(
+                p,
+                "signal",
+                "explain",
+                "why",
+                "details",
+                "analyze",
+                "analyse",
+                "score",
+            ):
+                signal_id = int(signal_match.group(1))
+                result = await sentinel.explain_signal(guild.id, signal_id)
+                if result is None:
+                    return f"I cannot find Sentinel signal #{signal_id} in this server."
+                return result
+
+            member_id = self._member_id(prompt)
+            if member_id is not None and _contains(
+                p,
+                "analyze actor",
+                "analyse actor",
+                "actor profile",
+                "actor risk",
+                "actor behavior",
+                "actor behaviour",
+                "check actor",
+                "behavior profile",
+                "behaviour profile",
+            ):
+                return await sentinel.actor_report(guild, member_id)
+
+            if _contains(
+                p,
+                "sentinel status",
+                "sentinel report",
+                "anomaly report",
+                "anomaly status",
+                "behavioral security",
+                "behavioural security",
+                "behavior analysis",
+                "behaviour analysis",
+                "correlation report",
+            ):
+                return await sentinel.live_report(guild)
+
+            if _contains(
+                p,
+                "sentinel signals",
+                "recent anomalies",
+                "latest anomalies",
+                "recent signals",
+                "latest signals",
+                "suspicious activity",
+                "high anomaly",
+            ):
+                return await sentinel.signals_report(guild.id)
+
+            if _contains(
+                p,
+                "are events correlated",
+                "attack chain",
+                "correlated attack",
+                "multi step attack",
+                "multi-step attack",
+                "is this coordinated",
+                "coordinated attack",
+                "behavior chain",
+                "behaviour chain",
+            ):
+                live = await sentinel.live_report(guild)
+                signals = await sentinel.signals_report(guild.id, limit=5)
+                return (
+                    "**Guardian correlation analysis**\n"
+                    "Sentinel correlates recent Guardian cases by actor, target spread, action category, rarity, "
+                    "and five-minute bursts. It does not auto-punish from anomaly scoring alone.\n\n"
+                    f"{live}\n\n{signals}"
+                )[:4000]
 
         if overwatch is not None:
             member_id = self._member_id(prompt)
@@ -88,6 +186,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "everything security",
                 "full guardian report",
                 "guardian overview",
+                "deep security report",
             ):
                 return await self._full_security_report(guild)
 
@@ -183,7 +282,16 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
 
         if intel is not None:
             case_match = CASE_RE.search(prompt)
-            if case_match and _contains(p, "case", "explain", "why", "what happened", "details", "analyze"):
+            if case_match and _contains(
+                p,
+                "case",
+                "explain",
+                "why",
+                "what happened",
+                "details",
+                "analyze",
+                "analyse",
+            ):
                 case_id = int(case_match.group(1))
                 result = await intel.explain_case(guild.id, case_id)
                 if result is None:
@@ -204,7 +312,10 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "under attack",
                 "attack happening",
             ):
-                return await intel.threat_report(guild)
+                base = await intel.threat_report(guild)
+                if sentinel is not None:
+                    base += "\n\n" + await sentinel.live_report(guild)
+                return base[:4000]
 
             if _contains(
                 p,
@@ -228,10 +339,12 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "guardian diagnostics",
                 "system health",
             ):
-                base = await intel.health_report(guild)
+                sections = [await intel.health_report(guild)]
                 if overwatch is not None:
-                    base += "\n\n" + await overwatch.posture_report(guild)
-                return base[:4000]
+                    sections.append(await overwatch.posture_report(guild))
+                if sentinel is not None:
+                    sections.append(await sentinel.live_report(guild))
+                return "\n\n".join(sections)[:4000]
 
             if _contains(
                 p,
@@ -246,7 +359,16 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "fix security",
             ):
                 recommendations = await intel.recommendations(guild)
-                return "**Guardian next actions**\n" + "\n".join(f"• {item}" for item in recommendations)
+                response = (
+                    "**Guardian next actions**\n"
+                    + "\n".join(f"• {item}" for item in recommendations)
+                )
+                if sentinel is not None:
+                    response += (
+                        "\n\nSentinel anomaly scores are advisory. "
+                        "Review the supporting cases/signals before taking manual action."
+                    )
+                return response[:4000]
 
             if _contains(
                 p,
@@ -275,30 +397,59 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 recent = await intel.timeline(guild.id, limit=5)
                 return (
                     "**Why Guardian acted**\n"
-                    "Guardian records its security actions as server-scoped cases. "
-                    "These are the newest recorded cases so staff can match the action to its reason:\n"
+                    "Guardian records security actions as server-scoped cases. "
+                    "Sentinel can add explainable behavioral context, but enforcement still comes from Guardian's "
+                    "deterministic rules and permission-checked controls.\n"
                     f"{recent}"
                 )
 
-        if _contains(p, "ai version", "esng version", "how smart are you", "what changed with ai", "new ai"):
+        if _contains(
+            p,
+            "ai version",
+            "esng version",
+            "how smart are you",
+            "what changed with ai",
+            "new ai",
+        ):
             return (
-                "**ESNG Intelligence v3**\n"
-                "I now combine live Guardian configuration, threat history, tamper-evident case verification, policy drift, "
-                "persistent incident sessions, threat trends, member security history, protection health, backups, and ESN knowledge. "
-                "I can explain what Guardian saw and why it reacted while refusing to invent live data or reveal credentials."
+                "**ESNG Intelligence v4**\n"
+                "I now combine live configuration, threat history, tamper-evident case verification, policy drift, "
+                "persistent incident sessions, threat trends, Sentinel behavioral correlation, actor profiles, "
+                "multi-step attack-chain context, member security history, protection health, backups, and ESN knowledge. "
+                "I explain the evidence behind scores and do not invent live data."
             )
 
         if _contains(p, "enable panic", "turn on panic", "activate panic", "start panic"):
             return (
                 "For safety, ESNG chat does not execute emergency moderation actions. "
-                "The server owner can use /guardian panic enabled:true so Discord permission checks and the owner-only command gate are enforced."
+                "The server owner can use /guardian panic enabled:true so Discord permission checks and the owner-only gate are enforced."
             )
 
-        if _contains(p, "disable security", "turn off security", "disable guardian", "remove protection"):
+        if _contains(
+            p,
+            "disable security",
+            "turn off security",
+            "disable guardian",
+            "remove protection",
+        ):
             return (
                 "ESNG chat will not disable protection from a normal message. "
-                "Security changes must go through Guardian's permission-checked slash commands so they are attributable and auditable."
+                "Security changes must go through Guardian's permission-checked slash commands so they remain attributable and auditable."
             )
+
+        if _contains(
+            p,
+            "should we panic",
+            "should i panic",
+            "activate panic now",
+            "do we need panic",
+        ):
+            report = await self._full_security_report(guild)
+            return (
+                "I can show the evidence, but I will not make the emergency-control decision for you. "
+                "Review the live report below and use /guardian panic only if the owner decides emergency containment is necessary.\n\n"
+                f"{report}"
+            )[:4000]
 
         return await super()._answer(guild, prompt)
 
