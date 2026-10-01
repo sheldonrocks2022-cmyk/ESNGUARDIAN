@@ -19,7 +19,7 @@ def test_anomaly_score_increases_with_correlation():
         base_weight=1,
         burst_count=1,
         category_count=1,
-        target_count=1,
+        surface_count=1,
         subject_case_count=1,
         rare_action=False,
     )
@@ -27,7 +27,7 @@ def test_anomaly_score_increases_with_correlation():
         base_weight=8,
         burst_count=8,
         category_count=4,
-        target_count=6,
+        surface_count=6,
         subject_case_count=12,
         rare_action=True,
     )
