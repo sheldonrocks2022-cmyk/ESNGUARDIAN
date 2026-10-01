@@ -11,7 +11,7 @@ from esn_guardian.cogs.esng_ai import ESNGuardianAICog, _contains
 CASE_RE = re.compile(r"\bcase\s*#?\s*(\d+)\b", re.IGNORECASE)
 SIGNAL_RE = re.compile(r"\bsignal\s*#?\s*(\d+)\b", re.IGNORECASE)
 MEMBER_RE = re.compile(
-    r"(?:<@!?(\d{15,22})>|\b(?:user|member|account|actor)\s+(\d{15,22})\b)",
+    r"(?:<@!?(\d{15,22})>|\b(?:user|member|account|actor|subject)\s+(\d{15,22})\b)",
     re.IGNORECASE,
 )
 
@@ -77,10 +77,10 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "**ESNG Intelligence v4**\n"
                 "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
                 "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
-                "Sentinel anomaly signals, actor behavior, multi-step attack chains, member history, backups, anti-nuke, "
+                "Sentinel anomaly signals, subject behavior, multi-step attack chains, member history, backups, anti-nuke, "
                 "raids, external apps, webhooks, integrations, credential protection, and ESN knowledge.\n"
                 "Try: ESNG full security report • ESNG sentinel status • ESNG explain signal #3 • "
-                "ESNG analyze actor 123456789012345678 • ESNG are events correlated • ESNG explain case #12"
+                "ESNG analyze subject 123456789012345678 • ESNG are events correlated • ESNG explain case #12"
             )
 
         if sentinel is not None:
@@ -104,17 +104,17 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             member_id = self._member_id(prompt)
             if member_id is not None and _contains(
                 p,
-                "analyze actor",
-                "analyse actor",
-                "actor profile",
-                "actor risk",
-                "actor behavior",
-                "actor behaviour",
-                "check actor",
+                "analyze subject",
+                "analyse subject",
+                "subject profile",
+                "subject risk",
+                "subject behavior",
+                "subject behaviour",
+                "check subject",
                 "behavior profile",
                 "behaviour profile",
             ):
-                return await sentinel.actor_report(guild, member_id)
+                return await sentinel.subject_report(guild, member_id)
 
             if _contains(
                 p,
@@ -158,7 +158,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 signals = await sentinel.signals_report(guild.id, limit=5)
                 return (
                     "**Guardian correlation analysis**\n"
-                    "Sentinel correlates recent Guardian cases by actor, target spread, action category, rarity, "
+                    "Sentinel correlates recent Guardian cases by case subject, surface spread, action category, rarity, "
                     "and five-minute bursts. It does not auto-punish from anomaly scoring alone.\n\n"
                     f"{live}\n\n{signals}"
                 )[:4000]
@@ -414,7 +414,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             return (
                 "**ESNG Intelligence v4**\n"
                 "I now combine live configuration, threat history, tamper-evident case verification, policy drift, "
-                "persistent incident sessions, threat trends, Sentinel behavioral correlation, actor profiles, "
+                "persistent incident sessions, threat trends, Sentinel behavioral correlation, subject profiles, "
                 "multi-step attack-chain context, member security history, protection health, backups, and ESN knowledge. "
                 "I explain the evidence behind scores and do not invent live data."
             )
