@@ -42,14 +42,14 @@ def anomaly_score(
     burst_count: int,
     category_count: int,
     target_count: int,
-    actor_case_count: int,
+    subject_case_count: int,
     rare_action: bool,
 ) -> int:
     score = max(0, int(base_weight)) * 5
     score += max(0, burst_count - 2) * 4
     score += max(0, category_count - 1) * 9
     score += max(0, target_count - 2) * 3
-    score += min(15, max(0, actor_case_count - 3) * 2)
+    score += min(15, max(0, subject_case_count - 3) * 2)
     if rare_action:
         score += 8
     return max(0, min(100, score))
@@ -107,7 +107,7 @@ class SecuritySentinelCog(commands.Cog):
                 signal_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL,
                 case_id INTEGER NOT NULL,
-                actor_id INTEGER,
+                subject_id INTEGER,
                 target_id INTEGER,
                 action TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -119,14 +119,14 @@ class SecuritySentinelCog(commands.Cog):
             )""",
             """CREATE INDEX IF NOT EXISTS idx_guardian_sentinel_signals_guild
                ON guardian_sentinel_signals(guild_id, signal_id DESC)""",
-            """CREATE TABLE IF NOT EXISTS guardian_sentinel_actor_profile (
+            """CREATE TABLE IF NOT EXISTS guardian_sentinel_subject_profile (
                 guild_id INTEGER NOT NULL,
-                actor_id INTEGER NOT NULL,
+                subject_id INTEGER NOT NULL,
                 total_cases INTEGER NOT NULL DEFAULT 0,
                 weighted_score INTEGER NOT NULL DEFAULT 0,
                 last_action TEXT,
                 last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY(guild_id, actor_id)
+                PRIMARY KEY(guild_id, subject_id)
             )""",
             """CREATE TABLE IF NOT EXISTS guardian_sentinel_action_baseline (
                 guild_id INTEGER NOT NULL,
@@ -164,15 +164,15 @@ class SecuritySentinelCog(commands.Cog):
     async def _recent_context(
         self,
         guild_id: int,
-        actor_id: int | None,
+        subject_id: int | None,
         case_id: int,
     ) -> dict[str, Any]:
-        if actor_id is None:
+        if subject_id is None:
             return {
                 "burst_count": 1,
                 "category_count": 1,
                 "target_count": 0,
-                "actor_case_count": 0,
+                "subject_case_count": 0,
                 "categories": set(),
             }
 
@@ -181,19 +181,19 @@ class SecuritySentinelCog(commands.Cog):
             "WHERE guild_id = ? AND moderator_id = ? AND case_id <= ? "
             "AND created_at >= datetime('now', '-5 minutes') "
             "ORDER BY case_id DESC LIMIT 50",
-            (guild_id, actor_id, case_id),
+            (guild_id, subject_id, case_id),
         )
         categories = {classify_action(str(row["action"])) for row in rows}
         targets = {int(row["target_id"]) for row in rows if row["target_id"] is not None}
         profile = await self.bot.database.fetchone(
-            "SELECT total_cases FROM guardian_sentinel_actor_profile WHERE guild_id = ? AND actor_id = ?",
-            (guild_id, actor_id),
+            "SELECT total_cases FROM guardian_sentinel_subject_profile WHERE guild_id = ? AND subject_id = ?",
+            (guild_id, subject_id),
         )
         return {
             "burst_count": max(1, len(rows)),
             "category_count": max(1, len(categories)),
             "target_count": len(targets),
-            "actor_case_count": int(profile["total_cases"]) if profile is not None else 0,
+            "subject_case_count": int(profile["total_cases"]) if profile is not None else 0,
             "categories": categories,
         }
 
@@ -203,10 +203,12 @@ class SecuritySentinelCog(commands.Cog):
             return None
 
         case_id = int(row["case_id"])
-        actor_id = int(row["moderator_id"]) if row["moderator_id"] is not None else None
         target_id = int(row["target_id"]) if row["target_id"] is not None else None
+        moderator_id = int(row["moderator_id"]) if row["moderator_id"] is not None else None
+        bot_id = self.bot.user.id if self.bot.user else None
+        subject_id = target_id if target_id is not None else (moderator_id if moderator_id != bot_id else None)
         category = classify_action(action)
-        context = await self._recent_context(guild.id, actor_id, case_id)
+        context = await self._recent_context(guild.id, subject_id, case_id)
 
         baseline = await self.bot.database.fetchone(
             "SELECT seen_count FROM guardian_sentinel_action_baseline WHERE guild_id = ? AND action = ?",
@@ -220,7 +222,7 @@ class SecuritySentinelCog(commands.Cog):
             burst_count=int(context["burst_count"]),
             category_count=int(context["category_count"]),
             target_count=int(context["target_count"]),
-            actor_case_count=int(context["actor_case_count"]),
+            subject_case_count=int(context["subject_case_count"]),
             rare_action=rare_action,
         )
         severity = severity_from_score(score)
@@ -232,20 +234,20 @@ class SecuritySentinelCog(commands.Cog):
             "burst_count": context["burst_count"],
             "category_count": context["category_count"],
             "target_count": context["target_count"],
-            "actor_case_count": context["actor_case_count"],
+            "subject_case_count": context["subject_case_count"],
             "rare_action": rare_action,
             "chain": chain_summary(categories),
         }
 
         await self.bot.database.execute(
             "INSERT INTO guardian_sentinel_signals "
-            "(guild_id, case_id, actor_id, target_id, action, category, score, severity, explanation_json) "
+            "(guild_id, case_id, subject_id, target_id, action, category, score, severity, explanation_json) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(guild_id, case_id) DO NOTHING",
             (
                 guild.id,
                 case_id,
-                actor_id,
+                subject_id,
                 target_id,
                 action,
                 category,
@@ -261,14 +263,14 @@ class SecuritySentinelCog(commands.Cog):
             (guild.id, action),
         )
 
-        if actor_id is not None:
+        if subject_id is not None:
             await self.bot.database.execute(
-                "INSERT INTO guardian_sentinel_actor_profile "
-                "(guild_id, actor_id, total_cases, weighted_score, last_action) VALUES (?, ?, 1, ?, ?) "
-                "ON CONFLICT(guild_id, actor_id) DO UPDATE SET "
+                "INSERT INTO guardian_sentinel_subject_profile "
+                "(guild_id, subject_id, total_cases, weighted_score, last_action) VALUES (?, ?, 1, ?, ?) "
+                "ON CONFLICT(guild_id, subject_id) DO UPDATE SET "
                 "total_cases=total_cases+1, weighted_score=weighted_score+excluded.weighted_score, "
                 "last_action=excluded.last_action, last_seen_at=CURRENT_TIMESTAMP",
-                (guild.id, actor_id, score, action),
+                (guild.id, subject_id, score, action),
             )
 
         if score >= 60:
@@ -279,7 +281,7 @@ class SecuritySentinelCog(commands.Cog):
                 f"Guardian Sentinel — {severity}",
                 description=(
                     f"Case #{case_id}: {action}\n"
-                    f"Actor: {actor_id or 'unknown'} • Target: {target_id or 'none'}\n"
+                    f"Actor: {subject_id or 'unknown'} • Target: {target_id or 'none'}\n"
                     f"Sentinel score: {score}/100\n"
                     f"Correlation chain: {explanation['chain']}\n"
                     "Sentinel is advisory; deterministic Guardian protections remain responsible for enforcement."
@@ -289,7 +291,7 @@ class SecuritySentinelCog(commands.Cog):
 
         return {
             "case_id": case_id,
-            "actor_id": actor_id,
+            "subject_id": subject_id,
             "target_id": target_id,
             "action": action,
             "category": category,
@@ -335,7 +337,7 @@ class SecuritySentinelCog(commands.Cog):
 
     async def live_report(self, guild: discord.Guild) -> str:
         rows = await self.bot.database.fetchall(
-            "SELECT signal_id, case_id, actor_id, target_id, action, category, score, severity, created_at "
+            "SELECT signal_id, case_id, subject_id, target_id, action, category, score, severity, created_at "
             "FROM guardian_sentinel_signals WHERE guild_id = ? "
             "AND created_at >= datetime('now', '-30 minutes') "
             "ORDER BY signal_id DESC LIMIT 100",
@@ -351,7 +353,7 @@ class SecuritySentinelCog(commands.Cog):
 
         highest = max(int(row["score"]) for row in rows)
         severity = severity_from_score(highest)
-        actors = Counter(int(row["actor_id"]) for row in rows if row["actor_id"] is not None)
+        actors = Counter(int(row["subject_id"]) for row in rows if row["subject_id"] is not None)
         categories = Counter(str(row["category"]) for row in rows)
         high = [row for row in rows if int(row["score"]) >= 60]
 
@@ -360,32 +362,32 @@ class SecuritySentinelCog(commands.Cog):
             f"30-minute signals: {len(rows)}\n"
             f"Highest anomaly score: {highest}/100 ({severity})\n"
             f"High/critical signals: {len(high)}\n"
-            f"Distinct actors: {len(actors)}\n"
+            f"Distinct subjects: {len(actors)}\n"
             f"Top categories: {', '.join(f'{name}={count}' for name, count in categories.most_common(5)) or 'none'}\n"
-            f"Most active actors: {', '.join(f'{actor} ({count})' for actor, count in actors.most_common(5)) or 'none'}"
+            f"Most active subjects: {', '.join(f'{actor} ({count})' for actor, count in actors.most_common(5)) or 'none'}"
         )
 
-    async def actor_report(self, guild: discord.Guild, actor_id: int) -> str:
+    async def actor_report(self, guild: discord.Guild, subject_id: int) -> str:
         profile = await self.bot.database.fetchone(
             "SELECT total_cases, weighted_score, last_action, last_seen_at "
-            "FROM guardian_sentinel_actor_profile WHERE guild_id = ? AND actor_id = ?",
-            (guild.id, actor_id),
+            "FROM guardian_sentinel_subject_profile WHERE guild_id = ? AND subject_id = ?",
+            (guild.id, subject_id),
         )
         rows = await self.bot.database.fetchall(
             "SELECT case_id, action, category, score, severity, created_at "
             "FROM guardian_sentinel_signals "
-            "WHERE guild_id = ? AND actor_id = ? ORDER BY signal_id DESC LIMIT 12",
-            (guild.id, actor_id),
+            "WHERE guild_id = ? AND subject_id = ? ORDER BY signal_id DESC LIMIT 12",
+            (guild.id, subject_id),
         )
 
         if profile is None and not rows:
-            return f"Sentinel has no behavioral profile for actor {actor_id} in this server."
+            return f"Sentinel has no behavioral profile for actor {subject_id} in this server."
 
         categories = Counter(str(row["category"]) for row in rows)
         recent_peak = max((int(row["score"]) for row in rows), default=0)
 
         return (
-            f"**Sentinel actor profile — {actor_id}**\n"
+            f"**Sentinel subject profile — {subject_id}**\n"
             f"Observed cases: {int(profile['total_cases']) if profile else len(rows)}\n"
             f"Accumulated anomaly weight: {int(profile['weighted_score']) if profile else sum(int(r['score']) for r in rows)}\n"
             f"Recent peak: {recent_peak}/100 ({severity_from_score(recent_peak)})\n"
@@ -396,7 +398,7 @@ class SecuritySentinelCog(commands.Cog):
 
     async def signals_report(self, guild_id: int, limit: int = 8) -> str:
         rows = await self.bot.database.fetchall(
-            "SELECT signal_id, case_id, actor_id, action, score, severity, explanation_json, created_at "
+            "SELECT signal_id, case_id, subject_id, action, score, severity, explanation_json, created_at "
             "FROM guardian_sentinel_signals WHERE guild_id = ? "
             "ORDER BY signal_id DESC LIMIT ?",
             (guild_id, max(1, min(limit, 15))),
@@ -413,7 +415,7 @@ class SecuritySentinelCog(commands.Cog):
             lines.append(
                 f"#{row['signal_id']} • case #{row['case_id']} • "
                 f"{row['severity']} {row['score']}/100 • "
-                f"actor {row['actor_id'] or 'unknown'} • {row['action']} • "
+                f"actor {row['subject_id'] or 'unknown'} • {row['action']} • "
                 f"chain {explanation.get('chain', 'unknown')}"
             )
         return "\n".join(lines)
@@ -436,7 +438,7 @@ class SecuritySentinelCog(commands.Cog):
             f"**Sentinel signal #{signal_id}**\n"
             f"Case: #{row['case_id']}\n"
             f"Action: {row['action']} ({row['category']})\n"
-            f"Actor: {row['actor_id'] or 'unknown'} • Target: {row['target_id'] or 'none'}\n"
+            f"Actor: {row['subject_id'] or 'unknown'} • Target: {row['target_id'] or 'none'}\n"
             f"Score: {row['score']}/100 ({row['severity']})\n"
             f"5-minute burst: {explanation.get('burst_count', 'unknown')}\n"
             f"Distinct correlated categories: {explanation.get('category_count', 'unknown')}\n"
@@ -474,13 +476,13 @@ class SecuritySentinelCog(commands.Cog):
     async def sentinel_signals(self, interaction: discord.Interaction) -> None:
         await respond(interaction, await self.signals_report(interaction.guild_id))
 
-    @sentinel.command(name="actor", description="Show Sentinel behavioral profile for a Discord user or bot ID.")
+    @sentinel.command(name="subject", description="Show Sentinel behavioral profile for a case subject ID.")
     @guild_only()
     @staff_only()
-    async def sentinel_actor(self, interaction: discord.Interaction, actor_id: str) -> None:
+    async def sentinel_subject(self, interaction: discord.Interaction, subject_id: str) -> None:
         assert interaction.guild is not None
         try:
-            value = int(actor_id)
+            value = int(subject_id)
         except ValueError:
             await respond(interaction, "Provide a numeric Discord user or bot ID.")
             return
