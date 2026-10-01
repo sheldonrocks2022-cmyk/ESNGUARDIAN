@@ -28,6 +28,9 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
     def _sentinel(self):
         return self.bot.get_cog("SecuritySentinelCog")
 
+    def _resilience(self):
+        return self.bot.get_cog("SecurityResilienceCog")
+
     @staticmethod
     def _member_id(prompt: str) -> int | None:
         match = MEMBER_RE.search(prompt)
@@ -43,14 +46,53 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         intel = self._intel()
         overwatch = self._overwatch()
         sentinel = self._sentinel()
+        resilience = self._resilience()
         sections: list[str] = []
 
         if overwatch is not None:
             sections.append(await overwatch.posture_report(guild))
             sections.append(await overwatch.integrity_report(guild))
 
+
+        if resilience is not None:
+            if _contains(
+                p,
+                "resilience status",
+                "recovery readiness",
+                "guardian readiness",
+                "are backups ready",
+                "self health",
+                "self-health",
+                "defense readiness",
+            ):
+                return await resilience.status_report(guild)
+
+            if _contains(
+                p,
+                "security drill",
+                "resilience drill",
+                "run a drill",
+                "test defenses",
+                "test guardian",
+                "readiness drill",
+            ):
+                return await resilience.drill_report(guild)
+
+            if _contains(
+                p,
+                "recovery plan",
+                "recovery steps",
+                "how do we recover",
+                "recovery readiness plan",
+                "what if guardian fails",
+            ):
+                return await resilience.recovery_plan(guild)
+
         if sentinel is not None:
             sections.append(await sentinel.live_report(guild))
+
+        if resilience is not None:
+            sections.append(await resilience.status_report(guild))
 
         if intel is not None:
             sections.append(await intel.threat_report(guild))
@@ -71,13 +113,14 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         intel = self._intel()
         overwatch = self._overwatch()
         sentinel = self._sentinel()
+        resilience = self._resilience()
 
         if not p or _contains(p, "help", "what can you do", "what do you know"):
             return (
                 "**ESNG Intelligence v4**\n"
                 "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
                 "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
-                "Sentinel anomaly signals, subject behavior, multi-step attack chains, member history, backups, anti-nuke, "
+                "Sentinel anomaly signals, subject behavior, multi-step attack chains, resilience readiness, recovery drills, member history, backups, anti-nuke, "
                 "raids, external apps, webhooks, integrations, credential protection, and ESN knowledge.\n"
                 "Try: ESNG full security report • ESNG sentinel status • ESNG explain signal #3 • "
                 "ESNG analyze subject 123456789012345678 • ESNG are events correlated • ESNG explain case #12"
@@ -414,7 +457,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             return (
                 "**ESNG Intelligence v4**\n"
                 "I now combine live configuration, threat history, tamper-evident case verification, policy drift, "
-                "persistent incident sessions, threat trends, Sentinel behavioral correlation, subject profiles, "
+                "persistent incident sessions, threat trends, Sentinel behavioral correlation, subject profiles, Guardian Resilience self-health, "
                 "multi-step attack-chain context, member security history, protection health, backups, and ESN knowledge. "
                 "I explain the evidence behind scores and do not invent live data."
             )
