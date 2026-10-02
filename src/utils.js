@@ -67,12 +67,42 @@ function safeRole(guild, actor, role) {
 async function logEvent(db, guild, field, title, description) {
   const settings = db.setting(guild.id)
   const channelId = settings?.[field]
-  if (!channelId) return
-  const channel = guild.channels.cache.get(String(channelId))
-  if (!channel || !channel.isTextBased?.()) return
+  if (!channelId) return false
+
+  let channel = guild.channels.cache.get(String(channelId))
+  if (!channel) {
+    channel = await guild.channels.fetch(String(channelId)).catch(error => {
+      console.error('[Guardian] Could not fetch configured log channel', {
+        guild: guild.id,
+        field,
+        channelId: String(channelId),
+        error: error?.message || String(error)
+      })
+      return null
+    })
+  }
+
+  if (!channel || !channel.isTextBased?.()) {
+    console.error('[Guardian] Configured log channel is unavailable or not text-based', {
+      guild: guild.id,
+      field,
+      channelId: String(channelId)
+    })
+    return false
+  }
+
   try {
     await channel.send({ embeds: [embed(description, title)], allowedMentions: { parse: [] } })
-  } catch {}
+    return true
+  } catch (error) {
+    console.error('[Guardian] Failed to send configured log message', {
+      guild: guild.id,
+      field,
+      channelId: String(channelId),
+      error: error?.message || String(error)
+    })
+    return false
+  }
 }
 
 async function auditActor(guild, type, targetId) {
