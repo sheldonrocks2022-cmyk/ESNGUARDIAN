@@ -25,7 +25,9 @@ HIGH_RISK_PERMISSIONS = (
 )
 
 RAID_CONTAINMENT_MINUTES = 5
-MESSAGE_POLICY_CACHE_SECONDS = 10
+MESSAGE_POLICY_CACHE_SECONDS = 30
+RAID_CONFIG_CACHE_SECONDS = 60
+RAID_KICK_CONCURRENCY = 5
 
 
 def raid_mode_active(until: datetime | None, now: datetime) -> bool:
@@ -53,6 +55,9 @@ class SecurityCog(commands.Cog):
         self._audit_access_warned_at: dict[int, datetime] = {}
         self._initialized_guilds: set[int] = set()
         self._message_policy_cache: dict[int, tuple[datetime, dict[str, object], set[str], tuple[str, ...]]] = {}
+        self._raid_config_cache: dict[int, tuple[datetime, dict[str, object]]] = {}
+        self._raid_case_buffer: dict[int, list[tuple[int, int | None, int | None, str, str, int | None, dict[str, object] | None]]] = defaultdict(list)
+        self._raid_flush_tasks: dict[int, asyncio.Task[None]] = {}
 
     async def _ensure_guild_once(self, guild_id: int) -> None:
         if guild_id in self._initialized_guilds:
@@ -89,14 +94,37 @@ class SecurityCog(commands.Cog):
         self._message_policy_cache[guild_id] = (now, config, allowed_domains, bad_words)
         return config, allowed_domains, bad_words
 
-    async def _record_raid_block(self, member: discord.Member, reason: str) -> int:
-        return await self.bot.database.create_case(
-            member.guild.id,
+    async def _raid_config(self, guild_id: int) -> dict[str, object]:
+        now = datetime.now(UTC)
+        cached = self._raid_config_cache.get(guild_id)
+        if cached is not None and now - cached[0] < timedelta(seconds=RAID_CONFIG_CACHE_SECONDS):
+            return cached[1]
+        row = await self.bot.database.fetchone("SELECT * FROM raid_config WHERE guild_id = ?", (guild_id,))
+        assert row is not None
+        config = dict(row)
+        self._raid_config_cache[guild_id] = (now, config)
+        return config
+
+    def _queue_raid_case(self, member: discord.Member, reason: str) -> None:
+        guild_id = member.guild.id
+        self._raid_case_buffer[guild_id].append((
+            guild_id,
             member.id,
             self.bot.user.id if self.bot.user else None,
             "RAID_JOIN_BLOCKED",
             reason,
-        )
+            None,
+            None,
+        ))
+        task = self._raid_flush_tasks.get(guild_id)
+        if task is None or task.done():
+            self._raid_flush_tasks[guild_id] = asyncio.create_task(self._flush_raid_cases(guild_id))
+
+    async def _flush_raid_cases(self, guild_id: int) -> None:
+        await asyncio.sleep(0.75)
+        rows = self._raid_case_buffer.pop(guild_id, [])
+        if rows:
+            await self.bot.database.create_cases_bulk(rows)
 
     async def _kick_for_raid(self, member: discord.Member, reason: str) -> bool:
         if member.bot or member.id == member.guild.owner_id:
@@ -104,7 +132,7 @@ class SecurityCog(commands.Cog):
         self._raid_kicked_until[(member.guild.id, member.id)] = datetime.now(UTC) + timedelta(minutes=2)
         try:
             await member.kick(reason=f"ESN Guardian raid containment: {reason}"[:512])
-            await self._record_raid_block(member, reason)
+            self._queue_raid_case(member, reason)
             return True
         except (discord.Forbidden, discord.HTTPException):
             self._raid_kicked_until.pop((member.guild.id, member.id), None)
@@ -122,7 +150,7 @@ class SecurityCog(commands.Cog):
         member_ids: list[int],
         reason: str,
     ) -> int:
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(RAID_KICK_CONCURRENCY)
 
         async def remove(member_id: int) -> bool:
             member = guild.get_member(member_id)
@@ -612,11 +640,7 @@ class SecurityCog(commands.Cog):
                 )
                 return
 
-        config = await self.bot.database.fetchone(
-            "SELECT * FROM raid_config WHERE guild_id = ?",
-            (member.guild.id,),
-        )
-        assert config is not None
+        config = await self._raid_config(member.guild.id)
         if not config["enabled"] or member.bot:
             return
 
