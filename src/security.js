@@ -122,8 +122,9 @@ async function securityCase(db,guild,target,action,reason,channelId=null,details
   const targetId=target?.id||target||null
   const caseId=db.createCase(guild.id,targetId,guild.client.user?.id,action,reason,channelId,details)
   await logEvent(db,guild,'security_log_channel_id','Security: '+action+' | Case #'+caseId,'Target: '+(targetId?'<@'+targetId+'>':'N/A')+'\nReason: '+reason)
-  if(guild.owner){
-    await guild.owner.send({content:'Security alert in **'+guild.name+'** ('+guild.id+')\nCase #'+caseId+': '+action+'\nTarget: '+(targetId||'N/A')+'\nReason: '+reason,allowedMentions:{parse:[]}}).catch(()=>{})
+  const owner=await guild.fetchOwner().catch(()=>null)
+  if(owner){
+    await owner.send({content:'Security alert in **'+guild.name+'** ('+guild.id+')\nCase #'+caseId+': '+action+'\nTarget: '+(targetId||'N/A')+'\nReason: '+reason,allowedMentions:{parse:[]}}).catch(()=>{})
   }
   return caseId
 }
