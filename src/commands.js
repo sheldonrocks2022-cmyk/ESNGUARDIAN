@@ -18,7 +18,8 @@ const {
   normalizeDomain,
   channelMention,
   roleMention,
-  userMention
+  userMention,
+  dangerousRole
 } = require('./utils')
 const {
   saveSnapshot,
@@ -28,7 +29,9 @@ const {
   unlockdownGuild,
   securityAudit,
   trustedUser,
-  isApprovedBot
+  isApprovedBot,
+  securityCase,
+  quarantineMember
 } = require('./security')
 const { HELP_GUIDES } = require('./community')
 
@@ -629,24 +632,35 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'warnings') {
       const member = interaction.options.getMember('member')
       const rows = db.all('SELECT c.case_id,c.reason,c.created_at FROM warnings w JOIN cases c ON c.case_id=w.case_id WHERE w.guild_id=? AND w.user_id=? AND w.active=1 ORDER BY c.case_id DESC', BigInt(interaction.guildId), BigInt(member.id))
-      return respond(interaction, rows.length ? rows.map(r => `#${r.case_id} — ${r.reason} (${r.created_at})`).join('\n') : 'No active warnings.')
+      return respond(interaction, rows.length ? rows.map(r => `#${r.case_id} - ${r.reason} (${r.created_at})`).join('\n') : 'No active warnings.')
     }
 
     if (name === 'timeout' || name === 'untimeout' || name === 'kick' || name === 'ban') {
-      if ((name==='timeout'||name==='untimeout') && !await requirePermission(interaction,PermissionFlagsBits.ModerateMembers,'Moderate Members')) return
-      if (name==='kick' && !await requirePermission(interaction,PermissionFlagsBits.KickMembers,'Kick Members')) return
-      if (name==='ban' && !await requirePermission(interaction,PermissionFlagsBits.BanMembers,'Ban Members')) return
+      if ((name==='timeout'||name==='untimeout') && !await requirePermission(interaction,PermissionFlagsBits.ModerateMembers)) return
+      if (name==='kick' && !await requirePermission(interaction,PermissionFlagsBits.KickMembers)) return
+      if (name==='ban' && !await requirePermission(interaction,PermissionFlagsBits.BanMembers)) return
       const member = interaction.options.getMember('member')
       if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
       const reason = interaction.options.getString('reason') || (name === 'untimeout' ? 'Timeout removed' : 'No reason provided')
       const action = name.toUpperCase()
       const caseId = await moderationCase(db, interaction, member, action, reason)
-      if (name === 'timeout') await member.timeout(interaction.options.getInteger('minutes', true) * 60000, `Case #${caseId}: ${reason}`)
-      if (name === 'untimeout') await member.timeout(null, `Case #${caseId}: ${reason}`)
-      if (name === 'kick') await member.kick(`Case #${caseId}: ${reason}`)
-      if (name === 'ban') await member.ban({ reason: `Case #${caseId}: ${reason}`, deleteMessageSeconds: (interaction.options.getInteger('delete_message_days') || 0) * 86400 })
+      try {
+        if (name === 'timeout') await member.timeout(interaction.options.getInteger('minutes', true) * 60000, `Case #${caseId}: ${reason}`)
+        if (name === 'untimeout') await member.timeout(null, `Case #${caseId}: ${reason}`)
+        if (name === 'kick') await member.kick(`Case #${caseId}: ${reason}`)
+        if (name === 'ban') await member.ban({ reason: `Case #${caseId}: ${reason}`, deleteMessageSeconds: (interaction.options.getInteger('delete_message_days') || 0) * 86400 })
+      } catch (error) {
+        if (error?.code === 50013) return respond(interaction, 'I lack permission to perform that action.')
+        return respond(interaction, 'Discord rejected the action. Please retry shortly.')
+      }
       await logCase(db, interaction, caseId, member.user, action, reason)
-      return respond(interaction, `${action} completed for <@${member.id}>. Case #${caseId}.`)
+      const success = {
+        timeout: 'Timed out <@'+member.id+'>. Case #'+caseId+'.',
+        untimeout: 'Removed timeout for <@'+member.id+'>. Case #'+caseId+'.',
+        kick: 'Kicked <@'+member.id+'>. Case #'+caseId+'.',
+        ban: 'Banned <@'+member.id+'>. Case #'+caseId+'.'
+      }[name]
+      return respond(interaction, success)
     }
 
     if (name === 'unban') {
@@ -731,23 +745,32 @@ async function handleCommand(interaction, db, settings) {
         if (!memberManageable(interaction.guild, interaction.member, member)) continue
         await (remove ? member.roles.remove(role, `Mass role by ${interaction.user.tag}`) : member.roles.add(role, `Mass role by ${interaction.user.tag}`)).then(() => changed++).catch(() => {})
       }
-      const caseId = await moderationCase(db, interaction, null, 'MASSROLE', `${remove ? 'Removed' : 'Added'} ${role.name} for ${changed} members`)
+      const summary = `${remove ? 'Removed' : 'Added'} ${role.name} for ${changed} members`
+      const caseId = await moderationCase(db, interaction, null, 'MASSROLE', summary)
+      await logCase(db, interaction, caseId, null, 'MASSROLE', summary)
       return interaction.editReply(`Updated ${changed} members. Case #${caseId}.`)
     }
 
     if (name === 'lock' || name === 'unlock') {
+      if (interaction.channel?.type !== ChannelType.GuildText) return respond(interaction, 'This command requires a text channel.')
       const reason = interaction.options.getString('reason') || (name === 'lock' ? 'Channel locked' : 'Channel unlocked')
-      await interaction.channel.permissionOverwrites.edit(interaction.guild.roles.everyone, { SendMessages: name === 'lock' ? false : null }, { reason })
-      return respond(interaction, `Channel ${name === 'lock' ? 'locked' : 'unlocked'}.`)
+      const ok = await interaction.channel.permissionOverwrites
+        .edit(interaction.guild.roles.everyone, { SendMessages: name === 'lock' ? false : null }, { reason })
+        .then(() => true).catch(() => false)
+      if (!ok) return respond(interaction, 'I could not '+name+' this channel.')
+      const caseId = await securityCase(db, interaction.guild, null, name === 'lock' ? 'CHANNEL_LOCK' : 'CHANNEL_UNLOCK', reason, interaction.channelId)
+      return respond(interaction, `Channel ${name === 'lock' ? 'locked' : 'unlocked'}. Case #${caseId}.`)
     }
 
     if (name === 'lockdown') {
-      const count = await lockdownGuild(db, interaction.guild, interaction.options.getString('reason') || 'Manual lockdown')
-      return respond(interaction, `Lockdown enabled across ${count} channel(s).`)
+      if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true })
+      const changed = await lockdownGuild(db, interaction.guild, interaction.options.getString('reason') || 'Manual lockdown')
+      return respond(interaction, changed ? 'Lockdown enabled.' : 'Lockdown is already active.')
     }
     if (name === 'unlockdown') {
-      const count = await unlockdownGuild(db, interaction.guild, interaction.options.getString('reason') || 'Manual lockdown release')
-      return respond(interaction, `Lockdown released across ${count} channel(s).`)
+      if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true })
+      const changed = await unlockdownGuild(db, interaction.guild, interaction.options.getString('reason') || 'Manual lockdown release')
+      return respond(interaction, `Restored ${changed} channels.`)
     }
 
     if (name === 'panel') {
