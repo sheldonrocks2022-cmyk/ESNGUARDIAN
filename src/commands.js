@@ -766,7 +766,7 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'guardian') {
       const sub = interaction.options.getSubcommand()
       if (sub === 'snapshot') {
-        const snap = saveSnapshot(db, interaction.guild)
+        const snap = await saveSnapshot(db, interaction.guild)
         return respond(interaction, `Recovery snapshot saved with ${snap.roles.length} roles and ${snap.channels.length} channels. Current bots were approved.`)
       }
       if (sub === 'approve-bot' || sub === 'unapprove-bot') {
