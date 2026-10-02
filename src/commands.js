@@ -63,6 +63,25 @@ const LOG_FIELDS = {
   command: 'command_log_channel_id'
 }
 
+const ticketLocks = new Map()
+const announcementLocks = new Map()
+
+async function withKeyLock(map, key, operation) {
+  const lockKey = String(key)
+  const previous = map.get(lockKey) || Promise.resolve()
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const current = previous.catch(() => {}).then(() => gate)
+  map.set(lockKey, current)
+  await previous.catch(() => {})
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (map.get(lockKey) === current) map.delete(lockKey)
+  }
+}
+
 function addReason(builder, required = false) {
   return builder.addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(required).setMaxLength(1000))
 }
@@ -553,53 +572,66 @@ async function handleCommand(interaction, db, settings) {
       await interaction.deferReply({ ephemeral: true })
       const subject = interaction.options.getString('subject', true)
       const guild = interaction.guild
-      db.ensureGuild(guild.id)
-      const cfg = db.get('SELECT support_role_id FROM ticket_config WHERE guild_id=?', BigInt(guild.id))
-      const support = cfg?.support_role_id ? guild.roles.cache.get(String(cfg.support_role_id)) : null
-      if (!support) return interaction.editReply('Staff must configure a support role with /ticket-config first.')
-      const previous = db.get('SELECT * FROM tickets WHERE guild_id=? AND user_id=?', BigInt(guild.id), BigInt(interaction.user.id))
-      if (previous?.channel_id) {
-        const existing = await guild.channels.fetch(String(previous.channel_id)).catch(error => error?.code === 10003 ? null : undefined)
-        if (existing) return interaction.editReply(`You already have a ticket: <#${previous.channel_id}>.`)
-        if (existing === undefined) return interaction.editReply('I cannot check your existing ticket right now. Try again shortly.')
-      }
-      if (previous && Date.now() / 1000 - Number(previous.opened_at) < 60) return interaction.editReply('Wait one minute between opening tickets.')
-      const count = db.get('SELECT COUNT(*) AS count FROM tickets WHERE guild_id=? AND channel_id IS NOT NULL', BigInt(guild.id))
-      if (Number(count?.count || 0) >= 25) return interaction.editReply('The server has 25 open tickets. Staff need to close one first.')
-      const channel = await guild.channels.create({
-        name: `ticket-${interaction.user.id}`,
-        type: ChannelType.GuildText,
-        topic: `Ticket: ${subject}`,
-        permissionOverwrites: [
-          { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-          { id: support.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-          { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] }
-        ],
-        reason: 'Guardian support ticket'
-      }).catch(() => null)
-      if (!channel) return interaction.editReply('I could not create the ticket. Check my Manage Channels permission.')
-      db.run('INSERT OR REPLACE INTO tickets (guild_id,user_id,channel_id,opened_at) VALUES (?,?,?,?)', BigInt(guild.id), BigInt(interaction.user.id), BigInt(channel.id), Date.now() / 1000)
-      return interaction.editReply(`Ticket created: <#${channel.id}>. Use /ticket-close inside it when finished.`)
+      return withKeyLock(ticketLocks, guild.id, async () => {
+        db.ensureGuild(guild.id)
+        const cfg = db.get('SELECT support_role_id FROM ticket_config WHERE guild_id=?', BigInt(guild.id))
+        const support = cfg?.support_role_id ? guild.roles.cache.get(String(cfg.support_role_id)) : null
+        if (!support || support.id === guild.id || support.managed) return interaction.editReply('Staff must configure a support role with `/ticket-config` first.')
+        const previous = db.get('SELECT * FROM tickets WHERE guild_id=? AND user_id=?', BigInt(guild.id), BigInt(interaction.user.id))
+        if (previous?.channel_id) {
+          const existing = await guild.channels.fetch(String(previous.channel_id)).catch(error => error?.code === 10003 ? null : undefined)
+          if (existing) return interaction.editReply(`You already have a ticket: <#${previous.channel_id}>.`)
+          if (existing === undefined) return interaction.editReply('I cannot check your existing ticket right now. Try again shortly.')
+        }
+        if (previous && Date.now() / 1000 - Number(previous.opened_at) < 60) return interaction.editReply('Wait one minute between opening tickets.')
+        const count = db.get('SELECT COUNT(*) AS count FROM tickets WHERE guild_id=? AND channel_id IS NOT NULL', BigInt(guild.id))
+        if (Number(count?.count || 0) >= 25) return interaction.editReply('The server has 25 open tickets. Staff need to close one first.')
+        const channel = await guild.channels.create({
+          name: `ticket-${interaction.user.id}`,
+          type: ChannelType.GuildText,
+          topic: `Ticket: ${subject}`,
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: support.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
+            { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ReadMessageHistory] }
+          ],
+          reason: 'Guardian support ticket'
+        }).catch(() => null)
+        if (!channel) return interaction.editReply('I could not create the ticket. Check my Manage Channels permission.')
+        db.run('INSERT OR REPLACE INTO tickets (guild_id,user_id,channel_id,opened_at) VALUES (?,?,?,?)', BigInt(guild.id), BigInt(interaction.user.id), BigInt(channel.id), Date.now() / 1000)
+        return interaction.editReply(`Ticket created: <#${channel.id}>. Use `/ticket-close` inside it when finished.`)
+      })
     }
 
     if (name === 'ticket-close') {
       await interaction.deferReply({ ephemeral: true })
-      const row = db.get('SELECT * FROM tickets WHERE guild_id=? AND channel_id=?', BigInt(interaction.guildId), BigInt(interaction.channelId))
-      if (!row) return interaction.editReply('Run this inside an active Guardian ticket.')
-      const cfg = db.get('SELECT support_role_id FROM ticket_config WHERE guild_id=?', BigInt(interaction.guildId))
-      const member = interaction.member
-      const authorized = String(row.user_id) === interaction.user.id || isStaff(interaction) || (cfg?.support_role_id && member.roles.cache.has(String(cfg.support_role_id)))
-      if (!authorized) return interaction.editReply('Only the ticket opener or support staff can close this ticket.')
-      const openerId = String(row.user_id)
-      const closed = await interaction.channel.permissionOverwrites
-        .edit(openerId, { SendMessages: false, SendMessagesInThreads: false, CreatePublicThreads: false, CreatePrivateThreads: false }, { reason: `Ticket closed by ${interaction.user.id}` })
-        .then(() => interaction.channel.setName(`closed-${openerId}`, `Ticket closed by ${interaction.user.id}`))
-        .then(() => true)
-        .catch(() => false)
-      if (!closed) return interaction.editReply('I could not close this ticket. Its active record has been kept so you can retry.')
-      db.run('UPDATE tickets SET channel_id=NULL WHERE guild_id=? AND user_id=?', BigInt(interaction.guildId), BigInt(openerId))
-      return interaction.editReply('Ticket closed. The channel remains private and its message history is preserved.')
+      return withKeyLock(ticketLocks, interaction.guildId, async () => {
+        const row = db.get('SELECT * FROM tickets WHERE guild_id=? AND channel_id=?', BigInt(interaction.guildId), BigInt(interaction.channelId))
+        if (!row) return interaction.editReply('Run this inside an active Guardian ticket.')
+        const cfg = db.get('SELECT support_role_id FROM ticket_config WHERE guild_id=?', BigInt(interaction.guildId))
+        const member = interaction.member
+        const authorized = String(row.user_id) === interaction.user.id || isStaff(interaction) || (cfg?.support_role_id && member.roles.cache.has(String(cfg.support_role_id)))
+        if (!authorized) return interaction.editReply('Only the ticket opener or support staff can close this ticket.')
+        const openerId = String(row.user_id)
+        const current = interaction.channel.permissionOverwrites.cache.get(openerId)
+        const updated = {
+          ViewChannel: current?.allow?.has(PermissionFlagsBits.ViewChannel) ? true : current?.deny?.has(PermissionFlagsBits.ViewChannel) ? false : null,
+          SendMessages: false,
+          ReadMessageHistory: current?.allow?.has(PermissionFlagsBits.ReadMessageHistory) ? true : current?.deny?.has(PermissionFlagsBits.ReadMessageHistory) ? false : null,
+          SendMessagesInThreads: false,
+          CreatePublicThreads: false,
+          CreatePrivateThreads: false
+        }
+        const closed = await interaction.channel.permissionOverwrites
+          .edit(openerId, updated, { reason: `Ticket closed by ${interaction.user.id}` })
+          .then(() => interaction.channel.setName(`closed-${openerId}`, `Ticket closed by ${interaction.user.id}`))
+          .then(() => true)
+          .catch(() => false)
+        if (!closed) return interaction.editReply('I could not close this ticket. Its active record has been kept so you can retry.')
+        db.run('UPDATE tickets SET channel_id=NULL WHERE guild_id=? AND user_id=?', BigInt(interaction.guildId), BigInt(openerId))
+        return interaction.editReply('Ticket closed. The channel remains private and its message history is preserved.')
+      })
     }
 
     if (name === 'suggest') {
@@ -785,11 +817,11 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'config') {
       const sections=['Server settings']
       const settingsRow=db.setting(interaction.guildId)
-      for(const [key,value] of Object.entries(settingsRow))if(!['guild_id','ad_enabled','ad_channel_id','created_at','updated_at'].includes(key))sections.push(key.replaceAll('_',' ') + ': ' + (value==null?'Not set':String(value)))
+      for(const [key,value] of Object.entries(settingsRow))if(!['guild_id','ad_enabled','ad_channel_id','created_at','updated_at'].includes(key))sections.push(key.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase()) + ': ' + (value==null?'Not set':String(value)))
       for(const [table,label] of [['security_config','AutoMod'],['anti_nuke_config','Anti-nuke'],['raid_config','Raid'],['verification_config','Verification'],['ticket_config','Tickets']]){
         const row=db.get('SELECT * FROM '+table+' WHERE guild_id=?',BigInt(interaction.guildId))
         sections.push('\n'+label)
-        for(const [key,value] of Object.entries(row||{}))if(key!=='guild_id')sections.push(key.replaceAll('_',' ') + ': ' + (value==null?'Not set':String(value)))
+        for(const [key,value] of Object.entries(row||{}))if(key!=='guild_id')sections.push(key.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase()) + ': ' + (value==null?'Not set':String(value)))
       }
       let output=sections.join('\n')
       while(output.length>3900){
@@ -814,7 +846,7 @@ async function handleCommand(interaction, db, settings) {
 
     if (name === 'autorole') {
       const role = interaction.options.getRole('role')
-      if (role && !safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'Autoroles must be non-privileged roles below the allowed hierarchy.')
+      if (role && (!safeRole(interaction.guild, interaction.member, role) || dangerousRole(role))) return respond(interaction, 'Autoroles must be non-privileged roles below the allowed hierarchy.')
       db.updateSetting(interaction.guildId, 'autorole_id', role?.id || null)
       return respond(interaction, role ? 'Autorole updated.' : 'Autorole disabled.')
     }
@@ -838,23 +870,26 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'smpannounce') {
-      if (!await requirePermission(interaction,PermissionFlagsBits.ManageMessages)) return
+      if (!await requirePermission(interaction, PermissionFlagsBits.ManageMessages)) return
       const channel = interaction.options.getChannel('channel', true)
       const message = interaction.options.getString('message', true)
       if (channel.guildId !== interaction.guildId || !channel.permissionsFor(interaction.member)?.has(PermissionFlagsBits.SendMessages)) {
         return respond(interaction, 'Choose a channel in this server where you can send messages.')
       }
-      const cfg = db.setting(interaction.guildId)
-      const now = Date.now()
-      const last = cfg.ad_last_sent_at ? Date.parse(String(cfg.ad_last_sent_at)) : 0
-      const cooldown = Number(cfg.ad_cooldown_seconds || 3600) * 1000
-      if (last && now - last < cooldown) {
-        return respond(interaction, 'Wait ' + (Math.floor((cooldown - (now - last)) / 1000) + 1) + ' seconds before the next announcement.')
-      }
-      const sent = await channel.send({ content: message, allowedMentions: { parse: [] } }).then(() => true).catch(() => false)
-      if (!sent) return respond(interaction, 'I could not send the announcement. Check my channel permissions.')
-      db.updateSetting(interaction.guildId, 'ad_last_sent_at', new Date(now).toISOString())
-      return respond(interaction, 'Announcement sent.')
+      if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ ephemeral: true })
+      return withKeyLock(announcementLocks, interaction.guildId, async () => {
+        const cfg = db.setting(interaction.guildId)
+        const now = Date.now()
+        const last = cfg.ad_last_sent_at ? Date.parse(String(cfg.ad_last_sent_at)) : 0
+        const cooldown = Number(cfg.ad_cooldown_seconds || 3600) * 1000
+        if (last && now - last < cooldown) {
+          return respond(interaction, 'Wait ' + (Math.floor((cooldown - (now - last)) / 1000) + 1) + ' seconds before the next announcement.')
+        }
+        const sent = await channel.send({ content: message, allowedMentions: { parse: [] } }).then(() => true).catch(() => false)
+        if (!sent) return respond(interaction, 'I could not send the announcement. Check my channel permissions.')
+        db.updateSetting(interaction.guildId, 'ad_last_sent_at', new Date(now).toISOString())
+        return respond(interaction, 'Announcement sent.')
+      })
     }
 
     if (name === 'ticket-config') {
