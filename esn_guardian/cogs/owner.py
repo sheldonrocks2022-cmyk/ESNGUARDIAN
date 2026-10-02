@@ -29,6 +29,16 @@ def owner_only() -> app_commands.check:
 class OwnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self._global_bans: dict[int, str] = {}
+
+    async def cog_load(self) -> None:
+        rows = await self.bot.database.fetchall(
+            "SELECT user_id, reason FROM global_bans"
+        )
+        self._global_bans = {
+            int(row["user_id"]): str(row["reason"])
+            for row in rows
+        }
 
     async def _notify_user_by_id(self, user_id: int, message: str) -> bool:
         user = self.bot.get_user(user_id)
@@ -130,6 +140,7 @@ class OwnerCog(commands.Cog):
             "ON CONFLICT(user_id) DO UPDATE SET reason = excluded.reason, banned_by_id = excluded.banned_by_id",
             (target_id, reason, interaction.user.id),
         )
+        self._global_bans[target_id] = reason
         banned = 0
         failed = 0
         target = discord.Object(id=target_id)
@@ -155,6 +166,7 @@ class OwnerCog(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         await self.bot.database.execute("DELETE FROM global_bans WHERE user_id = ?", (target_id,))
+        self._global_bans.pop(target_id, None)
         unbanned = 0
         failed = 0
         target = discord.Object(id=target_id)
@@ -171,7 +183,7 @@ class OwnerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        reason = await self.bot.database.global_ban_reason(member.id)
+        reason = self._global_bans.get(member.id)
         if reason is None:
             return
         try:
