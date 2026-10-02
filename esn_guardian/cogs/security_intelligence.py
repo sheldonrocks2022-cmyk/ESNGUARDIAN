@@ -269,6 +269,13 @@ class SecurityIntelligenceCog(commands.Cog):
     async def incident_correlation_loop(self) -> None:
         now = datetime.now(UTC)
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 rows = await self.recent_cases(guild.id, minutes=2, limit=50)
                 actions = [str(row["action"]) for row in rows]
@@ -317,6 +324,13 @@ class SecurityIntelligenceCog(commands.Cog):
     async def security_heartbeat_loop(self) -> None:
         now = datetime.now(UTC)
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 await self.bot.database.ensure_guild(guild.id)
                 bot_member = guild.me
