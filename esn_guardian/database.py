@@ -381,6 +381,28 @@ class Database:
         await connection.commit()
         return int(cursor.lastrowid)
 
+    async def create_cases(self, rows: Iterable[tuple[int, int | None, int | None, str, str, int | None, dict[str, Any] | None]]) -> None:
+        prepared = [
+            (
+                guild_id,
+                target_id,
+                moderator_id,
+                action,
+                reason,
+                channel_id,
+                json.dumps(details or {}, ensure_ascii=True),
+            )
+            for guild_id, target_id, moderator_id, action, reason, channel_id, details in rows
+        ]
+        if not prepared:
+            return
+        connection = self._require_connection()
+        await connection.executemany(
+            "INSERT INTO cases (guild_id, target_id, moderator_id, action, reason, channel_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            prepared,
+        )
+        await connection.commit()
+
     async def is_guild_blacklisted(self, guild_id: int) -> bool:
         row = await self.fetchone("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (guild_id,))
         return row is not None
