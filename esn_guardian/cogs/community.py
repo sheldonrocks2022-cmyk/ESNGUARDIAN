@@ -130,6 +130,14 @@ class CommunityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
+        security = self.bot.get_cog("SecurityCog")
+        if (
+            security is not None
+            and hasattr(security, "is_raid_mode_active")
+            and security.is_raid_mode_active(member.guild.id)
+            and not member.bot
+        ):
+            return
         settings = await self.bot.database.setting(member.guild.id)
         autorole = member.guild.get_role(settings["autorole_id"]) if settings["autorole_id"] else None
         if autorole and safe_public_role(autorole, member.guild):
