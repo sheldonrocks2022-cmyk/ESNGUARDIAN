@@ -1192,24 +1192,31 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'overwatch') {
       const sub=interaction.options.getSubcommand(),over=client.guardianOverwatch
       if(!over)return respond(interaction,'Guardian Overwatch is not ready yet.')
-      if(sub==='status')return respond(interaction,over.postureReport(interaction.guild))
-      if(sub==='integrity')return respond(interaction,over.integrityReport(interaction.guild))
+      if(sub==='status'){
+        if(!interaction.deferred&&!interaction.replied)await interaction.deferReply({ephemeral:true})
+        return respond(interaction,over.postureReport(interaction.guild))
+      }
+      if(sub==='integrity'){
+        if(!interaction.deferred&&!interaction.replied)await interaction.deferReply({ephemeral:true})
+        return respond(interaction,over.integrityReport(interaction.guild))
+      }
       if(sub==='incidents')return respond(interaction,over.incidentReport(interaction.guildId))
       if(sub==='seal'){
-        if(!isGuildOwner(interaction))return respond(interaction,'Only the Discord server owner can seal the security policy baseline.',true,'Access denied')
+        if(!isGuildOwner(interaction))return accessDenied(interaction)
         const fp=over.sealPolicy(interaction.guild)
-        return respond(interaction,'Security policy baseline sealed. Fingerprint: '+fp)
+        return respond(interaction,'Guardian policy baseline sealed. Fingerprint: `'+fp.slice(0,16)+'…`')
       }
       if(sub==='backup'){
-        if(!isGuildOwner(interaction))return respond(interaction,'Only the Discord server owner can create an incident backup.',true,'Access denied')
-        const file=db.backup('incident')
-        return respond(interaction,file?'Verified incident backup created: '+require('node:path').basename(file):'Backup could not be created.')
+        if(!isGuildOwner(interaction))return accessDenied(interaction)
+        const file=db.backup('manual-overwatch')
+        return respond(interaction,'Verified Guardian backup created: `'+(file?require('node:path').basename(file):'unavailable')+'`')
       }
     }
 
     if (name === 'resilience') {
       const sub=interaction.options.getSubcommand(),res=client.guardianResilience
       if(!res)return respond(interaction,'Guardian Resilience is not ready yet.')
+      if(['status','drill','recovery-plan'].includes(sub)&&!interaction.deferred&&!interaction.replied)await interaction.deferReply({ephemeral:true})
       if(sub==='status')return respond(interaction,res.statusReport(interaction.guild))
       if(sub==='drill')return respond(interaction,res.drillReport(interaction.guild))
       if(sub==='recovery-plan')return respond(interaction,res.recoveryPlan(interaction.guild))
@@ -1218,16 +1225,20 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'sentinel') {
       const sub=interaction.options.getSubcommand(),sentinel=client.guardianSentinel
       if(!sentinel)return respond(interaction,'Guardian Sentinel is not ready yet.')
-      if(sub==='status')return respond(interaction,sentinel.liveReport(interaction.guild))
+      if(sub==='status'){
+        if(!interaction.deferred&&!interaction.replied)await interaction.deferReply({ephemeral:true})
+        await sentinel.scanGuild(interaction.guild)
+        return respond(interaction,sentinel.liveReport(interaction.guild))
+      }
       if(sub==='signals')return respond(interaction,sentinel.signalsReport(interaction.guildId,8))
       if(sub==='subject'){
         const subject=interaction.options.getString('subject_id',true)
-        if(!/^\d+$/.test(subject))return respond(interaction,'Provide a numeric subject ID.')
+        if(!/^\d+$/.test(subject))return respond(interaction,'Provide a numeric Discord user or bot ID.')
         return respond(interaction,sentinel.subjectReport(interaction.guild,subject))
       }
       if(sub==='explain'){
         const signalId=interaction.options.getInteger('signal_id',true)
-        return respond(interaction,sentinel.explainSignal(interaction.guildId,signalId)||'Signal not found.')
+        return respond(interaction,sentinel.explainSignal(interaction.guildId,signalId)||'Sentinel signal #'+signalId+' was not found in this server.')
       }
     }
   } catch (error) {
