@@ -496,8 +496,12 @@ function attachSecurity(client,db){
       await handleRaidJoin(db,member)
     }catch(error){console.error('[Guardian] member join security error',error)}
   })
+  client.on(Events.ChannelCreate,async channel=>{
+    try{const actor=await auditActor(channel.guild,AuditLogEvent.ChannelCreate,channel.id);await registerDestructiveAction(db,channel.guild,actor,'CHANNEL_CREATE',channel.id)}catch{}
+  })
   client.on(Events.ChannelDelete,async channel=>{
     try{
+      db.createCase(channel.guild.id,null,client.user?.id,'CHANNEL_DELETE','Channel deleted: '+channel.name,channel.id)
       const actor=await auditActor(channel.guild,AuditLogEvent.ChannelDelete,channel.id)
       await registerDestructiveAction(db,channel.guild,actor,'CHANNEL_DELETE',channel.id)
       const cfg=db.get('SELECT rollback_enabled FROM guardian_config WHERE guild_id=?',BigInt(channel.guild.id))
@@ -519,8 +523,12 @@ function attachSecurity(client,db){
       await after.edit({...options,reason:'ESN Guardian automatic rollback of unauthorized channel change'}).then(()=>securityCase(db,after.guild,actor,'AUTO_ROLLBACK_CHANNEL_UPDATE','Reverted unauthorized changes to '+after.name,after.id)).catch(()=>securityCase(db,after.guild,actor,'AUTO_ROLLBACK_FAILED','Could not revert unauthorized changes to '+after.name,after.id))
     }catch(error){console.error('[Guardian] channel update rollback error',error)}
   })
+  client.on(Events.GuildRoleCreate,async role=>{
+    try{const actor=await auditActor(role.guild,AuditLogEvent.RoleCreate,role.id);await registerDestructiveAction(db,role.guild,actor,'ROLE_CREATE',role.id)}catch{}
+  })
   client.on(Events.GuildRoleDelete,async role=>{
     try{
+      db.createCase(role.guild.id,null,client.user?.id,'ROLE_DELETE','Role deleted: '+role.name)
       const actor=await auditActor(role.guild,AuditLogEvent.RoleDelete,role.id)
       await registerDestructiveAction(db,role.guild,actor,'ROLE_DELETE',role.id)
       const cfg=db.get('SELECT rollback_enabled FROM guardian_config WHERE guild_id=?',BigInt(role.guild.id))
@@ -530,7 +538,14 @@ function attachSecurity(client,db){
   client.on(Events.GuildRoleUpdate,async(before,after)=>{
     try{
       if(before.permissions.bitfield===after.permissions.bitfield&&before.position===after.position)return
+      db.createCase(after.guild.id,null,client.user?.id,'ROLE_PERMISSION_CHANGE','Permissions or position changed for '+after.name)
       const actor=await auditActor(after.guild,AuditLogEvent.RoleUpdate,after.id)
+      const anti=db.get('SELECT enabled FROM anti_nuke_config WHERE guild_id=?',BigInt(after.guild.id))
+      const gained=[PermissionFlagsBits.Administrator,PermissionFlagsBits.ManageGuild,PermissionFlagsBits.ManageRoles,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageWebhooks,PermissionFlagsBits.BanMembers,PermissionFlagsBits.KickMembers,PermissionFlagsBits.ModerateMembers].some(bit=>after.permissions.has(bit)&&!before.permissions.has(bit))
+      if(Number(anti?.enabled)&&gained&&!trustedUser(db,after.guild,actor?.id)){
+        const reverted=await after.edit({permissions:before.permissions,reason:'ESN Guardian anti-nuke: reverted dangerous role permission escalation'}).then(()=>true).catch(()=>false)
+        await securityCase(db,after.guild,actor,reverted?'ANTINUKE_ROLE_REVERT':'ANTINUKE_ROLE_REVERT_FAILED',(reverted?'Reverted':'Could not revert')+' dangerous permissions on '+after.name)
+      }
       await registerDestructiveAction(db,after.guild,actor,'ROLE_PERMISSION_CHANGE',after.id)
       const botRole=after.guild.members.me?.roles.cache.has(after.id)
       if(botRole&&actor?.id!==after.guild.ownerId){
@@ -554,16 +569,25 @@ function attachSecurity(client,db){
       }
       const added=after.roles.cache.filter(r=>!before.roles.cache.has(r.id)&&dangerousRole(r))
       if(added.size){
+        const anti=db.get('SELECT enabled FROM anti_nuke_config WHERE guild_id=?',BigInt(after.guild.id))
+        if(!Number(anti?.enabled))return
         const actor=await auditActor(after.guild,AuditLogEvent.MemberRoleUpdate,after.id)
+        if(trustedUser(db,after.guild,actor?.id))return
+        const removable=added.filter(r=>r.editable)
+        if(removable.size){
+          const ok=await after.roles.remove([...removable.values()],'ESN Guardian anti-nuke: reverted dangerous role assignment').then(()=>true).catch(()=>false)
+          await securityCase(db,after.guild,actor,ok?'ANTINUKE_ROLE_ASSIGNMENT_REVERT':'ANTINUKE_ROLE_ASSIGNMENT_REVERT_FAILED',(ok?'Removed':'Could not remove')+' dangerous roles from '+after.user.tag)
+        }else await securityCase(db,after.guild,actor,'ANTINUKE_ROLE_ASSIGNMENT_UNMANAGEABLE','Dangerous role assigned to '+after.user.tag+', but it is above Guardian role')
         await registerDestructiveAction(db,after.guild,actor,'DANGEROUS_ROLE_ASSIGNMENT',after.id)
       }
     }catch{}
   })
-  client.on(Events.GuildBanAdd,async ban=>{try{const actor=await auditActor(ban.guild,AuditLogEvent.MemberBanAdd,ban.user.id);await registerDestructiveAction(db,ban.guild,actor,'MEMBER_BAN',ban.user.id)}catch{}})
+  client.on(Events.GuildBanAdd,async ban=>{try{await logEvent(db,ban.guild,'member_log_channel_id','Member banned','User: <@'+ban.user.id+'> ('+ban.user.id+')');const actor=await auditActor(ban.guild,AuditLogEvent.MemberBanAdd,ban.user.id);await registerDestructiveAction(db,ban.guild,actor,'MEMBER_BAN',ban.user.id)}catch{}})
   client.on(Events.GuildMemberRemove,async member=>{if(isInternalRemoval(member.guild.id,member.id))return;try{const actor=await auditActor(member.guild,AuditLogEvent.MemberKick,member.id);if(actor)await registerDestructiveAction(db,member.guild,actor,'MEMBER_KICK',member.id)}catch{}})
   client.on(Events.GuildBanRemove,async ban=>{try{const actor=await auditActor(ban.guild,AuditLogEvent.MemberBanRemove,ban.user.id);if(actor)await registerDestructiveAction(db,ban.guild,actor,'MEMBER_UNBAN',ban.user.id)}catch{}})
   client.on(Events.WebhooksUpdate,async channel=>{
     try{
+      db.createCase(channel.guild.id,null,client.user?.id,'WEBHOOK_CHANGE','Webhook update in #'+channel.name,channel.id)
       const cfg=db.get('SELECT webhook_guard FROM guardian_config WHERE guild_id=?',BigInt(channel.guild.id));if(!Number(cfg?.webhook_guard??1))return
       const actor=await auditActor(channel.guild,AuditLogEvent.WebhookCreate,null)
       if(trustedUser(db,channel.guild,actor?.id)){
