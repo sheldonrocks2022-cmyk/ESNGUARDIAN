@@ -433,6 +433,13 @@ class SecurityOverwatchCog(commands.Cog):
     @tasks.loop(seconds=60)
     async def ledger_loop(self) -> None:
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 await self.sync_ledger(guild.id)
                 result = await self.verify_ledger(guild.id)
@@ -465,6 +472,13 @@ class SecurityOverwatchCog(commands.Cog):
     @tasks.loop(minutes=3)
     async def policy_drift_loop(self) -> None:
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 drift = await self.policy_drift(guild)
                 if not drift["changed"]:
@@ -507,6 +521,13 @@ class SecurityOverwatchCog(commands.Cog):
     @tasks.loop(seconds=60)
     async def incident_loop(self) -> None:
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 score, rows = await self._weighted_window(guild.id, "-5 minutes")
                 active = await self.active_incident(guild.id)
