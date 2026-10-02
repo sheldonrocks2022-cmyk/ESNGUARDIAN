@@ -1224,6 +1224,7 @@ async function handleCommand(interaction, db, settings) {
       }
     }
   } catch (error) {
+    interaction.guardianCommandFailed = true
     console.error(`[Guardian] command /${name} failed`, error)
     await respond(interaction, 'The command failed safely. Staff can check the system log.', true, 'Command unavailable').catch(() => {})
   }
