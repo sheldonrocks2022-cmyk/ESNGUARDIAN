@@ -114,23 +114,39 @@ client.on(Events.GuildCreate, async guild => {
   }
 })
 
+function qualifiedCommandName(interaction) {
+  let name = interaction.commandName || 'unknown'
+  try {
+    const group = interaction.options.getSubcommandGroup(false)
+    const sub = interaction.options.getSubcommand(false)
+    if (group) name += ' ' + group
+    if (sub) name += ' ' + sub
+  } catch {}
+  return name
+}
+
+async function logCommandInvocation(interaction, outcome) {
+  if (!interaction.inGuild()) return
+  const channelText = interaction.channelId ? '<#' + interaction.channelId + '>' : 'Unknown'
+  await logEvent(
+    db,
+    interaction.guild,
+    'command_log_channel_id',
+    'Command ' + outcome,
+    'Command: /' + qualifiedCommandName(interaction) +
+    '\\nExecuted by: <@' + interaction.user.id + '> (' + interaction.user.id + ')' +
+    '\\nChannel: ' + channelText + ' (' + (interaction.channelId || 'Unknown') + ')' +
+    '\\nServer: ' + interaction.guild.name + ' (' + interaction.guild.id + ')' +
+    '\\nInteraction ID: ' + interaction.id
+  ).catch(() => {})
+}
+
 client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
+      interaction.guardianCommandFailed = false
       await handleCommand(interaction, db, config)
-
-      if (interaction.inGuild()) {
-        await logEvent(
-          db,
-          interaction.guild,
-          'command_log_channel_id',
-          'Command completed',
-          'Command: /' + interaction.commandName +
-          '\\nExecuted by: <@' + interaction.user.id + '> (' + interaction.user.id + ')' +
-          '\\nChannel: <#' + interaction.channelId + '> (' + interaction.channelId + ')' +
-          '\\nInteraction ID: ' + interaction.id
-        ).catch(() => {})
-      }
+      await logCommandInvocation(interaction, interaction.guardianCommandFailed ? 'failed' : 'completed')
       return
     }
 
@@ -139,7 +155,8 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   } catch (error) {
     console.error('[ESN Guardian] interaction handler failure', error)
-    const payload = { content: 'ESN Guardian handled an internal error safely. Please retry.', ephemeral: true }
+    if (interaction.isChatInputCommand?.()) await logCommandInvocation(interaction, 'failed')
+    const payload = { embeds: [require('./utils').embed('The command failed safely. Staff can check the system log.', 'Command unavailable')], ephemeral: true }
     if (interaction.deferred || interaction.replied) await interaction.followUp(payload).catch(() => {})
     else await interaction.reply(payload).catch(() => {})
   }
