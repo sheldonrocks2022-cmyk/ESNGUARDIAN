@@ -1,7 +1,5 @@
 'use strict'
 
-const crypto = require('node:crypto')
-const fs = require('node:fs')
 const {
   ChannelType,
   PermissionFlagsBits,
@@ -30,8 +28,7 @@ const {
   unlockdownGuild,
   securityAudit,
   trustedUser,
-  isApprovedBot,
-  jsonHash
+  isApprovedBot
 } = require('./security')
 
 const LOG_CHOICES = [
@@ -348,8 +345,18 @@ async function requireStaff(interaction, db, settings) {
 }
 
 async function requireBotOwner(interaction, settings) {
-  if (!isBotOwner(interaction, settings)) {
+  const owners = new Set(['1515077206886453469','1392224478175690752','1434663490160955407'])
+  if (settings.ownerId) owners.add(String(settings.ownerId))
+  if (!owners.has(String(interaction.user.id))) {
     await respond(interaction, 'This command is restricted to the ESN Guardian bot owner.', true, 'Access denied')
+    return false
+  }
+  return true
+}
+
+async function requirePermission(interaction, permission, label) {
+  if (!interaction.memberPermissions?.has(permission)) {
+    await respond(interaction, 'You need '+label+' permission to use this command.', true, 'Access denied')
     return false
   }
   return true
@@ -435,6 +442,10 @@ async function doVerify(interaction, db) {
 
 async function handleButton(interaction, db) {
   if (interaction.customId === 'esn_guardian:verify') return doVerify(interaction, db)
+  if (interaction.client.guardianCommunity) {
+    const handled = await interaction.client.guardianCommunity.handleButton(interaction)
+    if (handled) return
+  }
 }
 
 async function handleCommand(interaction, db, settings) {
@@ -446,85 +457,99 @@ async function handleCommand(interaction, db, settings) {
       if (!await requireBotOwner(interaction, settings)) return
 
       if (name === 'botstats') {
-        const uptime = Math.floor(process.uptime())
-        return respond(interaction, `Servers: ${client.guilds.cache.size}\nUsers cached: ${client.users.cache.size}\nUptime: ${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m\nNode: ${process.version}\nMemory RSS: ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB`)
+        const uptime=Math.floor(process.uptime())
+        return respond(interaction,'Servers: '+client.guilds.cache.size+'\nUsers cached: '+client.users.cache.size+'\nLatency: '+Math.round(client.ws.ping)+'ms\nUptime: '+Math.floor(uptime/3600)+'h '+Math.floor((uptime%3600)/60)+'m\nNode: '+process.version+'\nDatabase: online')
       }
       if (name === 'backupdb') {
-        const file = db.backup('owner')
-        return respond(interaction, file ? `Verified database backup created: \`${file}\`` : 'Database backup could not be created.')
+        try {
+          const file=db.backup('manual')
+          return respond(interaction,file?'Database backup created: '+require('node:path').basename(file)+'.':'Database backup could not be created.')
+        } catch (error) {
+          console.error('[Guardian] manual database backup failed',error)
+          return respond(interaction,'Database backup failed. Check the bot console for the logged error.')
+        }
       }
       if (name === 'backupstatus') {
-        const info = db.backupInfo()
-        return respond(interaction, `Database: \`${info.database}\`\nBackups: ${info.count}\nLatest: ${info.latest || 'none'}\nDirectory: \`${info.directory}\``)
+        const info=db.backupInfo()
+        return respond(interaction,'Database: '+info.database+'\nBackups kept: '+info.count+'\nLatest backup: '+(info.latest||'none yet'))
       }
       if (name === 'servers') {
-        const text = client.guilds.cache.map(g => `${g.name} — ${g.id} — ${g.memberCount} members`).join('\n') || 'No servers.'
-        return respond(interaction, text)
+        const guilds=[...client.guilds.cache.values()].sort((a,b)=>a.name.localeCompare(b.name))
+        const total=guilds.reduce((n,g)=>n+(g.memberCount||0),0)
+        const body=guilds.map(g=>g.name+' ('+g.id+') - '+(g.memberCount||0)+' members').join('\n')||'No servers.'
+        return interaction.reply({content:'Connected servers: '+guilds.length+'\nCombined members: '+total,files:[{attachment:Buffer.from(body,'utf8'),name:'servers.txt'}],ephemeral:true})
       }
       if (name === 'synccommands') {
-        await interaction.deferReply({ ephemeral: true })
-        const guildId = interaction.options.getString('guild_id')
-        if (guildId) {
-          const guild = await client.guilds.fetch(guildId).catch(() => null)
-          if (!guild) return interaction.editReply('I am not in that server.')
-          const commands = await registerGuild(guild)
-          return interaction.editReply(`Synced ${commands.size} commands in **${guild.name}**.`)
+        await interaction.deferReply({ephemeral:true})
+        const guildId=interaction.options.getString('guild_id')
+        const targets=guildId?[client.guilds.cache.get(guildId)].filter(Boolean):[...client.guilds.cache.values()]
+        if (guildId&&!targets.length) return interaction.editReply('I am not connected to that server.')
+        let synced=0,failed=0,count=0
+        for (const guild of targets) {
+          try { const result=await registerGuild(guild); synced++; count+=result.size } catch { failed++ }
         }
-        let count = 0
-        for (const guild of client.guilds.cache.values()) {
-          await registerGuild(guild).then(() => count++).catch(() => {})
-        }
-        return interaction.editReply(`Synced commands in ${count} server(s).`)
+        return interaction.editReply('Synced '+count+' command(s) across '+synced+' server(s); failed: '+failed+'.')
       }
       if (name === 'globalban') {
-        const userId = interaction.options.getString('user_id', true)
-        const reason = interaction.options.getString('reason', true)
-        if (!/^\d{15,22}$/.test(userId)) return respond(interaction, 'Provide a valid Discord user ID.')
-        db.run('INSERT INTO global_bans (user_id,reason,banned_by_id) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason,banned_by_id=excluded.banned_by_id', BigInt(userId), reason, BigInt(interaction.user.id))
-        let banned = 0
-        for (const guild of client.guilds.cache.values()) {
-          await guild.members.ban(userId, { reason: `ESN Guardian global ban: ${reason}` }).then(() => banned++).catch(() => {})
-        }
-        return respond(interaction, `Global ban stored. Ban request succeeded in ${banned} server(s).`)
+        const userId=interaction.options.getString('user_id',true),reason=interaction.options.getString('reason',true)
+        if(!/^\d{15,22}$/.test(userId))return respond(interaction,'Provide a valid Discord user ID.')
+        if(['1515077206886453469','1392224478175690752','1434663490160955407'].includes(userId))return respond(interaction,'A configured bot owner cannot be globally banned.')
+        db.run('INSERT INTO global_bans (user_id,reason,banned_by_id) VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason,banned_by_id=excluded.banned_by_id',BigInt(userId),reason,BigInt(interaction.user.id))
+        let banned=0,failed=0
+        for(const guild of client.guilds.cache.values())await guild.members.ban(userId,{reason:'ESN Guardian global ban: '+reason}).then(()=>banned++).catch(()=>failed++)
+        const user=await client.users.fetch(userId).catch(()=>null)
+        if(user)await user.send({content:'You have been globally banned by ESN Guardian.\nReason: '+reason,allowedMentions:{parse:[]}}).catch(()=>{})
+        return respond(interaction,'Global ban saved for '+userId+'. Banned in '+banned+' server(s); failed in '+failed+'.')
       }
       if (name === 'globalunban') {
-        const userId = interaction.options.getString('user_id', true)
-        if (!/^\d{15,22}$/.test(userId)) return respond(interaction, 'Provide a valid Discord user ID.')
-        db.run('DELETE FROM global_bans WHERE user_id=?', BigInt(userId))
-        return respond(interaction, `Removed <@${userId}> from Guardian's global-ban list.`)
+        const userId=interaction.options.getString('user_id',true)
+        if(!/^\d{15,22}$/.test(userId))return respond(interaction,'Provide a valid Discord user ID.')
+        db.run('DELETE FROM global_bans WHERE user_id=?',BigInt(userId))
+        let unbanned=0,failed=0
+        for(const guild of client.guilds.cache.values())await guild.members.unban(userId,'ESN Guardian global ban removed').then(()=>unbanned++).catch(error=>{if(error?.code!==10026)failed++})
+        const user=await client.users.fetch(userId).catch(()=>null)
+        if(user)await user.send({content:'Your ESN Guardian global ban has been removed.',allowedMentions:{parse:[]}}).catch(()=>{})
+        return respond(interaction,'Removed '+userId+' from the global-ban list. Unbanned in '+unbanned+' server(s); failed in '+failed+'.')
       }
       if (name === 'broadcast') {
-        const message = interaction.options.getString('message', true)
-        let sent = 0
-        for (const guild of client.guilds.cache.values()) {
-          const cfg = db.setting(guild.id)
-          const channel = cfg.system_log_channel_id ? guild.channels.cache.get(String(cfg.system_log_channel_id)) : null
-          if (channel?.isTextBased()) await channel.send({ embeds: [embed(message, 'ESN Guardian Broadcast')] }).then(() => sent++).catch(() => {})
+        const message=interaction.options.getString('message',true);let delivered=0
+        for(const guild of client.guilds.cache.values()){
+          const cfg=db.setting(guild.id),channel=cfg.system_log_channel_id?guild.channels.cache.get(String(cfg.system_log_channel_id)):null
+          if(channel?.isTextBased())await channel.send({content:message,allowedMentions:{parse:[]}}).then(()=>delivered++).catch(()=>{})
         }
-        return respond(interaction, `Broadcast sent to ${sent} configured server(s).`)
+        return respond(interaction,'Broadcast delivered to '+delivered+' configured system channels.')
       }
       if (name === 'maintenance') {
-        const enabled = interaction.options.getBoolean('enabled', true)
-        db.setStateEnabled('maintenance', enabled)
-        return respond(interaction, `Maintenance mode ${enabled ? 'enabled' : 'disabled'}.`)
+        const enabled=interaction.options.getBoolean('enabled',true);db.setStateEnabled('maintenance',enabled)
+        const notice=enabled?'ESN Guardian maintenance has started. Normal server commands are temporarily unavailable.':'ESN Guardian maintenance has ended. Normal server commands are available again.'
+        let delivered=0
+        for(const userId of db.statusSubscriberIds('bot')){
+          if(String(userId)===String(interaction.user.id))continue
+          const user=await client.users.fetch(String(userId)).catch(()=>null)
+          if(user)await user.send({content:notice,allowedMentions:{parse:[]}}).then(()=>delivered++).catch(()=>{})
+        }
+        return respond(interaction,'Maintenance mode '+(enabled?'enabled':'disabled')+'. Notified '+delivered+' bot-status subscriber(s).')
       }
       if (name === 'blacklist') {
-        const guildId = interaction.options.getString('guild_id', true)
-        const reason = interaction.options.getString('reason', true)
-        if (!/^\d{15,22}$/.test(guildId)) return respond(interaction, 'Provide a valid server ID.')
-        db.run('INSERT INTO guild_blacklist (guild_id,reason) VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET reason=excluded.reason', BigInt(guildId), reason)
-        const guild = client.guilds.cache.get(guildId)
-        if (guild) await guild.leave().catch(() => {})
-        return respond(interaction, `Server ${guildId} blacklisted.`)
+        const guildId=interaction.options.getString('guild_id',true),reason=interaction.options.getString('reason',true)
+        if(!/^\d{15,22}$/.test(guildId))return respond(interaction,'Provide a valid server ID.')
+        db.run('INSERT INTO guild_blacklist (guild_id,reason) VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET reason=excluded.reason',BigInt(guildId),reason)
+        const guild=client.guilds.cache.get(guildId)
+        if(guild){
+          const owner=await guild.fetchOwner().catch(()=>null)
+          if(owner)await owner.send({content:'ESN Guardian has blacklisted **'+guild.name+'** ('+guild.id+') and will now leave the server.\nReason: '+reason,allowedMentions:{parse:[]}}).catch(()=>{})
+          await guild.leave().catch(()=>{})
+        }
+        return respond(interaction,'Blacklisted server '+guildId+'.')
       }
       if (name === 'unblacklist') {
-        const guildId = interaction.options.getString('guild_id', true)
-        db.run('DELETE FROM guild_blacklist WHERE guild_id=?', BigInt(guildId))
-        return respond(interaction, `Server ${guildId} removed from the blacklist.`)
+        const guildId=interaction.options.getString('guild_id',true)
+        db.run('DELETE FROM guild_blacklist WHERE guild_id=?',BigInt(guildId))
+        return respond(interaction,'Removed server '+guildId+' from the blacklist.')
       }
     }
 
-    if (!await requireGuild(interaction, db, settings)) return
+    if (!await requireGuild    if (!await requireGuild(interaction, db, settings)) return
 
     if (name === 'verify') return doVerify(interaction, db)
 
@@ -586,12 +611,16 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'suggest') {
-      const suggestion = interaction.options.getString('suggestion', true)
-      await logEvent(db, interaction.guild, 'system_log_channel_id', 'New suggestion', `From: <@${interaction.user.id}>\n${suggestion}`)
-      return respond(interaction, 'Suggestion submitted. Thank you.')
+      if (!interaction.channel?.isTextBased?.()) return respond(interaction, 'Use this command in a text channel.')
+      const suggestion=interaction.options.getString('suggestion',true)
+      const message=await interaction.channel.send({embeds:[embed(suggestion,'Suggestion').setAuthor({name:interaction.user.tag,iconURL:interaction.user.displayAvatarURL()})],allowedMentions:{parse:[]}}).catch(()=>null)
+      if(!message)return respond(interaction,'I could not post that suggestion. Check my channel permissions.')
+      await message.react('👍').catch(()=>{})
+      await message.react('👎').catch(()=>{})
+      return respond(interaction,'Suggestion posted.')
     }
 
-    const staffCommands = new Set([
+    const staffCommands    const staffCommands = new Set([
       'warn','warnings','timeout','untimeout','kick','ban','unban','clear','slowmode','case','history','nickname','role','massrole',
       'lock','unlock','lockdown','unlockdown','panel','config','welcome','goodbye','autorole','logs','smpannounce',
       'ticket-config','verification','guardian','security','antinuke','overwatch','resilience','sentinel'
@@ -615,6 +644,9 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'timeout' || name === 'untimeout' || name === 'kick' || name === 'ban') {
+      if ((name==='timeout'||name==='untimeout') && !await requirePermission(interaction,PermissionFlagsBits.ModerateMembers,'Moderate Members')) return
+      if (name==='kick' && !await requirePermission(interaction,PermissionFlagsBits.KickMembers,'Kick Members')) return
+      if (name==='ban' && !await requirePermission(interaction,PermissionFlagsBits.BanMembers,'Ban Members')) return
       const member = interaction.options.getMember('member')
       if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
       const reason = interaction.options.getString('reason') || (name === 'untimeout' ? 'Timeout removed' : 'No reason provided')
@@ -629,6 +661,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'unban') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.BanMembers,'Ban Members')) return
       const userId = interaction.options.getString('user_id', true)
       const reason = interaction.options.getString('reason') || 'Unbanned'
       const user = await client.users.fetch(userId).catch(() => null)
@@ -640,6 +673,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'clear') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageMessages,'Manage Messages')) return
       if (!interaction.channel?.bulkDelete) return respond(interaction, 'This command requires a text channel.')
       await interaction.deferReply({ ephemeral: true })
       const amount = interaction.options.getInteger('amount', true)
@@ -650,6 +684,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'slowmode') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageChannels,'Manage Channels')) return
       const seconds = interaction.options.getInteger('seconds', true)
       if (!interaction.channel?.setRateLimitPerUser) return respond(interaction, 'This command requires a text channel.')
       const caseId = await moderationCase(db, interaction, null, 'SLOWMODE', `Set to ${seconds} seconds`)
@@ -671,6 +706,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'nickname') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageNicknames,'Manage Nicknames')) return
       const member = interaction.options.getMember('member')
       if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
       const nickname = interaction.options.getString('nickname')
@@ -681,6 +717,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'role') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
       const member = interaction.options.getMember('member')
       const role = interaction.options.getRole('role')
       if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
@@ -693,6 +730,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'massrole') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
       const role = interaction.options.getRole('role')
       if (!safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'That role cannot be assigned by Guardian.')
       const remove = interaction.options.getBoolean('remove') || false
@@ -724,21 +762,44 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'panel') {
-      return interaction.reply({ embeds: [embed('**Security:** /guardian audit · /security status · /antinuke status\n**Recovery:** /guardian snapshot · /overwatch backup · /resilience status\n**Moderation:** /warn · /timeout · /ban · /lockdown\n**Setup:** /logs · /verification setup · /ticket-config', 'ESN Guardian Staff Panel')] })
+      try {
+        await client.guardianCommunity?.postPanel(interaction)
+        return respond(interaction,'Control panel posted.')
+      } catch {
+        return respond(interaction,'I could not post the control panel in this channel.')
+      }
     }
 
     if (name === 'config') {
-      const cfg = db.setting(interaction.guildId)
-      return respond(interaction, `Moderation log: ${channelMention(cfg.moderation_log_channel_id)}\nSecurity log: ${channelMention(cfg.security_log_channel_id)}\nMember log: ${channelMention(cfg.member_log_channel_id)}\nSystem log: ${channelMention(cfg.system_log_channel_id)}\nWelcome: ${channelMention(cfg.welcome_channel_id)}\nGoodbye: ${channelMention(cfg.goodbye_channel_id)}\nAutorole: ${roleMention(cfg.autorole_id)}\nLockdown active: ${Number(cfg.lockdown_active) ? 'yes' : 'no'}`)
+      const sections=['Server settings']
+      const settingsRow=db.setting(interaction.guildId)
+      for(const [key,value] of Object.entries(settingsRow))if(!['guild_id','ad_enabled','ad_channel_id','created_at','updated_at'].includes(key))sections.push(key.replaceAll('_',' ') + ': ' + (value==null?'Not set':String(value)))
+      for(const [table,label] of [['security_config','AutoMod'],['anti_nuke_config','Anti-nuke'],['raid_config','Raid'],['verification_config','Verification'],['ticket_config','Tickets']]){
+        const row=db.get('SELECT * FROM '+table+' WHERE guild_id=?',BigInt(interaction.guildId))
+        sections.push('\n'+label)
+        for(const [key,value] of Object.entries(row||{}))if(key!=='guild_id')sections.push(key.replaceAll('_',' ') + ': ' + (value==null?'Not set':String(value)))
+      }
+      let output=sections.join('\n')
+      while(output.length>3900){
+        let split=output.lastIndexOf('\n',3900);if(split<=0)split=3900
+        await respond(interaction,output.slice(0,split))
+        output=output.slice(split).replace(/^\n/,'')
+      }
+      return respond(interaction,output)
     }
 
     if (name === 'welcome' || name === 'goodbye') {
-      const channel = interaction.options.getChannel('channel', true)
-      db.updateSetting(interaction.guildId, name === 'welcome' ? 'welcome_channel_id' : 'goodbye_channel_id', channel.id)
-      return respond(interaction, `${name === 'welcome' ? 'Welcome' : 'Goodbye'} channel set to <#${channel.id}>.`)
+      if (!isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can configure join and leave notices.',true,'Access denied')
+      const channel=interaction.options.getChannel('channel',true)
+      db.updateSetting(interaction.guildId,name==='welcome'?'welcome_channel_id':'goodbye_channel_id',channel.id)
+      const title=name==='welcome'?'Join notices configured':'Leave notices configured'
+      const description='Future '+(name==='welcome'?'joins':'leaves')+' will include detailed member information.'
+      const sent=await channel.send({embeds:[embed(description,title)],allowedMentions:{parse:[]}}).then(()=>true).catch(()=>false)
+      if(!sent)return respond(interaction,'Notice channel was saved, but I could not post a test entry. Check View Channel and Send Messages permissions.')
+      return respond(interaction,'Detailed '+(name==='welcome'?'join':'leave')+' notices will go to <#'+channel.id+'>.')
     }
 
-    if (name === 'autorole') {
+    if (name === 'autorole') {    if (name === 'autorole') {
       const role = interaction.options.getRole('role')
       if (role && !safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'Choose a manageable, non-privileged role.')
       db.updateSetting(interaction.guildId, 'autorole_id', role?.id || null)
@@ -770,12 +831,13 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'smpannounce') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageMessages,'Manage Messages')) return
       const channel = interaction.options.getChannel('channel', true)
       const message = interaction.options.getString('message', true)
       const cfg = db.setting(interaction.guildId)
       const last = cfg.ad_last_sent_at ? Date.parse(String(cfg.ad_last_sent_at)) : 0
       const cooldown = Number(cfg.ad_cooldown_seconds || 3600) * 1000
-      if (last && Date.now() - last < cooldown && interaction.user.id !== interaction.guild.ownerId) {
+      if (last && Date.now() - last < cooldown) {
         return respond(interaction, `SMP announcement cooldown active. Try again in ${Math.ceil((cooldown - (Date.now() - last)) / 60000)} minute(s).`)
       }
       await channel.send({ embeds: [embed(message, 'ESN SMP Announcement')], allowedMentions: { parse: [] } })
@@ -784,6 +846,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'ticket-config') {
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
       const role = interaction.options.getRole('support_role', true)
       if (role.id === interaction.guildId || role.managed || (interaction.user.id !== interaction.guild.ownerId && role.comparePositionTo(interaction.member.roles.highest) >= 0)) return respond(interaction, 'Choose an unmanaged support role below your role.')
       db.run('UPDATE ticket_config SET support_role_id=? WHERE guild_id=?', BigInt(role.id), BigInt(interaction.guildId))
@@ -842,37 +905,41 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'guardian') {
-      const sub = interaction.options.getSubcommand()
-      if (sub === 'snapshot') {
-        const snap = await saveSnapshot(db, interaction.guild)
-        return respond(interaction, `Recovery snapshot saved with ${snap.roles.length} roles and ${snap.channels.length} channels. Current bots were approved.`)
+      const sub=interaction.options.getSubcommand()
+      if (['snapshot','approve-bot','unapprove-bot','panic'].includes(sub) && !isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can use this Guardian control.',true,'Access denied')
+      if (sub==='snapshot') {
+        const snap=await saveSnapshot(db,interaction.guild,true)
+        return respond(interaction,'Guardian recovery snapshot saved with '+snap.roles.length+' roles and '+snap.channels.length+' channels. Current bots, webhooks, and integrations are now the trusted baseline.')
       }
-      if (sub === 'approve-bot' || sub === 'unapprove-bot') {
-        const botId = interaction.options.getString('bot_id', true)
-        if (!/^\d{15,22}$/.test(botId)) return respond(interaction, 'Provide a valid bot/application ID.')
-        if (sub === 'approve-bot') db.run('INSERT OR REPLACE INTO approved_bots (guild_id,bot_id,added_by_id) VALUES (?,?,?)', BigInt(interaction.guildId), BigInt(botId), BigInt(interaction.user.id))
-        else db.run('DELETE FROM approved_bots WHERE guild_id=? AND bot_id=?', BigInt(interaction.guildId), BigInt(botId))
-        return respond(interaction, `Bot ${botId} ${sub === 'approve-bot' ? 'approved' : 'removed from approval'}.`)
+      if (sub==='approve-bot'||sub==='unapprove-bot') {
+        const botId=interaction.options.getString('bot_id',true)
+        if(!/^\d{15,22}$/.test(botId))return respond(interaction,'Provide a numeric Discord bot/application ID.')
+        if(sub==='approve-bot')db.insertApprovedBot(interaction.guildId,botId,interaction.user.id)
+        else db.run('DELETE FROM approved_bots WHERE guild_id=? AND bot_id=?',BigInt(interaction.guildId),BigInt(botId))
+        return respond(interaction,(sub==='approve-bot'?'Approved bot/application ID ':'Removed bot/application ID ')+botId+(sub==='approve-bot'?'.':' from the approval list.'))
       }
-      if (sub === 'panic') {
-        const enabled = interaction.options.getBoolean('enabled') ?? true
-        const result = await panicGuild(db, interaction.guild, enabled)
-        return respond(interaction, enabled ? `PANIC enabled. Locked ${result.locked} channel(s); removed ${result.botsRemoved} unapproved bot(s).` : `PANIC released. Restored ${result.restored} channel(s).`)
+      if (sub==='panic') {
+        const enabled=interaction.options.getBoolean('enabled')??true
+        const result=await panicGuild(db,interaction.guild,enabled)
+        if(enabled)return respond(interaction,'PANIC enabled. External-app locks changed '+result.externalChanged+' permission entries ('+result.externalFailed+' failed); removed '+result.botsRemoved+' unapproved bots, '+result.webhooksRemoved+' webhooks, and '+result.integrationsRemoved+' integrations.')
+        return respond(interaction,'PANIC released. Core protections remain enabled. Restored '+result.restored+' channel(s).')
       }
-      if (sub === 'audit') {
-        const a = securityAudit(db, interaction.guild)
-        return respond(interaction, `Missing permissions: ${a.missing.length ? a.missing.join(', ') : 'none'}\nHigh-risk roles: ${a.riskyRoles}\nUnapproved bots: ${a.unapprovedBots}\nRoles exposing Use External Apps: ${a.externalEnabled}\nAnti-nuke: ${a.antiNuke ? 'ON' : 'OFF'}\nRaid protection: ${a.raid ? 'ON' : 'OFF'}\nRecovery snapshot: ${a.snapshot ? 'YES' : 'NO'}`, true, 'Guardian Security Audit')
+      if (sub==='audit') {
+        const a=securityAudit(db,interaction.guild)
+        return respond(interaction,'Guardian Security Scoreboard\nScore: '+a.score+'/100\nMissing Guardian permissions: '+(a.missing.join(', ')||'none')+'\nHigh-risk roles: '+a.riskyRoles+'\nUnapproved bots: '+a.unapprovedBots+'\nRoles still allowing external apps: '+a.externalEnabled+'\nRollback: '+(Number(a.guardian?.rollback_enabled)?'ON':'OFF')+'\nWebhook guard: '+(Number(a.guardian?.webhook_guard)?'ON':'OFF')+'\nIntegration guard: '+(Number(a.guardian?.integration_guard)?'ON':'OFF')+'\nCredential leak guard: '+(Number(a.guardian?.credential_guard)?'ON':'OFF'))
       }
-      if (sub === 'status') {
-        const panic = db.stateEnabled(`panic:${interaction.guildId}`)
-        const a = securityAudit(db, interaction.guild)
-        return respond(interaction, `PANIC: ${panic ? 'ACTIVE' : 'off'}\nAnti-nuke: ${a.antiNuke ? 'ON' : 'OFF'}\nRaid protection: ${a.raid ? 'ON' : 'OFF'}\nSnapshot: ${a.snapshot ? 'ready' : 'missing'}\nUnapproved bots: ${a.unapprovedBots}`)
+      if (sub==='status') {
+        const cfg=db.get('SELECT * FROM guardian_config WHERE guild_id=?',BigInt(interaction.guildId))
+        const bots=db.get('SELECT COUNT(*) AS count FROM approved_bots WHERE guild_id=?',BigInt(interaction.guildId))
+        const snap=db.get('SELECT created_at FROM guardian_snapshots WHERE guild_id=?',BigInt(interaction.guildId))
+        return respond(interaction,'External-app lock: '+(Number(cfg.external_app_lock)?'ON':'OFF')+'\nBot approval: '+(Number(cfg.bot_approval)?'ON':'OFF')+'\nWebhook guard: '+(Number(cfg.webhook_guard)?'ON':'OFF')+'\nIntegration guard: '+(Number(cfg.integration_guard)?'ON':'OFF')+'\nCredential leak guard: '+(Number(cfg.credential_guard)?'ON':'OFF')+'\nAutomatic rollback: '+(Number(cfg.rollback_enabled)?'ON':'OFF')+'\nPANIC: '+(Number(cfg.panic_mode)?'ACTIVE':'inactive')+'\nApproved bots: '+Number(bots?.count||0)+'\nLast snapshot: '+(snap?.created_at||'none'))
       }
     }
 
-    if (name === 'security') {
+    if (name === 'security') {    if (name === 'security') {
       const sub = interaction.options.getSubcommand()
       if (sub === 'harden') {
+        if (!isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can apply the secure baseline.',true,'Access denied')
         const r = await hardenGuild(db, interaction.guild)
         return respond(interaction, `Secure baseline applied. Anti-nuke, raid protection, and AutoMod are enabled. Removed Use External Apps from ${r.rolesChanged} manageable role(s). Recovery snapshot refreshed.`)
       }
@@ -986,7 +1053,7 @@ async function handleCommand(interaction, db, settings) {
 
     if (name === 'antinuke') {
       const sub = interaction.options.getSubcommand()
-      if (['disable','trust','untrust'].includes(sub) && !isGuildOwner(interaction)) return respond(interaction, 'Only the Discord server owner can change this anti-nuke control.', true, 'Access denied')
+      if (['setup','enable','disable','trust','untrust'].includes(sub) && !isGuildOwner(interaction)) return respond(interaction, 'Only the Discord server owner can change this anti-nuke control.', true, 'Access denied')
       if (sub === 'setup') {
         const limit = interaction.options.getInteger('action_limit') || 3
         const window = interaction.options.getInteger('window_seconds') || 15
@@ -1011,91 +1078,47 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'overwatch') {
-      const sub = interaction.options.getSubcommand()
-      if (sub === 'status') {
-        const a = securityAudit(db, interaction.guild)
-        const cases = db.get('SELECT COUNT(*) AS count FROM cases WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, `Anti-nuke: ${a.antiNuke ? 'ON' : 'OFF'}\nRaid: ${a.raid ? 'ON' : 'OFF'}\nSnapshot: ${a.snapshot ? 'READY' : 'MISSING'}\nMissing permissions: ${a.missing.length}\nRecorded cases: ${cases.count}`)
+      const sub=interaction.options.getSubcommand(),over=client.guardianOverwatch
+      if(!over)return respond(interaction,'Guardian Overwatch is not ready yet.')
+      if(sub==='status')return respond(interaction,over.postureReport(interaction.guild))
+      if(sub==='integrity')return respond(interaction,over.integrityReport(interaction.guild))
+      if(sub==='incidents')return respond(interaction,over.incidentReport(interaction.guildId))
+      if(sub==='seal'){
+        if(!isGuildOwner(interaction))return respond(interaction,'Only the Discord server owner can seal the security policy baseline.',true,'Access denied')
+        const fp=over.sealPolicy(interaction.guild)
+        return respond(interaction,'Security policy baseline sealed. Fingerprint: '+fp)
       }
-      if (sub === 'seal') {
-        const cfg = {
-          security: db.get('SELECT * FROM security_config WHERE guild_id=?', BigInt(interaction.guildId)),
-          antinuke: db.get('SELECT * FROM anti_nuke_config WHERE guild_id=?', BigInt(interaction.guildId)),
-          raid: db.get('SELECT * FROM raid_config WHERE guild_id=?', BigInt(interaction.guildId)),
-          approvedBots: db.all('SELECT bot_id FROM approved_bots WHERE guild_id=?', BigInt(interaction.guildId)).map(r => String(r.bot_id))
-        }
-        const clean = JSON.parse(JSON.stringify(cfg, (_, v) => typeof v === 'bigint' ? v.toString() : v))
-        const hash = jsonHash(clean)
-        db.run('INSERT INTO policy_baselines (guild_id,data,sha256,created_at) VALUES (?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(guild_id) DO UPDATE SET data=excluded.data,sha256=excluded.sha256,created_at=CURRENT_TIMESTAMP', BigInt(interaction.guildId), JSON.stringify(clean), hash)
-        return respond(interaction, `Policy baseline sealed. SHA-256: \`${hash}\``)
-      }
-      if (sub === 'integrity') {
-        const row = db.get('SELECT * FROM policy_baselines WHERE guild_id=?', BigInt(interaction.guildId))
-        if (!row) return respond(interaction, 'No sealed policy baseline exists. Run /overwatch seal.')
-        const actual = crypto.createHash('sha256').update(String(row.data)).digest('hex')
-        return respond(interaction, `Stored hash: \`${row.sha256}\`\nRecomputed hash: \`${actual}\`\nIntegrity: **${actual === row.sha256 ? 'VALID' : 'FAILED'}**`)
-      }
-      if (sub === 'incidents') {
-        const rows = db.all('SELECT incident_id,kind,status,created_at FROM incident_sessions WHERE guild_id=? ORDER BY incident_id DESC LIMIT 15', BigInt(interaction.guildId))
-        return respond(interaction, rows.length ? rows.map(r => `#${r.incident_id} ${r.kind} — ${r.status} — ${r.created_at}`).join('\n') : 'No persistent incident sessions recorded.')
-      }
-      if (sub === 'backup') {
-        const file = db.backup('incident')
-        return respond(interaction, file ? `Verified incident backup created: \`${file}\`` : 'Backup could not be created.')
+      if(sub==='backup'){
+        if(!isGuildOwner(interaction))return respond(interaction,'Only the Discord server owner can create an incident backup.',true,'Access denied')
+        const file=db.backup('incident')
+        return respond(interaction,file?'Verified incident backup created: '+require('node:path').basename(file):'Backup could not be created.')
       }
     }
 
     if (name === 'resilience') {
-      const sub = interaction.options.getSubcommand()
-      const info = db.backupInfo()
-      const audit = securityAudit(db, interaction.guild)
-      if (sub === 'status') return respond(interaction, `Database: ${fs.existsSync(info.database) ? 'READY' : 'MISSING'}\nBackups: ${info.count}\nLatest backup: ${info.latest || 'none'}\nRecovery snapshot: ${audit.snapshot ? 'READY' : 'MISSING'}\nRequired permissions missing: ${audit.missing.length}`)
-      if (sub === 'drill') {
-        const checks = [
-          ['Database writable', (() => { try { fs.accessSync(info.database, fs.constants.R_OK | fs.constants.W_OK); return true } catch { return false } })()],
-          ['Recovery snapshot', audit.snapshot],
-          ['View Audit Log', !audit.missing.includes('View Audit Log')],
-          ['Manage Roles', !audit.missing.includes('Manage Roles')],
-          ['Manage Channels', !audit.missing.includes('Manage Channels')],
-          ['Backups exist', info.count > 0]
-        ]
-        return respond(interaction, checks.map(([n, ok]) => `${ok ? '✅' : '❌'} ${n}`).join('\n'), true, 'Guardian Readiness Drill')
-      }
-      if (sub === 'recovery-plan') {
-        const steps = []
-        if (!audit.snapshot) steps.push('Run /guardian snapshot.')
-        if (audit.missing.length) steps.push(`Fix Guardian permissions: ${audit.missing.join(', ')}.`)
-        if (!info.count) steps.push('Run /backupdb to create a verified database backup.')
-        if (!audit.antiNuke) steps.push('Run /antinuke setup.')
-        if (!audit.raid) steps.push('Configure /security raid.')
-        return respond(interaction, steps.length ? steps.map((x, i) => `${i + 1}. ${x}`).join('\n') : 'Guardian recovery readiness is complete.')
-      }
+      const sub=interaction.options.getSubcommand(),res=client.guardianResilience
+      if(!res)return respond(interaction,'Guardian Resilience is not ready yet.')
+      if(sub==='status')return respond(interaction,res.statusReport(interaction.guild))
+      if(sub==='drill')return respond(interaction,res.drillReport(interaction.guild))
+      if(sub==='recovery-plan')return respond(interaction,res.recoveryPlan(interaction.guild))
     }
 
     if (name === 'sentinel') {
-      const sub = interaction.options.getSubcommand()
-      if (sub === 'status') {
-        const count = db.get('SELECT COUNT(*) AS count FROM security_signals WHERE guild_id=?', BigInt(interaction.guildId))
-        const recent = db.get("SELECT COUNT(*) AS count FROM security_signals WHERE guild_id=? AND created_at >= datetime('now','-24 hours')", BigInt(interaction.guildId))
-        return respond(interaction, `Sentinel: ACTIVE\nSignals stored: ${count.count}\nSignals in last 24h: ${recent.count}\nSource: Guardian security and anomaly telemetry.`)
+      const sub=interaction.options.getSubcommand(),sentinel=client.guardianSentinel
+      if(!sentinel)return respond(interaction,'Guardian Sentinel is not ready yet.')
+      if(sub==='status')return respond(interaction,sentinel.liveReport(interaction.guild))
+      if(sub==='signals')return respond(interaction,sentinel.signalsReport(interaction.guildId,8))
+      if(sub==='subject'){
+        const subject=interaction.options.getString('subject_id',true)
+        if(!/^\d+$/.test(subject))return respond(interaction,'Provide a numeric subject ID.')
+        return respond(interaction,sentinel.subjectReport(interaction.guild,subject))
       }
-      if (sub === 'signals') {
-        const rows = db.all('SELECT signal_id,subject_id,kind,score,created_at FROM security_signals WHERE guild_id=? ORDER BY signal_id DESC LIMIT 15', BigInt(interaction.guildId))
-        return respond(interaction, rows.length ? rows.map(r => `#${r.signal_id} ${r.kind} | score ${r.score} | subject ${r.subject_id || 'n/a'} | ${r.created_at}`).join('\n') : 'No Sentinel anomaly signals recorded yet.')
-      }
-      if (sub === 'subject') {
-        const subject = interaction.options.getString('subject_id', true)
-        const rows = /^\d+$/.test(subject) ? db.all('SELECT signal_id,kind,score,details,created_at FROM security_signals WHERE guild_id=? AND subject_id=? ORDER BY signal_id DESC LIMIT 20', BigInt(interaction.guildId), BigInt(subject)) : []
-        return respond(interaction, rows.length ? rows.map(r => `#${r.signal_id} ${r.kind} — score ${r.score} — ${r.created_at}`).join('\n') : 'No Sentinel profile exists for that subject.')
-      }
-      if (sub === 'explain') {
-        const signalId = interaction.options.getInteger('signal_id', true)
-        const row = db.get('SELECT * FROM security_signals WHERE guild_id=? AND signal_id=?', BigInt(interaction.guildId), signalId)
-        if (!row) return respond(interaction, 'Signal not found.')
-        return respond(interaction, `Signal #${row.signal_id}\nKind: ${row.kind}\nScore: ${row.score}\nSubject: ${row.subject_id || 'n/a'}\nDetails: ${row.details || 'No additional details'}\nCreated: ${row.created_at}`)
+      if(sub==='explain'){
+        const signalId=interaction.options.getInteger('signal_id',true)
+        return respond(interaction,sentinel.explainSignal(interaction.guildId,signalId)||'Signal not found.')
       }
     }
-  } catch (error) {
+  } catch (error) {  } catch (error) {
     console.error(`[Guardian] command /${name} failed`, error)
     const text = 'The command failed safely. Staff can check the bot console/system log.'
     if (interaction.deferred || interaction.replied) await interaction.followUp({ content: text, ephemeral: true }).catch(() => {})
