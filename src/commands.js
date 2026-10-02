@@ -30,6 +30,7 @@ const {
   trustedUser,
   isApprovedBot
 } = require('./security')
+const { HELP_GUIDES } = require('./community')
 
 const LOG_CHOICES = [
   ['Moderation', 'moderation'],
@@ -130,7 +131,7 @@ function definitions() {
     .addBooleanOption(o => o.setName('remove').setDescription('Remove instead of add').setRequired(false))
     .addStringOption(o => o.setName('reason').setDescription('Reason').setRequired(false).setMaxLength(1000)))
 
-  defs.push(new SlashCommandBuilder().setName('massrole').setDescription('Add or remove a role for eligible members.')
+  defs.push(new SlashCommandBuilder().setName('massrole').setDescription('Add or remove a role for all eligible members.')
     .addRoleOption(o => o.setName('role').setDescription('Role').setRequired(true))
     .addBooleanOption(o => o.setName('remove').setDescription('Remove instead of add').setRequired(false))
     .addBooleanOption(o => o.setName('include_bots').setDescription('Include bots').setRequired(false)))
@@ -147,28 +148,29 @@ function definitions() {
   defs.push(new SlashCommandBuilder().setName('help').setDescription('Show the ESN Guardian setup and command guide.')
     .addStringOption(o => o.setName('section').setDescription('Guide section').setRequired(false)
       .addChoices(
-        { name: 'Security', value: 'security' },
+        { name: 'Setup', value: 'setup' },
         { name: 'Moderation', value: 'moderation' },
+        { name: 'Security', value: 'security' },
         { name: 'Verification', value: 'verification' },
-        { name: 'Tickets', value: 'tickets' },
+        { name: 'Community', value: 'community' },
         { name: 'Owner', value: 'owner' }
       )))
 
   defs.push(new SlashCommandBuilder().setName('panel').setDescription('Post the ESN Guardian staff control panel.'))
   defs.push(new SlashCommandBuilder().setName('config').setDescription('Show configured server settings.'))
-  defs.push(new SlashCommandBuilder().setName('welcome').setDescription('Set the channel for automatic join notices.')
+  defs.push(new SlashCommandBuilder().setName('welcome').setDescription('Set the channel for automatic detailed join notices.')
     .addChannelOption(o => o.setName('channel').setDescription('Welcome channel').setRequired(true).addChannelTypes(ChannelType.GuildText)))
-  defs.push(new SlashCommandBuilder().setName('goodbye').setDescription('Set the channel for automatic leave notices.')
+  defs.push(new SlashCommandBuilder().setName('goodbye').setDescription('Set the channel for automatic detailed leave notices.')
     .addChannelOption(o => o.setName('channel').setDescription('Goodbye channel').setRequired(true).addChannelTypes(ChannelType.GuildText)))
   defs.push(new SlashCommandBuilder().setName('autorole').setDescription('Configure the automatic member role.')
     .addRoleOption(o => o.setName('role').setDescription('Role; omit to disable').setRequired(false)))
   defs.push(new SlashCommandBuilder().setName('logs').setDescription('Set a detailed event log channel.')
     .addStringOption(o => o.setName('category').setDescription('Log category').setRequired(true).addChoices(...LOG_CHOICES.map(([name, value]) => ({ name, value }))))
     .addChannelOption(o => o.setName('channel').setDescription('Log channel').setRequired(true).addChannelTypes(ChannelType.GuildText)))
-  defs.push(new SlashCommandBuilder().setName('suggest').setDescription('Submit a suggestion.')
+  defs.push(new SlashCommandBuilder().setName('suggest').setDescription('Submit a suggestion for staff and the community.')
     .addStringOption(o => o.setName('suggestion').setDescription('Suggestion').setRequired(true).setMaxLength(1800)))
-  defs.push(new SlashCommandBuilder().setName('smpannounce').setDescription('Send an SMP announcement with cooldown.')
-    .addChannelOption(o => o.setName('channel').setDescription('Announcement channel').setRequired(true).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+  defs.push(new SlashCommandBuilder().setName('smpannounce').setDescription('Send an SMP announcement with a server-wide cooldown.')
+    .addChannelOption(o => o.setName('channel').setDescription('Announcement channel').setRequired(true).addChannelTypes(ChannelType.GuildText))
     .addStringOption(o => o.setName('message').setDescription('Announcement').setRequired(true).setMaxLength(2000)))
 
   const verification = new SlashCommandBuilder().setName('verification').setDescription('Configure member verification.')
@@ -187,9 +189,9 @@ function definitions() {
 
   defs.push(new SlashCommandBuilder().setName('ticket-config').setDescription('Choose the role that can access new support tickets.')
     .addRoleOption(o => o.setName('support_role').setDescription('Support role').setRequired(true)))
-  defs.push(new SlashCommandBuilder().setName('ticket').setDescription('Open a private support ticket.')
+  defs.push(new SlashCommandBuilder().setName('ticket').setDescription('Open a private support ticket. One active ticket per member.')
     .addStringOption(o => o.setName('subject').setDescription('Ticket subject').setRequired(true).setMaxLength(200)))
-  defs.push(new SlashCommandBuilder().setName('ticket-close').setDescription('Close this Guardian ticket.'))
+  defs.push(new SlashCommandBuilder().setName('ticket-close').setDescription('Close this ticket and retain its private message history.'))
 
   const guardian = new SlashCommandBuilder().setName('guardian').setDescription('Emergency recovery and advanced Guardian protection.')
     .addSubcommand(s => s.setName('snapshot').setDescription('Save a trusted recovery snapshot.'))
@@ -290,7 +292,7 @@ function definitions() {
   defs.push(new SlashCommandBuilder().setName('backupdb').setDescription('Create a verified Guardian database backup.'))
   defs.push(new SlashCommandBuilder().setName('backupstatus').setDescription('Show database backup status.'))
   defs.push(new SlashCommandBuilder().setName('servers').setDescription('List servers currently served by the bot.'))
-  defs.push(new SlashCommandBuilder().setName('synccommands').setDescription('Refresh slash commands.')
+  defs.push(new SlashCommandBuilder().setName('synccommands').setDescription('Refresh slash commands in one server or every connected server.')
     .addStringOption(o => o.setName('guild_id').setDescription('One guild ID; omit for all connected servers').setRequired(false)))
   defs.push(new SlashCommandBuilder().setName('globalban').setDescription('Ban a user from every served server.')
     .addStringOption(o => o.setName('user_id').setDescription('Discord user ID').setRequired(true))
@@ -299,7 +301,7 @@ function definitions() {
     .addStringOption(o => o.setName('user_id').setDescription('Discord user ID').setRequired(true)))
   defs.push(new SlashCommandBuilder().setName('broadcast').setDescription('Send an announcement to configured system log channels.')
     .addStringOption(o => o.setName('message').setDescription('Message').setRequired(true).setMaxLength(1800)))
-  defs.push(new SlashCommandBuilder().setName('maintenance').setDescription('Enable or disable maintenance mode.')
+  defs.push(new SlashCommandBuilder().setName('maintenance').setDescription('Enable or disable maintenance mode notice.')
     .addBooleanOption(o => o.setName('enabled').setDescription('Enabled').setRequired(true)))
   defs.push(new SlashCommandBuilder().setName('blacklist').setDescription('Block a server from using Guardian.')
     .addStringOption(o => o.setName('guild_id').setDescription('Server ID').setRequired(true))
@@ -318,47 +320,34 @@ async function registerGuild(guild) {
   return guild.commands.set(asJson())
 }
 
+async function accessDenied(interaction) {
+  await respond(interaction, 'This command is unavailable here, or you do not have permission to use it.', true, 'Access denied')
+  return false
+}
+
 async function requireGuild(interaction, db, settings) {
-  if (!interaction.inGuild()) {
-    await respond(interaction, 'This command can only be used in a server.')
-    return false
-  }
-  if (db.isGuildBlacklisted(interaction.guildId) && !isBotOwner(interaction, settings)) {
-    await respond(interaction, 'ESN Guardian is unavailable in this server.')
-    return false
-  }
-  if (db.stateEnabled('maintenance') && !isBotOwner(interaction, settings)) {
-    await respond(interaction, 'ESN Guardian is currently in maintenance mode.')
-    return false
-  }
+  if (!interaction.inGuild()) return accessDenied(interaction)
+  if (db.isGuildBlacklisted(interaction.guildId) && !isBotOwner(interaction, settings)) return accessDenied(interaction)
+  if (db.stateEnabled('maintenance') && !isBotOwner(interaction, settings)) return accessDenied(interaction)
   db.ensureGuild(interaction.guildId)
   return true
 }
 
 async function requireStaff(interaction, db, settings) {
   if (!await requireGuild(interaction, db, settings)) return false
-  if (!isStaff(interaction)) {
-    await respond(interaction, 'You need Manage Server permission to use this command.', true, 'Access denied')
-    return false
-  }
+  if (!isStaff(interaction)) return accessDenied(interaction)
   return true
 }
 
 async function requireBotOwner(interaction, settings) {
   const owners = new Set(['1515077206886453469','1392224478175690752','1434663490160955407'])
   if (settings.ownerId) owners.add(String(settings.ownerId))
-  if (!owners.has(String(interaction.user.id))) {
-    await respond(interaction, 'This command is restricted to the ESN Guardian bot owner.', true, 'Access denied')
-    return false
-  }
+  if (!owners.has(String(interaction.user.id))) return accessDenied(interaction)
   return true
 }
 
-async function requirePermission(interaction, permission, label) {
-  if (!interaction.memberPermissions?.has(permission)) {
-    await respond(interaction, 'You need '+label+' permission to use this command.', true, 'Access denied')
-    return false
-  }
+async function requirePermission(interaction, permission) {
+  if (!interaction.memberPermissions?.has(permission)) return accessDenied(interaction)
   return true
 }
 
@@ -457,8 +446,7 @@ async function handleCommand(interaction, db, settings) {
       if (!await requireBotOwner(interaction, settings)) return
 
       if (name === 'botstats') {
-        const uptime=Math.floor(process.uptime())
-        return respond(interaction,'Servers: '+client.guilds.cache.size+'\nUsers cached: '+client.users.cache.size+'\nLatency: '+Math.round(client.ws.ping)+'ms\nUptime: '+Math.floor(uptime/3600)+'h '+Math.floor((uptime%3600)/60)+'m\nNode: '+process.version+'\nDatabase: online')
+        return respond(interaction,'Servers: '+client.guilds.cache.size+'\nUsers cached: '+client.users.cache.size+'\nLatency: '+Math.round(client.ws.ping)+'ms\nDatabase: online')
       }
       if (name === 'backupdb') {
         try {
@@ -528,7 +516,7 @@ async function handleCommand(interaction, db, settings) {
           const user=await client.users.fetch(String(userId)).catch(()=>null)
           if(user)await user.send({content:notice,allowedMentions:{parse:[]}}).then(()=>delivered++).catch(()=>{})
         }
-        return respond(interaction,'Maintenance mode '+(enabled?'enabled':'disabled')+'. Notified '+delivered+' bot-status subscriber(s).')
+        return respond(interaction,'Maintenance mode '+(enabled?'enabled':'disabled')+'. Notified '+delivered+' bot-status subscriber(s). Use `/broadcast` to communicate the change in servers.')
       }
       if (name === 'blacklist') {
         const guildId=interaction.options.getString('guild_id',true),reason=interaction.options.getString('reason',true)
@@ -549,21 +537,14 @@ async function handleCommand(interaction, db, settings) {
       }
     }
 
+    if (name === 'help') {
+      const section = interaction.options.getString('section') || 'setup'
+      return respond(interaction, HELP_GUIDES[section] || HELP_GUIDES.setup)
+    }
+
     if (!await requireGuild(interaction, db, settings)) return
 
     if (name === 'verify') return doVerify(interaction, db)
-
-    if (name === 'help') {
-      const section = interaction.options.getString('section') || 'all'
-      const guides = {
-        security: '**Security:** /security harden, /security status, /security raid, /antinuke, /guardian audit, /guardian snapshot, /guardian panic, /overwatch, /resilience, /sentinel',
-        moderation: '**Moderation:** /warn, /warnings, /timeout, /untimeout, /kick, /ban, /unban, /clear, /slowmode, /case, /history, /nickname, /role, /massrole, /lock, /unlock, /lockdown',
-        verification: '**Verification:** /verification setup, /verification enable, /verification disable, /verification reset, /verification status, /verify',
-        tickets: '**Tickets:** /ticket-config, /ticket, /ticket-close',
-        owner: '**Owner:** /botstats, /backupdb, /backupstatus, /servers, /synccommands, /globalban, /globalunban, /broadcast, /maintenance, /blacklist'
-      }
-      return respond(interaction, section === 'all' ? Object.values(guides).join('\n\n') : guides[section] || Object.values(guides).join('\n\n'), true, 'ESN Guardian Guide')
-    }
 
     if (name === 'ticket') {
       await interaction.deferReply({ ephemeral: true })
@@ -574,7 +555,11 @@ async function handleCommand(interaction, db, settings) {
       const support = cfg?.support_role_id ? guild.roles.cache.get(String(cfg.support_role_id)) : null
       if (!support) return interaction.editReply('Staff must configure a support role with /ticket-config first.')
       const previous = db.get('SELECT * FROM tickets WHERE guild_id=? AND user_id=?', BigInt(guild.id), BigInt(interaction.user.id))
-      if (previous?.channel_id && guild.channels.cache.has(String(previous.channel_id))) return interaction.editReply(`You already have a ticket: <#${previous.channel_id}>.`)
+      if (previous?.channel_id) {
+        const existing = await guild.channels.fetch(String(previous.channel_id)).catch(error => error?.code === 10003 ? null : undefined)
+        if (existing) return interaction.editReply(`You already have a ticket: <#${previous.channel_id}>.`)
+        if (existing === undefined) return interaction.editReply('I cannot check your existing ticket right now. Try again shortly.')
+      }
       if (previous && Date.now() / 1000 - Number(previous.opened_at) < 60) return interaction.editReply('Wait one minute between opening tickets.')
       const count = db.get('SELECT COUNT(*) AS count FROM tickets WHERE guild_id=? AND channel_id IS NOT NULL', BigInt(guild.id))
       if (Number(count?.count || 0) >= 25) return interaction.editReply('The server has 25 open tickets. Staff need to close one first.')
@@ -604,10 +589,14 @@ async function handleCommand(interaction, db, settings) {
       const authorized = String(row.user_id) === interaction.user.id || isStaff(interaction) || (cfg?.support_role_id && member.roles.cache.has(String(cfg.support_role_id)))
       if (!authorized) return interaction.editReply('Only the ticket opener or support staff can close this ticket.')
       const openerId = String(row.user_id)
-      await interaction.channel.permissionOverwrites.edit(openerId, { SendMessages: false, SendMessagesInThreads: false, CreatePublicThreads: false, CreatePrivateThreads: false }, { reason: `Ticket closed by ${interaction.user.id}` }).catch(() => {})
-      await interaction.channel.setName(`closed-${openerId}`).catch(() => {})
+      const closed = await interaction.channel.permissionOverwrites
+        .edit(openerId, { SendMessages: false, SendMessagesInThreads: false, CreatePublicThreads: false, CreatePrivateThreads: false }, { reason: `Ticket closed by ${interaction.user.id}` })
+        .then(() => interaction.channel.setName(`closed-${openerId}`, `Ticket closed by ${interaction.user.id}`))
+        .then(() => true)
+        .catch(() => false)
+      if (!closed) return interaction.editReply('I could not close this ticket. Its active record has been kept so you can retry.')
       db.run('UPDATE tickets SET channel_id=NULL WHERE guild_id=? AND user_id=?', BigInt(interaction.guildId), BigInt(openerId))
-      return interaction.editReply('Ticket closed. The channel remains private and its history is preserved.')
+      return interaction.editReply('Ticket closed. The channel remains private and its message history is preserved.')
     }
 
     if (name === 'suggest') {
@@ -622,7 +611,7 @@ async function handleCommand(interaction, db, settings) {
 
     const staffCommands = new Set([
       'warn','warnings','timeout','untimeout','kick','ban','unban','clear','slowmode','case','history','nickname','role','massrole',
-      'lock','unlock','lockdown','unlockdown','panel','config','welcome','goodbye','autorole','logs','smpannounce',
+      'lock','unlock','lockdown','unlockdown','panel','config','autorole','logs','smpannounce',
       'ticket-config','verification','guardian','security','antinuke','overwatch','resilience','sentinel'
     ])
     if (staffCommands.has(name) && !await requireStaff(interaction, db, settings)) return
@@ -630,7 +619,7 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'warn') {
       const member = interaction.options.getMember('member')
       const reason = interaction.options.getString('reason', true)
-      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
+      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
       const caseId = await moderationCase(db, interaction, member, 'WARN', reason)
       db.run('INSERT INTO warnings (case_id,guild_id,user_id) VALUES (?,?,?)', caseId, BigInt(interaction.guildId), BigInt(member.id))
       await logCase(db, interaction, caseId, member.user, 'WARN', reason)
@@ -648,7 +637,7 @@ async function handleCommand(interaction, db, settings) {
       if (name==='kick' && !await requirePermission(interaction,PermissionFlagsBits.KickMembers,'Kick Members')) return
       if (name==='ban' && !await requirePermission(interaction,PermissionFlagsBits.BanMembers,'Ban Members')) return
       const member = interaction.options.getMember('member')
-      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
+      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
       const reason = interaction.options.getString('reason') || (name === 'untimeout' ? 'Timeout removed' : 'No reason provided')
       const action = name.toUpperCase()
       const caseId = await moderationCase(db, interaction, member, action, reason)
@@ -708,7 +697,7 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'nickname') {
       if (!await requirePermission(interaction,PermissionFlagsBits.ManageNicknames,'Manage Nicknames')) return
       const member = interaction.options.getMember('member')
-      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
+      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
       const nickname = interaction.options.getString('nickname')
       const reason = interaction.options.getString('reason') || 'Nickname changed'
       const caseId = await moderationCase(db, interaction, member, 'NICKNAME', reason)
@@ -720,7 +709,7 @@ async function handleCommand(interaction, db, settings) {
       if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
       const member = interaction.options.getMember('member')
       const role = interaction.options.getRole('role')
-      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot target that member.')
+      if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
       if (!safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'That role is privileged, managed, or above the allowed hierarchy.')
       const remove = interaction.options.getBoolean('remove') || false
       const reason = interaction.options.getString('reason') || 'Role updated'
@@ -789,68 +778,68 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'welcome' || name === 'goodbye') {
-      if (!isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can configure join and leave notices.',true,'Access denied')
+      if (!isGuildOwner(interaction)) return accessDenied(interaction)
       const channel=interaction.options.getChannel('channel',true)
       db.updateSetting(interaction.guildId,name==='welcome'?'welcome_channel_id':'goodbye_channel_id',channel.id)
-      const title=name==='welcome'?'Join notices configured':'Leave notices configured'
-      const description='Future '+(name==='welcome'?'joins':'leaves')+' will include detailed member information.'
+      const isWelcome=name==='welcome'
+      const title=isWelcome?'Join notices configured':'Leave notices configured'
+      const description='Future '+(isWelcome?'joins':'leaves')+' will include the member\'s user ID, account and server timestamps, names, roles, status, and available membership flags.'
       const sent=await channel.send({embeds:[embed(description,title)],allowedMentions:{parse:[]}}).then(()=>true).catch(()=>false)
-      if(!sent)return respond(interaction,'Notice channel was saved, but I could not post a test entry. Check View Channel and Send Messages permissions.')
-      return respond(interaction,'Detailed '+(name==='welcome'?'join':'leave')+' notices will go to <#'+channel.id+'>.')
+      if(!sent)return respond(interaction,(isWelcome?'Join':'Leave')+' notice channel was saved, but I could not post a test entry. Check my View Channel and Send Messages permissions.')
+      return respond(interaction,'Detailed '+(isWelcome?'join':'leave')+' notices will go to <#'+channel.id+'>.')
     }
 
     if (name === 'autorole') {
       const role = interaction.options.getRole('role')
-      if (role && !safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'Choose a manageable, non-privileged role.')
+      if (role && !safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'Autoroles must be non-privileged roles below the allowed hierarchy.')
       db.updateSetting(interaction.guildId, 'autorole_id', role?.id || null)
-      return respond(interaction, role ? `Autorole set to <@&${role.id}>.` : 'Autorole disabled.')
+      return respond(interaction, role ? 'Autorole updated.' : 'Autorole disabled.')
     }
 
     if (name === 'logs') {
       const category = interaction.options.getString('category', true)
+      const label = category.replace(/^./, char => char.toUpperCase())
       const channel = interaction.options.getChannel('channel', true)
       const field = LOG_FIELDS[category]
       db.updateSetting(interaction.guildId, field, channel.id)
 
-      const sent = await logEvent(
-        db,
-        interaction.guild,
-        field,
-        'ESN Guardian log test',
-        `${category} logging is now configured for <#${channel.id}>. If you can see this message, Guardian can deliver this log category.`
-      )
-
-      if (!sent) {
-        return respond(
-          interaction,
-          `${category} log channel was saved as <#${channel.id}>, but Guardian could not send the test message. Check View Channel, Send Messages, and Embed Links permissions, then check the CogitHost console for the exact delivery error.`
-        )
-      }
-
-      return respond(interaction, `${category} logs are set to <#${channel.id}> and the test message was delivered successfully.`)
+      const sent = await channel.send({
+        embeds: [embed('ESN Guardian can write to this log channel.', label + ' logging configured')],
+        allowedMentions: { parse: [] }
+      }).then(() => true).catch(error => {
+        console.error('[Guardian] log configuration test failed', { guild: interaction.guildId, category, channel: channel.id, error: error?.message || String(error) })
+        return false
+      })
+      if (!sent) return respond(interaction, label + ' logs were saved, but I could not post a test entry. Check my View Channel and Send Messages permissions.')
+      return respond(interaction, label + ' logs will go to <#' + channel.id + '>. Test entry posted.')
     }
 
     if (name === 'smpannounce') {
-      if (!await requirePermission(interaction,PermissionFlagsBits.ManageMessages,'Manage Messages')) return
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageMessages)) return
       const channel = interaction.options.getChannel('channel', true)
       const message = interaction.options.getString('message', true)
+      if (channel.guildId !== interaction.guildId || !channel.permissionsFor(interaction.member)?.has(PermissionFlagsBits.SendMessages)) {
+        return respond(interaction, 'Choose a channel in this server where you can send messages.')
+      }
       const cfg = db.setting(interaction.guildId)
+      const now = Date.now()
       const last = cfg.ad_last_sent_at ? Date.parse(String(cfg.ad_last_sent_at)) : 0
       const cooldown = Number(cfg.ad_cooldown_seconds || 3600) * 1000
-      if (last && Date.now() - last < cooldown) {
-        return respond(interaction, `SMP announcement cooldown active. Try again in ${Math.ceil((cooldown - (Date.now() - last)) / 60000)} minute(s).`)
+      if (last && now - last < cooldown) {
+        return respond(interaction, 'Wait ' + (Math.floor((cooldown - (now - last)) / 1000) + 1) + ' seconds before the next announcement.')
       }
-      await channel.send({ embeds: [embed(message, 'ESN SMP Announcement')], allowedMentions: { parse: [] } })
-      db.updateSetting(interaction.guildId, 'ad_last_sent_at', new Date().toISOString())
-      return respond(interaction, `Announcement sent to <#${channel.id}>.`)
+      const sent = await channel.send({ content: message, allowedMentions: { parse: [] } }).then(() => true).catch(() => false)
+      if (!sent) return respond(interaction, 'I could not send the announcement. Check my channel permissions.')
+      db.updateSetting(interaction.guildId, 'ad_last_sent_at', new Date(now).toISOString())
+      return respond(interaction, 'Announcement sent.')
     }
 
     if (name === 'ticket-config') {
       if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
       const role = interaction.options.getRole('support_role', true)
-      if (role.id === interaction.guildId || role.managed || (interaction.user.id !== interaction.guild.ownerId && role.comparePositionTo(interaction.member.roles.highest) >= 0)) return respond(interaction, 'Choose an unmanaged support role below your role.')
+      if (role.id === interaction.guildId || role.managed || (interaction.user.id !== interaction.guild.ownerId && role.comparePositionTo(interaction.member.roles.highest) >= 0)) return respond(interaction, 'Choose an unmanaged support role below your role, other than @everyone.')
       db.run('UPDATE ticket_config SET support_role_id=? WHERE guild_id=?', BigInt(role.id), BigInt(interaction.guildId))
-      return respond(interaction, `Support role set to <@&${role.id}>.`)
+      return respond(interaction, 'Support role saved. This applies to new tickets; existing ticket access is unchanged.')
     }
 
     if (name === 'verification') {
@@ -900,7 +889,7 @@ async function handleCommand(interaction, db, settings) {
       }
       if (sub === 'status') {
         const cfg = db.get('SELECT * FROM verification_config WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, `Enabled: ${Number(cfg.enabled) ? 'yes' : 'no'}\nChannel: ${channelMention(cfg.channel_id)}\nVerified role: ${roleMention(cfg.verified_role_id)}\nUnverified role: ${roleMention(cfg.unverified_role_id)}\nMinimum account age: ${Number(cfg.min_account_age_days || 0)} days`)
+        return respond(interaction, `Enabled: ${Number(cfg.enabled) ? 'yes' : 'no'}\nChannel: ${channelMention(cfg.channel_id)}\nVerified role: ${roleMention(cfg.verified_role_id)}\nMinimum account age: ${Number(cfg.min_account_age_days || 0)} days`)
       }
     }
 
@@ -1120,9 +1109,7 @@ async function handleCommand(interaction, db, settings) {
     }
   } catch (error) {
     console.error(`[Guardian] command /${name} failed`, error)
-    const text = 'The command failed safely. Staff can check the bot console/system log.'
-    if (interaction.deferred || interaction.replied) await interaction.followUp({ content: text, ephemeral: true }).catch(() => {})
-    else await interaction.reply({ content: text, ephemeral: true }).catch(() => {})
+    await respond(interaction, 'The command failed safely. Staff can check the system log.', true, 'Command unavailable').catch(() => {})
   }
 }
 
