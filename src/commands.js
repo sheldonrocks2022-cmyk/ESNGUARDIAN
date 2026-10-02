@@ -994,50 +994,56 @@ async function handleCommand(interaction, db, settings) {
         return respond(interaction, 'AutoMod thresholds updated.')
       }
       if (sub === 'links') {
-        db.run('UPDATE security_config SET block_invites=?,strict_links=? WHERE guild_id=?',
-          interaction.options.getBoolean('block_invites', true) ? 1 : 0,
-          interaction.options.getBoolean('strict_links', true) ? 1 : 0,
-          BigInt(interaction.guildId))
-        return respond(interaction, 'Link protection updated.')
+        const blockInvites=interaction.options.getBoolean('block_invites',true)
+        const strictLinks=interaction.options.getBoolean('strict_links',true)
+        db.run('UPDATE security_config SET block_invites=?,strict_links=? WHERE guild_id=?',blockInvites?1:0,strictLinks?1:0,BigInt(interaction.guildId))
+        return respond(interaction,'Invite blocking: '+(blockInvites?'enabled':'disabled')+'; strict link allowlisting: '+(strictLinks?'enabled':'disabled')+'.')
       }
       if (sub === 'allow-domain' || sub === 'remove-domain') {
-        const domain = normalizeDomain(interaction.options.getString('domain', true))
-        if (!domain) return respond(interaction, 'Provide a valid domain.')
-        if (sub === 'allow-domain') db.run('INSERT OR IGNORE INTO allowed_domains (guild_id,domain) VALUES (?,?)', BigInt(interaction.guildId), domain)
-        else db.run('DELETE FROM allowed_domains WHERE guild_id=? AND domain=?', BigInt(interaction.guildId), domain)
-        return respond(interaction, `${domain} ${sub === 'allow-domain' ? 'allowed' : 'removed'}.`)
+        const domain=interaction.options.getString('domain',true).toLowerCase().trim().replace(/^https?:\/\//,'').split('/',1)[0]
+        if(sub==='allow-domain'&&(!domain||!domain.includes('.')||domain.includes(' ')))return respond(interaction,'Provide a valid domain, such as `example.com`.')
+        if(sub==='allow-domain'){
+          db.run('INSERT OR IGNORE INTO allowed_domains (guild_id,domain) VALUES (?,?)',BigInt(interaction.guildId),domain)
+          return respond(interaction,'Allowed `'+domain+'` and its subdomains in strict link mode.')
+        }
+        db.run('DELETE FROM allowed_domains WHERE guild_id=? AND domain=?',BigInt(interaction.guildId),domain)
+        return respond(interaction,'Removed `'+domain+'` from the strict link allowlist.')
       }
       if (sub === 'add-word' || sub === 'remove-word') {
-        const word = interaction.options.getString('word', true).trim()
-        if (!word) return respond(interaction, 'Word cannot be empty.')
-        if (sub === 'add-word') db.run('INSERT OR IGNORE INTO bad_words (guild_id,word) VALUES (?,?)', BigInt(interaction.guildId), word)
-        else db.run('DELETE FROM bad_words WHERE guild_id=? AND word=? COLLATE NOCASE', BigInt(interaction.guildId), word)
-        return respond(interaction, `Blocked-word list updated.`)
+        const word=interaction.options.getString('word',true).toLowerCase().trim()
+        if(sub==='add-word'&&(word.length<2||word.length>100))return respond(interaction,'Blocked text must be between 2 and 100 characters.')
+        if(sub==='add-word'){
+          db.run('INSERT OR IGNORE INTO bad_words (guild_id,word) VALUES (?,?)',BigInt(interaction.guildId),word)
+          return respond(interaction,'Blocked word or phrase added.')
+        }
+        db.run('DELETE FROM bad_words WHERE guild_id=? AND word=?',BigInt(interaction.guildId),word)
+        return respond(interaction,'Blocked word or phrase removed.')
       }
       if (sub === 'words') {
-        const rows = db.all('SELECT word FROM bad_words WHERE guild_id=? ORDER BY word', BigInt(interaction.guildId))
-        return respond(interaction, rows.length ? rows.map(r => `• ${r.word}`).join('\n') : 'No blocked words configured.')
+        const rows=db.all('SELECT word FROM bad_words WHERE guild_id=? ORDER BY word LIMIT 50',BigInt(interaction.guildId))
+        return respond(interaction,rows.length?rows.map(row=>'- '+row.word).join('\n'):'No blocked words or phrases are configured.')
       }
       if (sub === 'domains') {
-        const rows = db.all('SELECT domain FROM allowed_domains WHERE guild_id=? ORDER BY domain', BigInt(interaction.guildId))
-        return respond(interaction, rows.length ? rows.map(r => `• ${r.domain}`).join('\n') : 'No allowed domains configured.')
+        const rows=db.all('SELECT domain FROM allowed_domains WHERE guild_id=? ORDER BY domain LIMIT 50',BigInt(interaction.guildId))
+        return respond(interaction,rows.length?rows.map(row=>'- '+row.domain).join('\n'):'No domains are allowlisted.')
       }
       if (sub === 'trusted') {
-        const rows = db.all('SELECT user_id FROM anti_nuke_trusted_users WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, rows.length ? rows.map(r => `• <@${r.user_id}> (${r.user_id})`).join('\n') : 'No additional trusted users. The server owner is always trusted.')
+        const rows=db.all('SELECT user_id FROM anti_nuke_trusted_users WHERE guild_id=? ORDER BY created_at LIMIT 50',BigInt(interaction.guildId))
+        return respond(interaction,rows.length?rows.map(row=>'- <@'+row.user_id+'>').join('\n'):'No users are trusted by anti-nuke.')
       }
       if (sub === 'check-link') {
-        const domain = normalizeDomain(interaction.options.getString('url', true))
-        if (!domain) return respond(interaction, 'That URL is invalid.')
-        const cfg = db.get('SELECT strict_links FROM security_config WHERE guild_id=?', BigInt(interaction.guildId))
-        if (!Number(cfg.strict_links)) return respond(interaction, `${domain} is allowed because strict-link mode is disabled.`)
-        const allowed = db.all('SELECT domain FROM allowed_domains WHERE guild_id=?', BigInt(interaction.guildId)).map(r => String(r.domain))
-        const ok = allowed.some(base => domain === base || domain.endsWith(`.${base}`))
-        return respond(interaction, `${domain}: ${ok ? 'ALLOWED' : 'BLOCKED'} by current strict-link policy.`)
+        const value=interaction.options.getString('url',true)
+        let host=null
+        try{host=new URL(value.includes('://')?value:'https://'+value).hostname.toLowerCase()}catch{}
+        if(!host)return respond(interaction,'Provide a valid URL or domain.')
+        const cfg=db.get('SELECT strict_links FROM security_config WHERE guild_id=?',BigInt(interaction.guildId))
+        const allowed=db.all('SELECT domain FROM allowed_domains WHERE guild_id=?',BigInt(interaction.guildId)).map(row=>String(row.domain))
+        const permitted=!cfg||!Number(cfg.strict_links)||allowed.some(base=>host===base||host.endsWith('.'+base))
+        return respond(interaction,'`'+host+'` would be '+(permitted?'allowed':'blocked')+' by the current link policy.')
       }
       if (sub === 'reset-automod') {
-        db.run('UPDATE security_config SET automod_enabled=1,flood_limit=6,flood_window_seconds=10,max_mentions=6,caps_percentage=80,block_invites=1,strict_links=0 WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, 'AutoMod restored to Guardian secure defaults.')
+        db.run('UPDATE security_config SET automod_enabled=1,flood_limit=6,flood_window_seconds=10,max_mentions=6,caps_percentage=80,block_invites=1,strict_links=0 WHERE guild_id=?',BigInt(interaction.guildId))
+        return respond(interaction,'AutoMod defaults restored. Existing blocked words and allowed domains were retained.')
       }
       if (sub === 'raid') {
         const role = interaction.options.getRole('quarantine_role')
