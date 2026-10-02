@@ -706,8 +706,25 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'logs') {
       const category = interaction.options.getString('category', true)
       const channel = interaction.options.getChannel('channel', true)
-      db.updateSetting(interaction.guildId, LOG_FIELDS[category], channel.id)
-      return respond(interaction, `${category} logs will be sent to <#${channel.id}>.`)
+      const field = LOG_FIELDS[category]
+      db.updateSetting(interaction.guildId, field, channel.id)
+
+      const sent = await logEvent(
+        db,
+        interaction.guild,
+        field,
+        'ESN Guardian log test',
+        `${category} logging is now configured for <#${channel.id}>. If you can see this message, Guardian can deliver this log category.`
+      )
+
+      if (!sent) {
+        return respond(
+          interaction,
+          `${category} log channel was saved as <#${channel.id}>, but Guardian could not send the test message. Check View Channel, Send Messages, and Embed Links permissions, then check the CogitHost console for the exact delivery error.`
+        )
+      }
+
+      return respond(interaction, `${category} logs are set to <#${channel.id}> and the test message was delivered successfully.`)
     }
 
     if (name === 'smpannounce') {
