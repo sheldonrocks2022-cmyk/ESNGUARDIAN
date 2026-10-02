@@ -1046,36 +1046,50 @@ async function handleCommand(interaction, db, settings) {
         return respond(interaction,'AutoMod defaults restored. Existing blocked words and allowed domains were retained.')
       }
       if (sub === 'raid') {
-        const role = interaction.options.getRole('quarantine_role')
-        if (role && !safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'Choose a manageable, non-privileged quarantine role.')
+        const role=interaction.options.getRole('quarantine_role')
+        const me=interaction.guild.members.me
+        if(role&&(role.id===interaction.guildId||role.managed||!me||role.comparePositionTo(me.roles.highest)>=0||dangerousRole(role)))return respond(interaction,'The quarantine role must be below my highest role.')
         db.run('UPDATE raid_config SET enabled=?,join_limit=?,join_window_seconds=?,min_account_age_days=?,quarantine_role_id=? WHERE guild_id=?',
-          interaction.options.getBoolean('enabled', true) ? 1 : 0,
-          interaction.options.getInteger('join_limit', true),
-          interaction.options.getInteger('join_window_seconds', true),
-          interaction.options.getInteger('minimum_account_age_days', true),
-          role ? BigInt(role.id) : null,
+          interaction.options.getBoolean('enabled',true)?1:0,
+          interaction.options.getInteger('join_limit',true),
+          interaction.options.getInteger('join_window_seconds',true),
+          interaction.options.getInteger('minimum_account_age_days',true),
+          role?BigInt(role.id):null,
           BigInt(interaction.guildId))
-        return respond(interaction, 'Raid protection configuration updated.')
+        return respond(interaction,'Raid detection and containment policy updated.')
       }
       if (sub === 'raid-status') {
-        const r = db.get('SELECT * FROM raid_config WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, `Enabled: ${Number(r.enabled) ? 'yes' : 'no'}\nJoin threshold: ${r.join_limit} in ${r.join_window_seconds}s\nMinimum account age: ${r.min_account_age_days} days\nQuarantine role: ${roleMention(r.quarantine_role_id)}`)
+        const r=db.get('SELECT * FROM raid_config WHERE guild_id=?',BigInt(interaction.guildId))
+        const stats=client.guardianSecurity?.raidStats?.(interaction.guildId)||{}
+        const fastLimit=Math.max(3,Math.min(Number(r.join_limit),Math.floor((Number(r.join_limit)+1)/2)))
+        return respond(interaction,'**Guardian Raid Engine v3**\nEnabled: '+(Number(r.enabled)?'yes':'no')+'\nContainment: '+(stats.active?'ACTIVE':'inactive')+'\nActive until: '+(stats.active&&stats.until?new Date(stats.until).toISOString():'n/a')+'\nConfigured threshold: '+r.join_limit+' joins / '+r.join_window_seconds+'s\nFast-burst threshold: '+fastLimit+' joins / 5s\nYoung-account burst: 3 accounts / 15s when account-age checks are enabled\nMinimum account age: '+r.min_account_age_days+' days\nKick workers: 5\nKick queue: '+(stats.queueDepth||0)+'/4096\nBlocked this runtime: '+(stats.blocked||0)+'\nRaid triggers this runtime: '+(stats.triggers||0)+'\nQuarantine role: '+(r.quarantine_role_id?'<@&'+r.quarantine_role_id+'>':'not configured'))
       }
-      if (sub === 'quarantine' || sub === 'release') {
-        const member = interaction.options.getMember('member')
-        const r = db.get('SELECT quarantine_role_id FROM raid_config WHERE guild_id=?', BigInt(interaction.guildId))
-        const role = r?.quarantine_role_id ? interaction.guild.roles.cache.get(String(r.quarantine_role_id)) : null
-        if (!role?.editable) return respond(interaction, 'No manageable quarantine role is configured.')
-        if (sub === 'quarantine') await member.roles.add(role, interaction.options.getString('reason') || 'Manual security review')
-        else await member.roles.remove(role, interaction.options.getString('reason') || 'Security review completed')
-        return respond(interaction, `${sub === 'quarantine' ? 'Quarantined' : 'Released'} <@${member.id}>.`)
+      if (sub === 'quarantine') {
+        const member=interaction.options.getMember('member')
+        if(!memberManageable(interaction.guild,interaction.member,member))return respond(interaction,'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
+        const reason=interaction.options.getString('reason')||'Manual security review'
+        const ok=await quarantineMember(db,member,reason,interaction.user.id)
+        return respond(interaction,ok?'Quarantined <@'+member.id+'>.':'I could not quarantine that member. Configure a role below my highest role with `/security raid`.')
+      }
+      if (sub === 'release') {
+        const member=interaction.options.getMember('member')
+        if(!memberManageable(interaction.guild,interaction.member,member))return respond(interaction,'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
+        const reason=interaction.options.getString('reason')||'Security review completed'
+        const r=db.get('SELECT quarantine_role_id FROM raid_config WHERE guild_id=?',BigInt(interaction.guildId))
+        const role=r?.quarantine_role_id?interaction.guild.roles.cache.get(String(r.quarantine_role_id)):null
+        if(!role||!member.roles.cache.has(role.id))return respond(interaction,'That member is not assigned the configured quarantine role.')
+        const removed=await member.roles.remove(role,reason).then(()=>true).catch(()=>false)
+        if(!removed)return respond(interaction,'I could not remove that quarantine role.')
+        const caseId=db.createCase(interaction.guildId,member.id,interaction.user.id,'QUARANTINE_RELEASE',reason,interaction.channelId)
+        await logEvent(db,interaction.guild,'security_log_channel_id','Security: QUARANTINE_RELEASE | Case #'+caseId,'Target: <@'+member.id+'>\nModerator: <@'+interaction.user.id+'>\nReason: '+reason)
+        return respond(interaction,'Released <@'+member.id+'>. Case #'+caseId+'.')
       }
       if (sub === 'member') {
-        const member = interaction.options.getMember('member')
-        const rows = db.all('SELECT case_id,action,reason,created_at FROM cases WHERE guild_id=? AND target_id=? ORDER BY case_id DESC LIMIT 20', BigInt(interaction.guildId), BigInt(member.id))
-        const age = Math.floor((Date.now() - member.user.createdTimestamp) / 86400000)
-        const risky = member.roles.cache.filter(r => r.permissions.has(PermissionFlagsBits.Administrator) || r.permissions.has(PermissionFlagsBits.ManageGuild) || r.permissions.has(PermissionFlagsBits.ManageRoles))
-        return respond(interaction, `Member: <@${member.id}>\nAccount age: ${age} days\nHigh-risk roles: ${risky.size ? risky.map(r => r.name).join(', ') : 'none'}\nRecent security/mod cases:\n${rows.length ? rows.map(r => `#${r.case_id} ${r.action}: ${r.reason}`).join('\n') : 'none'}`)
+        const member=interaction.options.getMember('member')
+        const count=db.get('SELECT COUNT(*) AS count FROM cases WHERE guild_id=? AND target_id=?',BigInt(interaction.guildId),BigInt(member.id))
+        const risky=member.roles.cache.filter(role=>dangerousRole(role)).map(role=>role.name)
+        const age=Math.floor((Date.now()-member.user.createdTimestamp)/86400000)
+        return respond(interaction,'Member: <@'+member.id+'> ('+member.id+')\nAccount age: '+age+' days\nSecurity and moderation cases: '+Number(count?.count||0)+'\nHigh-risk roles: '+(risky.join(', ')||'none'))
       }
     }
 
@@ -1083,25 +1097,28 @@ async function handleCommand(interaction, db, settings) {
       const sub = interaction.options.getSubcommand()
       if (['setup','enable','disable','trust','untrust'].includes(sub) && !isGuildOwner(interaction)) return respond(interaction, 'Only the Discord server owner can change this anti-nuke control.', true, 'Access denied')
       if (sub === 'setup') {
-        const limit = interaction.options.getInteger('action_limit') || 3
-        const window = interaction.options.getInteger('window_seconds') || 15
-        db.run('UPDATE anti_nuke_config SET enabled=1,action_limit=?,window_seconds=? WHERE guild_id=?', limit, window, BigInt(interaction.guildId))
-        return respond(interaction, `Anti-nuke enabled: ${limit} destructive actions inside ${window}s triggers containment.`)
+        const limit=interaction.options.getInteger('action_limit')||3
+        const window=interaction.options.getInteger('window_seconds')||15
+        db.run('UPDATE anti_nuke_config SET enabled=1,action_limit=?,window_seconds=? WHERE guild_id=?',limit,window,BigInt(interaction.guildId))
+        return respond(interaction,'Anti-nuke enabled: non-trusted actors are banned after '+limit+' destructive actions in '+window+' seconds.')
       }
       if (sub === 'enable' || sub === 'disable') {
         db.run('UPDATE anti_nuke_config SET enabled=? WHERE guild_id=?', sub === 'enable' ? 1 : 0, BigInt(interaction.guildId))
         return respond(interaction, `Anti-nuke ${sub === 'enable' ? 'enabled' : 'disabled'}.`)
       }
       if (sub === 'status') {
-        const r = db.get('SELECT * FROM anti_nuke_config WHERE guild_id=?', BigInt(interaction.guildId))
-        const trusted = db.get('SELECT COUNT(*) AS count FROM anti_nuke_trusted_users WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, `Enabled: ${Number(r.enabled) ? 'yes' : 'no'}\nThreshold: ${r.action_limit} actions / ${r.window_seconds}s\nAdditional trusted users: ${trusted.count}`)
+        const r=db.get('SELECT * FROM anti_nuke_config WHERE guild_id=?',BigInt(interaction.guildId))
+        const trusted=db.get('SELECT COUNT(*) AS count FROM anti_nuke_trusted_users WHERE guild_id=?',BigInt(interaction.guildId))
+        return respond(interaction,'Enabled: '+(Number(r.enabled)?'yes':'no')+'\nThreshold: '+r.action_limit+' destructive actions in '+r.window_seconds+' seconds\nTrusted users: '+trusted.count+'\nRequires: View Audit Log, Ban Members, Manage Channels')
       }
       if (sub === 'trust' || sub === 'untrust') {
-        const user = interaction.options.getUser('user', true)
-        if (sub === 'trust') db.run('INSERT OR REPLACE INTO anti_nuke_trusted_users (guild_id,user_id,added_by_id) VALUES (?,?,?)', BigInt(interaction.guildId), BigInt(user.id), BigInt(interaction.user.id))
-        else db.run('DELETE FROM anti_nuke_trusted_users WHERE guild_id=? AND user_id=?', BigInt(interaction.guildId), BigInt(user.id))
-        return respond(interaction, `<@${user.id}> ${sub === 'trust' ? 'trusted' : 'removed from trust'}.`)
+        const user=interaction.options.getUser('user',true)
+        if(sub==='trust'){
+          db.run('INSERT OR REPLACE INTO anti_nuke_trusted_users (guild_id,user_id,added_by_id) VALUES (?,?,?)',BigInt(interaction.guildId),BigInt(user.id),BigInt(interaction.user.id))
+          return respond(interaction,'Trusted <@'+user.id+'> for anti-nuke protection.')
+        }
+        db.run('DELETE FROM anti_nuke_trusted_users WHERE guild_id=? AND user_id=?',BigInt(interaction.guildId),BigInt(user.id))
+        return respond(interaction,'Removed anti-nuke trust for <@'+user.id+'>.')
       }
     }
 
