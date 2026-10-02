@@ -373,11 +373,7 @@ class SecurityCog(commands.Cog):
             return False
 
         bot_member = member.guild.me
-        if (
-            bot_member is not None
-            and member.top_role >= bot_member.top_role
-            and not bot_member.guild_permissions.administrator
-        ):
+        if bot_member is not None and member.top_role >= bot_member.top_role:
             self._note_raid_failure(member, "target role is not below Guardian")
             return False
 
@@ -808,7 +804,8 @@ class SecurityCog(commands.Cog):
 
         if member.bot:
             blocked_app = await self.bot.database.fetchone(
-                "SELECT application_id FROM blocked_external_apps WHERE guild_id = ? AND application_id = ?",
+                "SELECT application_id FROM blocked_external_apps "
+                "WHERE guild_id = ? AND application_id = ?",
                 (member.guild.id, member.id),
             )
             if blocked_app is not None:
@@ -833,60 +830,81 @@ class SecurityCog(commands.Cog):
                     )
                 return
 
-        antinuke = await self.bot.database.fetchone(
-            "SELECT enabled FROM anti_nuke_config WHERE guild_id = ?",
-            (member.guild.id,),
-        )
-        if member.bot and antinuke is not None and antinuke["enabled"]:
-            executor = await self._audit_executor(
-                member.guild,
-                discord.AuditLogAction.bot_add,
-                member.id,
+            antinuke = await self.bot.database.fetchone(
+                "SELECT enabled FROM anti_nuke_config WHERE guild_id = ?",
+                (member.guild.id,),
             )
-            if not await self._is_trusted_executor(member.guild, executor):
-                try:
-                    await member.kick(reason="ESN Guardian anti-nuke: untrusted bot addition")
-                    await self._security_case(
-                        member.guild,
-                        executor,
-                        "BOT_ADD_BLOCKED",
-                        f"Removed untrusted bot {member} ({member.id})",
-                    )
-                except (discord.Forbidden, discord.HTTPException):
-                    await self._security_case(
-                        member.guild,
-                        executor,
-                        "ANTINUKE_CONTAINMENT_FAILED",
-                        f"Could not remove untrusted bot {member} ({member.id})",
-                    )
-                await self._check_nuke_action(
+            if antinuke is not None and antinuke["enabled"]:
+                executor = await self._audit_executor(
                     member.guild,
                     discord.AuditLogAction.bot_add,
                     member.id,
-                    "untrusted bot addition",
-                    executor,
-                    allow_unattributed=True,
                 )
-                return
-
-        config = await self.bot.database.fetchone(
-            "SELECT * FROM raid_config WHERE guild_id = ?",
-            (member.guild.id,),
-        )
-        assert config is not None
-        if not config["enabled"] or member.bot:
+                if not await self._is_trusted_executor(member.guild, executor):
+                    try:
+                        await member.kick(
+                            reason="ESN Guardian anti-nuke: untrusted bot addition"
+                        )
+                        await self._security_case(
+                            member.guild,
+                            executor,
+                            "BOT_ADD_BLOCKED",
+                            f"Removed untrusted bot {member} ({member.id})",
+                        )
+                    except (discord.Forbidden, discord.HTTPException):
+                        await self._security_case(
+                            member.guild,
+                            executor,
+                            "ANTINUKE_CONTAINMENT_FAILED",
+                            f"Could not remove untrusted bot {member} ({member.id})",
+                        )
+                    await self._check_nuke_action(
+                        member.guild,
+                        discord.AuditLogAction.bot_add,
+                        member.id,
+                        "untrusted bot addition",
+                        executor,
+                        allow_unattributed=True,
+                    )
+                    return
             return
 
+        config = await self._raid_policy(member.guild.id)
+        if not bool(config["enabled"]):
+            return
+
+        now = datetime.now(UTC)
+        min_age_days = int(config["min_account_age_days"])
+        account_age = now - member.created_at
+        is_young = account_age < timedelta(days=min_age_days) if min_age_days > 0 else False
+
+        action = "allow"
+        trigger_reason: str | None = None
+        recent_member_ids: list[int] = []
+
         async with self.raid_locks[member.guild.id]:
-            now = datetime.now(UTC)
             join_window = timedelta(seconds=int(config["join_window_seconds"]))
             joins = self.joins[member.guild.id]
+            fast_joins = self.fast_joins[member.guild.id]
+            young_joins = self.young_joins[member.guild.id]
             recent_members = self.recent_join_members[member.guild.id]
 
             joins.append(now)
+            fast_joins.append(now)
             recent_members.append((now, member.id))
+            if is_young:
+                young_joins.append(now)
+
             while joins and now - joins[0] > join_window:
                 joins.popleft()
+            while fast_joins and now - fast_joins[0] > timedelta(
+                seconds=RAID_FAST_WINDOW_SECONDS
+            ):
+                fast_joins.popleft()
+            while young_joins and now - young_joins[0] > timedelta(
+                seconds=RAID_YOUNG_WINDOW_SECONDS
+            ):
+                young_joins.popleft()
             while recent_members and now - recent_members[0][0] > join_window:
                 recent_members.popleft()
 
@@ -894,66 +912,82 @@ class SecurityCog(commands.Cog):
             active = raid_mode_active(raid_until, now)
             if raid_until is not None and not active:
                 self.raid_mode_until.pop(member.guild.id, None)
+                asyncio.create_task(self._clear_raid_runtime(member.guild.id))
 
-            activate = should_activate_raid(
-                len(joins),
-                int(config["join_limit"]),
-                active,
-            )
-            surge_reason = (
-                f"Join surge exceeded {config['join_limit']} members/"
-                f"{config['join_window_seconds']}s"
+            trigger_reason = raid_trigger_reason(
+                join_count=len(joins),
+                fast_count=len(fast_joins),
+                young_count=len(young_joins),
+                join_limit=int(config["join_limit"]),
+                min_account_age_days=min_age_days,
+                already_active=active,
             )
 
-            if activate:
-                self.raid_mode_until[member.guild.id] = now + timedelta(
-                    minutes=RAID_CONTAINMENT_MINUTES
+            if trigger_reason is not None:
+                until = now + timedelta(minutes=RAID_CONTAINMENT_MINUTES)
+                self.raid_mode_until[member.guild.id] = until
+                self._raid_trigger_count[member.guild.id] += 1
+                self._schedule_raid_persist(member.guild.id, until, force=True)
+
+                burst_cap = min(
+                    200,
+                    max(25, int(config["join_limit"]) * 2),
                 )
-                member_ids = [member_id for _, member_id in recent_members]
-                asyncio.create_task(
-                    self._contain_recent_raid_joiners(
-                        member.guild,
-                        member_ids,
-                        surge_reason,
-                    )
+                recent_member_ids = [
+                    member_id for _, member_id in list(recent_members)[-burst_cap:]
+                ]
+                action = "activate"
+            elif active:
+                until = now + timedelta(minutes=RAID_CONTAINMENT_MINUTES)
+                self.raid_mode_until[member.guild.id] = until
+                self._schedule_raid_persist(member.guild.id, until)
+                action = "block"
+            elif is_young:
+                action = "quarantine"
+
+        if action == "activate":
+            assert trigger_reason is not None
+            queued = self._queue_recent_raid_joiners(
+                member.guild,
+                recent_member_ids,
+                trigger_reason,
+            )
+            asyncio.create_task(
+                self._lockdown(
+                    member.guild,
+                    f"Automatic raid lockdown: {trigger_reason}",
                 )
-                asyncio.create_task(
-                    self._lockdown(
-                        member.guild,
-                        f"Automatic raid lockdown: {surge_reason}",
-                    )
-                )
-                await self._security_case(
+            )
+            asyncio.create_task(
+                self._security_case(
                     member.guild,
                     None,
                     "RAID_MODE",
-                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; {surge_reason}",
+                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; "
+                    f"{trigger_reason}; queued removals: {queued}",
                 )
-                return
+            )
+            return
 
-            if active:
-                self.raid_mode_until[member.guild.id] = now + timedelta(
-                    minutes=RAID_CONTAINMENT_MINUTES
-                )
-                await self._kick_for_raid(
-                    member,
-                    "Server is in active raid containment mode",
-                )
-                return
+        if action == "block":
+            self._enqueue_raid_kick(
+                member,
+                "Server is in active raid containment mode",
+            )
+            return
 
-            account_age = now - member.created_at
-            if account_age < timedelta(days=int(config["min_account_age_days"])):
-                reason = (
-                    f"Account is younger than {config['min_account_age_days']} days "
-                    f"(age: {account_age.days} days)"
-                )
-                await self._security_case(
-                    member.guild,
-                    member,
-                    "SUSPICIOUS_JOIN",
-                    reason,
-                )
-                await self._quarantine(member, reason)
+        if action == "quarantine":
+            reason = (
+                f"Account is younger than {min_age_days} days "
+                f"(age: {account_age.days} days)"
+            )
+            await self._security_case(
+                member.guild,
+                member,
+                "SUSPICIOUS_JOIN",
+                reason,
+            )
+            await self._quarantine(member, reason)
 
     async def _check_webhook_change(self, channel: discord.abc.GuildChannel) -> None:
         await asyncio.sleep(0.8)
