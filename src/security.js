@@ -27,6 +27,7 @@ const internalRemovals=new Map()
 const rollbackGuard=new Set()
 const safeBaselineLocks=new Set()
 const integrationLocks=new Set()
+const auditAccessWarnedAt=new Map()
 const raidQueue=[]
 const raidQueued=new Set()
 const raidAuditBuffer=[]
@@ -115,6 +116,32 @@ async function ensureSafeBaseline(db,guild){
     db.run('INSERT OR REPLACE INTO guardian_baseline_state (guild_id,initialized_at) VALUES (?,CURRENT_TIMESTAMP)',BigInt(guild.id))
   }finally{safeBaselineLocks.delete(key)}
 }
+async function securityAuditActor(db,guild,type,targetId){
+  for(const delay of [600,1200,2000]){
+    await new Promise(resolve=>setTimeout(resolve,delay))
+    try{
+      const logs=await guild.fetchAuditLogs({type,limit:10})
+      const recent=Date.now()-120000
+      const entry=logs.entries.find(item=>
+        item.createdTimestamp>=recent&&
+        (!targetId||String(item.targetId||item.target?.id||'')===String(targetId))&&
+        item.executor
+      )
+      if(entry?.executor)return entry.executor
+    }catch(error){
+      if(error?.code===50013||error?.code===50001){
+        const now=Date.now(),last=auditAccessWarnedAt.get(String(guild.id))||0
+        if(now-last>=600000){
+          auditAccessWarnedAt.set(String(guild.id),now)
+          await logEvent(db,guild,'security_log_channel_id','Anti-nuke audit access unavailable','Grant View Audit Log to attribute destructive actions.')
+        }
+        return null
+      }
+    }
+  }
+  return null
+}
+
 function trustedUser(db,guild,userId){
   if(!userId)return false
   if(String(userId)===String(guild.ownerId)||String(userId)===String(guild.members.me?.id))return true
@@ -777,7 +804,7 @@ function attachSecurity(client,db){
           return
         }
 
-        const actor=await auditActor(member.guild,AuditLogEvent.BotAdd,member.id)
+        const actor=await securityAuditActor(db,member.guild,AuditLogEvent.BotAdd,member.id)
         const anti=db.get('SELECT enabled FROM anti_nuke_config WHERE guild_id=?',BigInt(member.guild.id))
         if(Number(anti?.enabled)&&!trustedUser(db,member.guild,actor?.id)){
           const removed=await member.kick('ESN Guardian anti-nuke: untrusted bot addition').then(()=>true).catch(()=>false)
@@ -802,14 +829,14 @@ function attachSecurity(client,db){
   })
   client.on(Events.ChannelCreate,async channel=>{
     try{
-      const actor=await auditActor(channel.guild,AuditLogEvent.ChannelCreate,channel.id)
+      const actor=await securityAuditActor(db,channel.guild,AuditLogEvent.ChannelCreate,channel.id)
       await checkNukeAction(db,channel.guild,actor,'channel creation',{allowUnattributed:true,targetId:channel.id})
     }catch{}
   })
   client.on(Events.ChannelDelete,async channel=>{
     try{
       db.createCase(channel.guild.id,null,client.user?.id,'CHANNEL_DELETE','Channel deleted: '+channel.name,channel.id)
-      const actor=await auditActor(channel.guild,AuditLogEvent.ChannelDelete,channel.id)
+      const actor=await securityAuditActor(db,channel.guild,AuditLogEvent.ChannelDelete,channel.id)
       await checkNukeAction(db,channel.guild,actor,'channel deletion',{allowUnattributed:true,targetId:channel.id})
       await recordDestructive(db,channel.guild,actor,'channel deletion')
       const cfg=db.get('SELECT rollback_enabled FROM guardian_config WHERE guild_id=?',BigInt(channel.guild.id))
@@ -820,7 +847,7 @@ function attachSecurity(client,db){
     try{
       const critical=before.name!==after.name||before.rawPosition!==after.rawPosition||JSON.stringify(before.permissionOverwrites.cache.map(x=>jsonSafe(x.toJSON?.()||{})))!==JSON.stringify(after.permissionOverwrites.cache.map(x=>jsonSafe(x.toJSON?.()||{})))
       if(!critical)return
-      const actor=await auditActor(after.guild,AuditLogEvent.ChannelUpdate,after.id)
+      const actor=await securityAuditActor(db,after.guild,AuditLogEvent.ChannelUpdate,after.id)
       if(before.permissionOverwrites.cache.map(x=>jsonSafe(x.toJSON?.()||{})).toString()!==after.permissionOverwrites.cache.map(x=>jsonSafe(x.toJSON?.()||{})).toString()){
         await checkNukeAction(db,after.guild,actor,'channel permission update',{allowUnattributed:true,targetId:after.id})
       }
@@ -836,14 +863,14 @@ function attachSecurity(client,db){
   })
   client.on(Events.GuildRoleCreate,async role=>{
     try{
-      const actor=await auditActor(role.guild,AuditLogEvent.RoleCreate,role.id)
+      const actor=await securityAuditActor(db,role.guild,AuditLogEvent.RoleCreate,role.id)
       await checkNukeAction(db,role.guild,actor,'role creation',{allowUnattributed:true,targetId:role.id})
     }catch{}
   })
   client.on(Events.GuildRoleDelete,async role=>{
     try{
       db.createCase(role.guild.id,null,client.user?.id,'ROLE_DELETE','Role deleted: '+role.name)
-      const actor=await auditActor(role.guild,AuditLogEvent.RoleDelete,role.id)
+      const actor=await securityAuditActor(db,role.guild,AuditLogEvent.RoleDelete,role.id)
       await checkNukeAction(db,role.guild,actor,'role deletion',{allowUnattributed:true,targetId:role.id})
       await recordDestructive(db,role.guild,actor,'role deletion')
       const cfg=db.get('SELECT rollback_enabled FROM guardian_config WHERE guild_id=?',BigInt(role.guild.id))
@@ -854,7 +881,7 @@ function attachSecurity(client,db){
     try{
       if(before.permissions.bitfield===after.permissions.bitfield&&before.position===after.position)return
       db.createCase(after.guild.id,null,client.user?.id,'ROLE_PERMISSION_CHANGE','Permissions or position changed for '+after.name)
-      const actor=await auditActor(after.guild,AuditLogEvent.RoleUpdate,after.id)
+      const actor=await securityAuditActor(db,after.guild,AuditLogEvent.RoleUpdate,after.id)
       const anti=db.get('SELECT enabled FROM anti_nuke_config WHERE guild_id=?',BigInt(after.guild.id))
       const gained=[PermissionFlagsBits.Administrator,PermissionFlagsBits.ManageGuild,PermissionFlagsBits.ManageRoles,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageWebhooks,PermissionFlagsBits.BanMembers,PermissionFlagsBits.KickMembers,PermissionFlagsBits.ModerateMembers].some(bit=>after.permissions.has(bit)&&!before.permissions.has(bit))
       if(Number(anti?.enabled)&&gained&&!trustedUser(db,after.guild,actor?.id)){
@@ -876,7 +903,7 @@ function attachSecurity(client,db){
       if(after.id===client.user?.id){
         const removed=before.roles.cache.filter(r=>r.id!==after.guild.id&&!after.roles.cache.has(r.id))
         if(removed.size){
-          const actor=await auditActor(after.guild,AuditLogEvent.MemberRoleUpdate,after.id)
+          const actor=await securityAuditActor(db,after.guild,AuditLogEvent.MemberRoleUpdate,after.id)
           if(actor?.id!==after.guild.ownerId){
             let restored=0
             for(const role of removed.values())if(role.editable)await after.roles.add(role,'ESN Guardian tamper protection').then(()=>restored++).catch(()=>{})
@@ -889,7 +916,7 @@ function attachSecurity(client,db){
       if(added.size){
         const anti=db.get('SELECT enabled FROM anti_nuke_config WHERE guild_id=?',BigInt(after.guild.id))
         if(!Number(anti?.enabled))return
-        const actor=await auditActor(after.guild,AuditLogEvent.MemberRoleUpdate,after.id)
+        const actor=await securityAuditActor(db,after.guild,AuditLogEvent.MemberRoleUpdate,after.id)
         if(trustedUser(db,after.guild,actor?.id))return
         const removable=added.filter(r=>r.editable)
         if(removable.size){
@@ -903,7 +930,7 @@ function attachSecurity(client,db){
   client.on(Events.GuildBanAdd,async ban=>{
     try{
       await logEvent(db,ban.guild,'member_log_channel_id','Member banned','User: <@'+ban.user.id+'> ('+ban.user.id+')')
-      const actor=await auditActor(ban.guild,AuditLogEvent.MemberBanAdd,ban.user.id)
+      const actor=await securityAuditActor(db,ban.guild,AuditLogEvent.MemberBanAdd,ban.user.id)
       await checkNukeAction(db,ban.guild,actor,'member ban',{allowUnattributed:true,targetId:ban.user.id})
       await recordDestructive(db,ban.guild,actor,'member ban')
     }catch{}
@@ -911,7 +938,7 @@ function attachSecurity(client,db){
   client.on(Events.GuildMemberRemove,async member=>{
     if(isInternalRemoval(member.guild.id,member.id))return
     try{
-      const actor=await auditActor(member.guild,AuditLogEvent.MemberKick,member.id)
+      const actor=await securityAuditActor(db,member.guild,AuditLogEvent.MemberKick,member.id)
       if(actor){
         await checkNukeAction(db,member.guild,actor,'member kick',{targetId:member.id})
         await recordDestructive(db,member.guild,actor,'member kick')
@@ -920,7 +947,7 @@ function attachSecurity(client,db){
   })
   client.on(Events.GuildBanRemove,async ban=>{
     try{
-      const actor=await auditActor(ban.guild,AuditLogEvent.MemberBanRemove,ban.user.id)
+      const actor=await securityAuditActor(db,ban.guild,AuditLogEvent.MemberBanRemove,ban.user.id)
       await checkNukeAction(db,ban.guild,actor,'member unban',{allowUnattributed:true,targetId:ban.user.id})
     }catch{}
   })
@@ -928,7 +955,7 @@ function attachSecurity(client,db){
     try{
       db.createCase(channel.guild.id,null,client.user?.id,'WEBHOOK_CHANGE','Webhook update in #'+channel.name,channel.id)
       const cfg=db.get('SELECT webhook_guard FROM guardian_config WHERE guild_id=?',BigInt(channel.guild.id));if(!Number(cfg?.webhook_guard??1))return
-      const actor=await auditActor(channel.guild,AuditLogEvent.WebhookCreate,null)
+      const actor=await securityAuditActor(db,channel.guild,AuditLogEvent.WebhookCreate,null)
       if(trustedUser(db,channel.guild,actor?.id)){
         const hooks=await channel.fetchWebhooks().catch(()=>null);if(hooks)for(const hook of hooks.values())db.run('INSERT OR IGNORE INTO approved_webhooks (guild_id,webhook_id) VALUES (?,?)',BigInt(channel.guild.id),BigInt(hook.id))
       }else{
@@ -943,7 +970,7 @@ function attachSecurity(client,db){
   client.on(Events.GuildIntegrationsUpdate,async guild=>{
     try{
       const cfg=db.get('SELECT integration_guard FROM guardian_config WHERE guild_id=?',BigInt(guild.id));if(!Number(cfg?.integration_guard??1))return
-      const actor=await auditActor(guild,AuditLogEvent.IntegrationCreate,null)
+      const actor=await securityAuditActor(db,guild,AuditLogEvent.IntegrationCreate,null)
       if(trustedUser(db,guild,actor?.id)){const integrations=await guild.fetchIntegrations().catch(()=>null);if(integrations)for(const integration of integrations.values())db.run('INSERT OR IGNORE INTO approved_integrations (guild_id,integration_id,application_id) VALUES (?,?,?)',BigInt(guild.id),BigInt(integration.id),integration.application?.id?BigInt(integration.application.id):null)}
       else{
         const removed=await removeUnapprovedIntegrations(db,guild)
