@@ -24,6 +24,17 @@ HIGH_RISK_PERMISSIONS = (
     "ban_members", "kick_members", "moderate_members",
 )
 
+RAID_CONTAINMENT_MINUTES = 5
+MESSAGE_POLICY_CACHE_SECONDS = 10
+
+
+def raid_mode_active(until: datetime | None, now: datetime) -> bool:
+    return until is not None and until > now
+
+
+def should_activate_raid(join_count: int, join_limit: int, already_active: bool) -> bool:
+    return not already_active and join_count >= join_limit
+
 
 class SecurityCog(commands.Cog):
     antinuke = app_commands.Group(name="antinuke", description="Configure protection against destructive server actions.")
@@ -33,10 +44,98 @@ class SecurityCog(commands.Cog):
         self.bot = bot
         self.messages: dict[tuple[int, int], deque[tuple[datetime, str]]] = defaultdict(deque)
         self.joins: dict[int, deque[datetime]] = defaultdict(deque)
+        self.recent_join_members: dict[int, deque[tuple[datetime, int]]] = defaultdict(deque)
         self.lockdown_locks = defaultdict(asyncio.Lock)
+        self.raid_locks = defaultdict(asyncio.Lock)
         self.audit_events: dict[tuple[int, int], deque[datetime]] = defaultdict(deque)
         self.raid_mode_until: dict[int, datetime] = {}
+        self._raid_kicked_until: dict[tuple[int, int], datetime] = {}
         self._audit_access_warned_at: dict[int, datetime] = {}
+        self._initialized_guilds: set[int] = set()
+        self._message_policy_cache: dict[int, tuple[datetime, dict[str, object], set[str], tuple[str, ...]]] = {}
+
+    async def _ensure_guild_once(self, guild_id: int) -> None:
+        if guild_id in self._initialized_guilds:
+            return
+        await self.bot.database.ensure_guild(guild_id)
+        self._initialized_guilds.add(guild_id)
+
+    async def _message_policy(
+        self,
+        guild_id: int,
+    ) -> tuple[dict[str, object], set[str], tuple[str, ...]]:
+        now = datetime.now(UTC)
+        cached = self._message_policy_cache.get(guild_id)
+        if cached is not None and now - cached[0] < timedelta(seconds=MESSAGE_POLICY_CACHE_SECONDS):
+            return cached[1], cached[2], cached[3]
+
+        await self._ensure_guild_once(guild_id)
+        config_row = await self.bot.database.fetchone(
+            "SELECT * FROM security_config WHERE guild_id = ?",
+            (guild_id,),
+        )
+        assert config_row is not None
+        allowed_rows = await self.bot.database.fetchall(
+            "SELECT domain FROM allowed_domains WHERE guild_id = ?",
+            (guild_id,),
+        )
+        bad_word_rows = await self.bot.database.fetchall(
+            "SELECT word FROM bad_words WHERE guild_id = ?",
+            (guild_id,),
+        )
+        config = dict(config_row)
+        allowed_domains = {str(row["domain"]) for row in allowed_rows}
+        bad_words = tuple(str(row["word"]) for row in bad_word_rows)
+        self._message_policy_cache[guild_id] = (now, config, allowed_domains, bad_words)
+        return config, allowed_domains, bad_words
+
+    async def _record_raid_block(self, member: discord.Member, reason: str) -> int:
+        return await self.bot.database.create_case(
+            member.guild.id,
+            member.id,
+            self.bot.user.id if self.bot.user else None,
+            "RAID_JOIN_BLOCKED",
+            reason,
+        )
+
+    async def _kick_for_raid(self, member: discord.Member, reason: str) -> bool:
+        if member.bot or member.id == member.guild.owner_id:
+            return False
+        self._raid_kicked_until[(member.guild.id, member.id)] = datetime.now(UTC) + timedelta(minutes=2)
+        try:
+            await member.kick(reason=f"ESN Guardian raid containment: {reason}"[:512])
+            await self._record_raid_block(member, reason)
+            return True
+        except (discord.Forbidden, discord.HTTPException):
+            self._raid_kicked_until.pop((member.guild.id, member.id), None)
+            await self._security_case(
+                member.guild,
+                member,
+                "RAID_CONTAINMENT_FAILED",
+                f"Could not remove member during raid containment: {reason}",
+            )
+            return False
+
+    async def _contain_recent_raid_joiners(
+        self,
+        guild: discord.Guild,
+        member_ids: list[int],
+        reason: str,
+    ) -> int:
+        semaphore = asyncio.Semaphore(3)
+
+        async def remove(member_id: int) -> bool:
+            member = guild.get_member(member_id)
+            if member is None or member.bot or member.id == guild.owner_id:
+                return False
+            async with semaphore:
+                return await self._kick_for_raid(member, reason)
+
+        results = await asyncio.gather(
+            *(remove(member_id) for member_id in member_ids[-25:]),
+            return_exceptions=True,
+        )
+        return sum(result is True for result in results)
 
     async def _security_case(self, guild: discord.Guild, target: discord.abc.User | None, action: str, reason: str, channel_id: int | None = None) -> int:
         case_id = await self.bot.database.create_case(guild.id, target.id if target else None, self.bot.user.id if self.bot.user else None, action, reason, channel_id)
@@ -393,10 +492,8 @@ class SecurityCog(commands.Cog):
         if message.author.bot or not isinstance(message.author, discord.Member):
             return
 
-        await self.bot.database.ensure_guild(message.guild.id)
-        config = await self.bot.database.fetchone("SELECT * FROM security_config WHERE guild_id = ?", (message.guild.id,))
-        assert config is not None
-        if not config["automod_enabled"]:
+        config, allowed_domains, bad_words = await self._message_policy(message.guild.id)
+        if not bool(config["automod_enabled"]):
             return
 
         now = datetime.now(UTC)
@@ -404,22 +501,18 @@ class SecurityCog(commands.Cog):
         normalized = message.content.casefold().strip()
         window = self.messages[key]
         window.append((now, normalized))
-        while window and now - window[0][0] > timedelta(seconds=config["flood_window_seconds"]):
+        while window and now - window[0][0] > timedelta(seconds=int(config["flood_window_seconds"])):
             window.popleft()
 
-        allowed_domains = {
-            row["domain"]
-            for row in await self.bot.database.fetchall("SELECT domain FROM allowed_domains WHERE guild_id = ?", (message.guild.id,))
-        }
         dangerous_violation = self._suspicious_url_reason(message.content)
         has_invite = (
             "discord.gg/" in normalized
             or "discord.com/invite/" in normalized
             or "discordapp.com/invite/" in normalized
         )
-        if dangerous_violation is None and config["block_invites"] and has_invite:
+        if dangerous_violation is None and bool(config["block_invites"]) and has_invite:
             dangerous_violation = "Unauthorized invite link"
-        if dangerous_violation is None and config["strict_links"] and self._has_unallowed_url(message.content, allowed_domains):
+        if dangerous_violation is None and bool(config["strict_links"]) and self._has_unallowed_url(message.content, allowed_domains):
             dangerous_violation = "External link is not allowlisted"
 
         is_staff = (
@@ -433,17 +526,20 @@ class SecurityCog(commands.Cog):
         if is_staff:
             return
 
-        bad_words = await self.bot.database.fetchall("SELECT word FROM bad_words WHERE guild_id = ?", (message.guild.id,))
         violation = None
-        if len(window) >= config["flood_limit"]:
+        if len(window) >= int(config["flood_limit"]):
             violation = "Message flood detected"
-        elif len(message.mentions) + len(message.role_mentions) >= config["max_mentions"]:
+        elif len(message.mentions) + len(message.role_mentions) >= int(config["max_mentions"]):
             violation = "Mass mentions detected"
-        elif len(message.content) >= 12 and sum(character.isupper() for character in message.content) * 100 / max(len(message.content), 1) >= config["caps_percentage"]:
+        elif (
+            len(message.content) >= 12
+            and sum(character.isupper() for character in message.content) * 100 / max(len(message.content), 1)
+            >= int(config["caps_percentage"])
+        ):
             violation = "Excessive capitals detected"
         elif sum(1 for _, prior in window if prior == normalized) >= 3:
             violation = "Repeated message detected"
-        elif any(str(row["word"]) in normalized for row in bad_words):
+        elif any(word in normalized for word in bad_words):
             violation = "Blocked word detected"
 
         if violation:
@@ -451,7 +547,7 @@ class SecurityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
-        await self.bot.database.ensure_guild(member.guild.id)
+        await self._ensure_guild_once(member.guild.id)
 
         if member.bot:
             blocked_app = await self.bot.database.fetchone(
@@ -480,15 +576,32 @@ class SecurityCog(commands.Cog):
                     )
                 return
 
-        antinuke = await self.bot.database.fetchone("SELECT enabled FROM anti_nuke_config WHERE guild_id = ?", (member.guild.id,))
+        antinuke = await self.bot.database.fetchone(
+            "SELECT enabled FROM anti_nuke_config WHERE guild_id = ?",
+            (member.guild.id,),
+        )
         if member.bot and antinuke is not None and antinuke["enabled"]:
-            executor = await self._audit_executor(member.guild, discord.AuditLogAction.bot_add, member.id)
+            executor = await self._audit_executor(
+                member.guild,
+                discord.AuditLogAction.bot_add,
+                member.id,
+            )
             if not await self._is_trusted_executor(member.guild, executor):
                 try:
                     await member.kick(reason="ESN Guardian anti-nuke: untrusted bot addition")
-                    await self._security_case(member.guild, executor, "BOT_ADD_BLOCKED", f"Removed untrusted bot {member} ({member.id})")
+                    await self._security_case(
+                        member.guild,
+                        executor,
+                        "BOT_ADD_BLOCKED",
+                        f"Removed untrusted bot {member} ({member.id})",
+                    )
                 except (discord.Forbidden, discord.HTTPException):
-                    await self._security_case(member.guild, executor, "ANTINUKE_CONTAINMENT_FAILED", f"Could not remove untrusted bot {member} ({member.id})")
+                    await self._security_case(
+                        member.guild,
+                        executor,
+                        "ANTINUKE_CONTAINMENT_FAILED",
+                        f"Could not remove untrusted bot {member} ({member.id})",
+                    )
                 await self._check_nuke_action(
                     member.guild,
                     discord.AuditLogAction.bot_add,
@@ -499,37 +612,91 @@ class SecurityCog(commands.Cog):
                 )
                 return
 
-        config = await self.bot.database.fetchone("SELECT * FROM raid_config WHERE guild_id = ?", (member.guild.id,))
+        config = await self.bot.database.fetchone(
+            "SELECT * FROM raid_config WHERE guild_id = ?",
+            (member.guild.id,),
+        )
         assert config is not None
         if not config["enabled"] or member.bot:
             return
 
-        now = datetime.now(UTC)
-        joins = self.joins[member.guild.id]
-        joins.append(now)
-        while joins and now - joins[0] > timedelta(seconds=config["join_window_seconds"]):
-            joins.popleft()
+        async with self.raid_locks[member.guild.id]:
+            now = datetime.now(UTC)
+            join_window = timedelta(seconds=int(config["join_window_seconds"]))
+            joins = self.joins[member.guild.id]
+            recent_members = self.recent_join_members[member.guild.id]
 
-        reasons: list[str] = []
-        account_age = now - member.created_at
-        if account_age < timedelta(days=config["min_account_age_days"]):
-            await self._security_case(member.guild, member, "SUSPICIOUS_JOIN", f"Account age: {account_age.days} days")
-            reasons.append(f"Account is younger than {config['min_account_age_days']} days")
+            joins.append(now)
+            recent_members.append((now, member.id))
+            while joins and now - joins[0] > join_window:
+                joins.popleft()
+            while recent_members and now - recent_members[0][0] > join_window:
+                recent_members.popleft()
 
-        raid_until = self.raid_mode_until.get(member.guild.id)
-        if raid_until is not None and raid_until > now:
-            reasons.append("Server is in active raid containment mode")
-        elif raid_until is not None:
-            self.raid_mode_until.pop(member.guild.id, None)
+            raid_until = self.raid_mode_until.get(member.guild.id)
+            active = raid_mode_active(raid_until, now)
+            if raid_until is not None and not active:
+                self.raid_mode_until.pop(member.guild.id, None)
 
-        if len(joins) >= config["join_limit"]:
-            self.raid_mode_until[member.guild.id] = now + timedelta(minutes=5)
-            reasons.append(f"Join surge exceeded {config['join_limit']} members/{config['join_window_seconds']}s")
-            await self._security_case(member.guild, None, "RAID_MODE", "Raid containment mode enabled for 5 minutes")
-            await self._lockdown(member.guild, f"Automatic raid lockdown: join rate exceeded {config['join_limit']} members/{config['join_window_seconds']}s")
+            activate = should_activate_raid(
+                len(joins),
+                int(config["join_limit"]),
+                active,
+            )
+            surge_reason = (
+                f"Join surge exceeded {config['join_limit']} members/"
+                f"{config['join_window_seconds']}s"
+            )
 
-        if reasons:
-            await self._quarantine(member, "; ".join(dict.fromkeys(reasons)))
+            if activate:
+                self.raid_mode_until[member.guild.id] = now + timedelta(
+                    minutes=RAID_CONTAINMENT_MINUTES
+                )
+                await self._security_case(
+                    member.guild,
+                    None,
+                    "RAID_MODE",
+                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; {surge_reason}",
+                )
+                asyncio.create_task(
+                    self._lockdown(
+                        member.guild,
+                        f"Automatic raid lockdown: {surge_reason}",
+                    )
+                )
+                member_ids = [member_id for _, member_id in recent_members]
+                asyncio.create_task(
+                    self._contain_recent_raid_joiners(
+                        member.guild,
+                        member_ids,
+                        surge_reason,
+                    )
+                )
+                return
+
+            if active:
+                self.raid_mode_until[member.guild.id] = now + timedelta(
+                    minutes=RAID_CONTAINMENT_MINUTES
+                )
+                await self._kick_for_raid(
+                    member,
+                    "Server is in active raid containment mode",
+                )
+                return
+
+            account_age = now - member.created_at
+            if account_age < timedelta(days=int(config["min_account_age_days"])):
+                reason = (
+                    f"Account is younger than {config['min_account_age_days']} days "
+                    f"(age: {account_age.days} days)"
+                )
+                await self._security_case(
+                    member.guild,
+                    member,
+                    "SUSPICIOUS_JOIN",
+                    reason,
+                )
+                await self._quarantine(member, reason)
 
     async def _check_webhook_change(self, channel: discord.abc.GuildChannel) -> None:
         await asyncio.sleep(0.8)
@@ -648,8 +815,23 @@ class SecurityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        await log_event(self.bot, member.guild, "member_log_channel_id", "Member left", description=f"User: {member} ({member.id})")
-        await self._check_nuke_action(member.guild, discord.AuditLogAction.kick, member.id, "member kick")
+        key = (member.guild.id, member.id)
+        raid_kick_until = self._raid_kicked_until.pop(key, None)
+        if raid_kick_until is not None and raid_kick_until > datetime.now(UTC):
+            return
+        await log_event(
+            self.bot,
+            member.guild,
+            "member_log_channel_id",
+            "Member left",
+            description=f"User: {member} ({member.id})",
+        )
+        await self._check_nuke_action(
+            member.guild,
+            discord.AuditLogAction.kick,
+            member.id,
+            "member kick",
+        )
 
     @commands.Cog.listener()
     async def on_member_unban(self, guild: discord.Guild, user: discord.User) -> None:
