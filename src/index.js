@@ -9,6 +9,12 @@ const {
 const config = require('./config')
 const { GuardianDB } = require('./db')
 const { attachSecurity } = require('./security')
+const { attachIntelligence } = require('./intelligence')
+const { attachOverwatch } = require('./overwatch')
+const { attachSentinel } = require('./sentinel')
+const { attachResilience } = require('./resilience')
+const { attachCommunity } = require('./community')
+const { attachESNGAI } = require('./esng_ai')
 const { registerGuild, handleCommand, handleButton } = require('./commands')
 const { logEvent } = require('./utils')
 
@@ -33,6 +39,12 @@ client.guardianDatabase = db
 client.guardianStartedAt = Date.now()
 
 attachSecurity(client, db)
+attachIntelligence(client, db)
+attachOverwatch(client, db)
+attachSentinel(client, db)
+attachResilience(client, db)
+attachCommunity(client, db)
+attachESNGAI(client, db)
 
 client.once(Events.ClientReady, async ready => {
   console.log('[ESN Guardian] Connected as ' + ready.user.tag + ' (' + ready.user.id + ') in ' + ready.guilds.cache.size + ' guild(s)')
@@ -44,6 +56,7 @@ client.once(Events.ClientReady, async ready => {
     console.error('[ESN Guardian] Startup database backup failed', error)
   }
 
+  let allSynced = true
   for (const guild of ready.guilds.cache.values()) {
     try {
       db.ensureGuild(guild.id)
@@ -55,9 +68,24 @@ client.once(Events.ClientReady, async ready => {
       const commands = await registerGuild(guild)
       console.log('[ESN Guardian] Synced ' + commands.size + ' commands in ' + guild.name + ' (' + guild.id + ')')
     } catch (error) {
+      allSynced = false
       console.error('[ESN Guardian] Command sync failed in ' + guild.name + ' (' + guild.id + ')', error)
     }
   }
+
+  if (allSynced) {
+    try {
+      await ready.application.commands.set([])
+      console.log('[ESN Guardian] Cleared legacy global application commands')
+    } catch (error) {
+      console.error('[ESN Guardian] Could not clear legacy global commands', error)
+    }
+  }
+})
+
+client.on(Events.ChannelDelete, channel => {
+  if (!channel.guild) return
+  try { db.run('UPDATE tickets SET channel_id=NULL WHERE guild_id=? AND channel_id=?', BigInt(channel.guild.id), BigInt(channel.id)) } catch {}
 })
 
 client.on(Events.GuildCreate, async guild => {
