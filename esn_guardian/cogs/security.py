@@ -1355,6 +1355,7 @@ class SecurityCog(commands.Cog):
             "WHERE guild_id = ?",
             (interaction.guild_id,),
         )
+        self.invalidate_security_caches(interaction.guild_id)
         advanced = self.bot.get_cog("AdvancedSecurityCog")
         if advanced is not None and interaction.guild is not None and hasattr(advanced, "harden_guild"):
             changed, failed = await advanced.harden_guild(interaction.guild)
@@ -1417,7 +1418,8 @@ class SecurityCog(commands.Cog):
                 await respond(interaction, "The quarantine role must be below my highest role.")
                 return
         await self.bot.database.execute("UPDATE raid_config SET enabled = ?, join_limit = ?, join_window_seconds = ?, min_account_age_days = ?, quarantine_role_id = ? WHERE guild_id = ?", (int(enabled), join_limit, join_window_seconds, minimum_account_age_days, quarantine_role.id if quarantine_role else None, interaction.guild_id))
-        await respond(interaction, "Raid detection and quarantine policy updated.")
+        self.invalidate_security_caches(interaction.guild_id)
+        await respond(interaction, "Raid detection and containment policy updated.")
 
     @security.command(name="raid-status", description="Show join-rate, account-age, and quarantine configuration.")
     @guild_only()
