@@ -486,19 +486,25 @@ async function handleCommand(interaction, db, settings) {
       if (name === 'servers') {
         const guilds=[...client.guilds.cache.values()].sort((a,b)=>a.name.localeCompare(b.name))
         const total=guilds.reduce((n,g)=>n+(g.memberCount||0),0)
-        const body=guilds.map(g=>g.name+' ('+g.id+') - '+(g.memberCount||0)+' members').join('\n')||'No servers.'
-        return interaction.reply({content:'Connected servers: '+guilds.length+'\nCombined members: '+total,files:[{attachment:Buffer.from(body,'utf8'),name:'servers.txt'}],ephemeral:true})
+        const body=guilds.map(g=>g.name+' ('+g.id+') - '+(g.memberCount||0).toLocaleString()+' members').join('\n')||'No servers.'
+        return interaction.reply({
+          embeds:[embed('Servers: '+guilds.length.toLocaleString()+'\nCombined members: '+total.toLocaleString(),'Connected servers')],
+          files:[{attachment:Buffer.from(body,'utf8'),name:'servers.txt'}],
+          ephemeral:true
+        })
       }
       if (name === 'synccommands') {
-        await interaction.deferReply({ephemeral:true})
         const guildId=interaction.options.getString('guild_id')
+        if(guildId&&!/^\d+$/.test(guildId))return respond(interaction,'Provide a numeric server ID, or leave it empty to sync every connected server.')
         const targets=guildId?[client.guilds.cache.get(guildId)].filter(Boolean):[...client.guilds.cache.values()]
-        if (guildId&&!targets.length) return interaction.editReply('I am not connected to that server.')
+        if(guildId&&!targets.length)return respond(interaction,'I am not connected to that server.')
+        await interaction.deferReply({ephemeral:true})
         let synced=0,failed=0,count=0
         for (const guild of targets) {
           try { const result=await registerGuild(guild); synced++; count+=result.size } catch { failed++ }
         }
-        return interaction.editReply('Synced '+count+' command(s) across '+synced+' server(s); failed: '+failed+'.')
+        const scope=guildId?'server `'+guildId+'`':'all connected servers'
+        return respond(interaction,'Synced '+count+' command(s) across '+synced+' '+scope+'; failed: '+failed+'.')
       }
       if (name === 'globalban') {
         const userId=interaction.options.getString('user_id',true),reason=interaction.options.getString('reason',true)
@@ -554,8 +560,9 @@ async function handleCommand(interaction, db, settings) {
       }
       if (name === 'unblacklist') {
         const guildId=interaction.options.getString('guild_id',true)
+        if(!/^\d+$/.test(guildId))return respond(interaction,'Provide a numeric server ID.')
         db.run('DELETE FROM guild_blacklist WHERE guild_id=?',BigInt(guildId))
-        return respond(interaction,'Removed server '+guildId+' from the blacklist.')
+        return respond(interaction,'Removed server `'+guildId+'` from the blacklist.')
       }
     }
 
