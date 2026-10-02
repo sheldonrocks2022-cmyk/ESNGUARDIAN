@@ -448,7 +448,7 @@ class SecuritySentinelCog(commands.Cog):
             "This score is explainable advisory intelligence; Guardian's deterministic protections make enforcement decisions."
         )
 
-    @tasks.loop(seconds=45)
+    @tasks.loop(seconds=90)
     async def sentinel_loop(self) -> None:
         for guild in list(self.bot.guilds):
             try:
