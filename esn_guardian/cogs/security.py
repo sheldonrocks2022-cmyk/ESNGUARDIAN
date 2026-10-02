@@ -49,6 +49,7 @@ class SecurityCog(commands.Cog):
         self.recent_join_members: dict[int, deque[tuple[datetime, int]]] = defaultdict(deque)
         self.lockdown_locks = defaultdict(asyncio.Lock)
         self.raid_locks = defaultdict(asyncio.Lock)
+        self.raid_kick_semaphores = defaultdict(lambda: asyncio.Semaphore(RAID_KICK_CONCURRENCY))
         self.audit_events: dict[tuple[int, int], deque[datetime]] = defaultdict(deque)
         self.raid_mode_until: dict[int, datetime] = {}
         self._raid_kicked_until: dict[tuple[int, int], datetime] = {}
@@ -129,20 +130,21 @@ class SecurityCog(commands.Cog):
     async def _kick_for_raid(self, member: discord.Member, reason: str) -> bool:
         if member.bot or member.id == member.guild.owner_id:
             return False
-        self._raid_kicked_until[(member.guild.id, member.id)] = datetime.now(UTC) + timedelta(minutes=2)
-        try:
-            await member.kick(reason=f"ESN Guardian raid containment: {reason}"[:512])
-            self._queue_raid_case(member, reason)
-            return True
-        except (discord.Forbidden, discord.HTTPException):
-            self._raid_kicked_until.pop((member.guild.id, member.id), None)
-            await self._security_case(
-                member.guild,
-                member,
-                "RAID_CONTAINMENT_FAILED",
-                f"Could not remove member during raid containment: {reason}",
-            )
-            return False
+        async with self.raid_kick_semaphores[member.guild.id]:
+            self._raid_kicked_until[(member.guild.id, member.id)] = datetime.now(UTC) + timedelta(minutes=2)
+            try:
+                await member.kick(reason=f"ESN Guardian raid containment: {reason}"[:512])
+                self._queue_raid_case(member, reason)
+                return True
+            except (discord.Forbidden, discord.HTTPException):
+                self._raid_kicked_until.pop((member.guild.id, member.id), None)
+                await self._security_case(
+                    member.guild,
+                    member,
+                    "RAID_CONTAINMENT_FAILED",
+                    f"Could not remove member during raid containment: {reason}",
+                )
+                return False
 
     async def _contain_recent_raid_joiners(
         self,
@@ -646,6 +648,17 @@ class SecurityCog(commands.Cog):
 
         async with self.raid_locks[member.guild.id]:
             now = datetime.now(UTC)
+            if len(self._raid_kicked_until) > 1000:
+                self._raid_kicked_until = {
+                    key: until for key, until in self._raid_kicked_until.items()
+                    if until > now
+                }
+            if len(self.messages) > 5000:
+                cutoff = now - timedelta(minutes=10)
+                for key in list(self.messages)[:1000]:
+                    window = self.messages.get(key)
+                    if not window or window[-1][0] < cutoff:
+                        self.messages.pop(key, None)
             join_window = timedelta(seconds=int(config["join_window_seconds"]))
             joins = self.joins[member.guild.id]
             recent_members = self.recent_join_members[member.guild.id]
