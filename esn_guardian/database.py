@@ -326,6 +326,11 @@ class Database:
         await connection.execute(query, tuple(values))
         await connection.commit()
 
+    async def executemany(self, query: str, rows: Iterable[Iterable[Any]]) -> None:
+        connection = self._require_connection()
+        await connection.executemany(query, [tuple(row) for row in rows])
+        await connection.commit()
+
     async def fetchone(self, query: str, values: Iterable[Any] = ()) -> aiosqlite.Row | None:
         cursor = await self._require_connection().execute(query, tuple(values))
         return await cursor.fetchone()
