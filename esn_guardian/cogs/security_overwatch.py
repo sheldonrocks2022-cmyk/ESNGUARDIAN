@@ -430,7 +430,7 @@ class SecurityOverwatchCog(commands.Cog):
             + ("\n• Additional changes omitted." if len(drift["changes"]) > 12 else "")
         )
 
-    @tasks.loop(seconds=60)
+    @tasks.loop(seconds=120)
     async def ledger_loop(self) -> None:
         for guild in list(self.bot.guilds):
             try:
@@ -462,7 +462,7 @@ class SecurityOverwatchCog(commands.Cog):
     async def before_ledger_loop(self) -> None:
         await self.bot.wait_until_ready()
 
-    @tasks.loop(minutes=3)
+    @tasks.loop(minutes=5)
     async def policy_drift_loop(self) -> None:
         for guild in list(self.bot.guilds):
             try:
@@ -504,7 +504,7 @@ class SecurityOverwatchCog(commands.Cog):
             except Exception:
                 LOG.exception("Could not initialize Guardian policy baseline for guild %s", guild.id)
 
-    @tasks.loop(seconds=60)
+    @tasks.loop(seconds=120)
     async def incident_loop(self) -> None:
         for guild in list(self.bot.guilds):
             try:
