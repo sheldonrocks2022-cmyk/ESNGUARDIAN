@@ -1,5 +1,0 @@
-from esn_guardian.main import main
-
-
-if __name__ == "__main__":
-    main()
