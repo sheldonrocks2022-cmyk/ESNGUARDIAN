@@ -451,6 +451,13 @@ class SecuritySentinelCog(commands.Cog):
     @tasks.loop(seconds=45)
     async def sentinel_loop(self) -> None:
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 await self._scan_guild(guild)
             except Exception:
