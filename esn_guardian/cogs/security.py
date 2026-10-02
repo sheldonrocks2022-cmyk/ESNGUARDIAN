@@ -64,6 +64,28 @@ class SecurityCog(commands.Cog):
         self._raid_case_buffer: dict[int, list[tuple[int, str]]] = defaultdict(list)
         self._raid_case_flush_tasks: dict[int, asyncio.Task[None]] = {}
 
+    def _cleanup_hot_state(self, now: datetime) -> None:
+        expired_kicks = [
+            key for key, until in self._raid_kicked_until.items()
+            if until <= now
+        ]
+        for key in expired_kicks:
+            self._raid_kicked_until.pop(key, None)
+
+        stale_message_keys = [
+            key for key, window in self.messages.items()
+            if not window or now - window[-1][0] > timedelta(minutes=10)
+        ]
+        for key in stale_message_keys[:500]:
+            self.messages.pop(key, None)
+
+        expired_modes = [
+            guild_id for guild_id, until in self.raid_mode_until.items()
+            if until <= now
+        ]
+        for guild_id in expired_modes:
+            self.raid_mode_until.pop(guild_id, None)
+
     async def _ensure_guild_once(self, guild_id: int) -> None:
         if guild_id in self._initialized_guilds:
             return
@@ -714,6 +736,7 @@ class SecurityCog(commands.Cog):
 
         async with self.raid_locks[member.guild.id]:
             now = datetime.now(UTC)
+            self._cleanup_hot_state(now)
             join_window = timedelta(seconds=int(config["join_window_seconds"]))
             joins = self.joins[member.guild.id]
             recent_members = self.recent_join_members[member.guild.id]
@@ -1159,6 +1182,7 @@ class SecurityCog(commands.Cog):
             "WHERE guild_id = ?",
             (interaction.guild_id,),
         )
+        self._raid_config_cache.pop(interaction.guild_id, None)
         advanced = self.bot.get_cog("AdvancedSecurityCog")
         if advanced is not None and interaction.guild is not None and hasattr(advanced, "harden_guild"):
             changed, failed = await advanced.harden_guild(interaction.guild)
@@ -1221,6 +1245,7 @@ class SecurityCog(commands.Cog):
                 await respond(interaction, "The quarantine role must be below my highest role.")
                 return
         await self.bot.database.execute("UPDATE raid_config SET enabled = ?, join_limit = ?, join_window_seconds = ?, min_account_age_days = ?, quarantine_role_id = ? WHERE guild_id = ?", (int(enabled), join_limit, join_window_seconds, minimum_account_age_days, quarantine_role.id if quarantine_role else None, interaction.guild_id))
+        self._raid_config_cache.pop(interaction.guild_id, None)
         await respond(interaction, "Raid detection and quarantine policy updated.")
 
     @security.command(name="raid-status", description="Show join-rate, account-age, and quarantine configuration.")
