@@ -39,12 +39,24 @@ class GuardianDB {
     return this.db.prepare(sql).run(...values)
   }
 
+  execute(sql, values = []) {
+    return this.run(sql, ...values)
+  }
+
   get(sql, ...values) {
     return this.stmt(sql).get(...values)
   }
 
   all(sql, ...values) {
     return this.stmt(sql).all(...values)
+  }
+
+  fetchone(sql, values = []) {
+    return this.get(sql, ...values)
+  }
+
+  fetchall(sql, values = []) {
+    return this.all(sql, ...values)
   }
 
   migrate() {
@@ -231,6 +243,18 @@ class GuardianDB {
         details TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         closed_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS policy_baselines (
+        guild_id INTEGER PRIMARY KEY,
+        data TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS message_rate_state (
+        guild_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        last_seen REAL NOT NULL,
+        PRIMARY KEY(guild_id, user_id)
       );
     `)
   }
