@@ -19,3 +19,7 @@ def test_raid_activates_at_threshold():
 def test_active_raid_does_not_retrigger_full_lockdown():
     assert should_activate_raid(10, 10, True) is False
     assert should_activate_raid(50, 10, True) is False
+
+
+def test_raid_activation_does_not_repeat_during_active_mode():
+    assert should_activate_raid(100, 3, True) is False
