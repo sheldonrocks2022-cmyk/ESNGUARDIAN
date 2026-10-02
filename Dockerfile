@@ -1,9 +1,9 @@
-FROM python:3.12-slim
+FROM node:25-bookworm-slim
 
 WORKDIR /app
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir .
-COPY esn_guardian ./esn_guardian
+COPY package.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+COPY src ./src
 
-ENV PYTHONUNBUFFERED=1
-CMD ["python", "-m", "esn_guardian.main"]
+ENV NODE_ENV=production
+CMD ["node", "src/index.js"]
