@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target
 
@@ -25,17 +25,65 @@ HIGH_RISK_PERMISSIONS = (
 )
 
 RAID_CONTAINMENT_MINUTES = 5
+RAID_FAST_WINDOW_SECONDS = 5
+RAID_YOUNG_WINDOW_SECONDS = 15
+RAID_KICK_CONCURRENCY = 5
+RAID_KICK_WORKERS = RAID_KICK_CONCURRENCY
+RAID_KICK_QUEUE_MAX = 4096
+RAID_AUDIT_BATCH_SIZE = 200
+RAID_RUNTIME_PERSIST_SECONDS = 30
+LOCKDOWN_CONCURRENCY = 4
 MESSAGE_POLICY_CACHE_SECONDS = 30
 RAID_CONFIG_CACHE_SECONDS = 60
-RAID_KICK_CONCURRENCY = 5
+RAID_POLICY_CACHE_SECONDS = RAID_CONFIG_CACHE_SECONDS
 
 
 def raid_mode_active(until: datetime | None, now: datetime) -> bool:
     return until is not None and until > now
 
 
+def fast_burst_limit(join_limit: int) -> int:
+    return max(3, min(join_limit, (join_limit + 1) // 2))
+
+
+def raid_trigger_reason(
+    *,
+    join_count: int,
+    fast_count: int,
+    young_count: int,
+    join_limit: int,
+    min_account_age_days: int,
+    already_active: bool,
+) -> str | None:
+    if already_active:
+        return None
+    if fast_count >= fast_burst_limit(join_limit):
+        return (
+            f"Fast join burst: {fast_count} members/{RAID_FAST_WINDOW_SECONDS}s "
+            f"(fast threshold {fast_burst_limit(join_limit)})"
+        )
+    if min_account_age_days > 0 and young_count >= 3:
+        return (
+            f"Young-account burst: {young_count} accounts under "
+            f"{min_account_age_days} days/{RAID_YOUNG_WINDOW_SECONDS}s"
+        )
+    if join_count >= join_limit:
+        return f"Join surge: {join_count} members reached configured limit {join_limit}"
+    return None
+
+
 def should_activate_raid(join_count: int, join_limit: int, already_active: bool) -> bool:
-    return not already_active and join_count >= join_limit
+    return (
+        raid_trigger_reason(
+            join_count=join_count,
+            fast_count=0,
+            young_count=0,
+            join_limit=join_limit,
+            min_account_age_days=0,
+            already_active=already_active,
+        )
+        is not None
+    )
 
 
 class SecurityCog(commands.Cog):
@@ -46,25 +94,105 @@ class SecurityCog(commands.Cog):
         self.bot = bot
         self.messages: dict[tuple[int, int], deque[tuple[datetime, str]]] = defaultdict(deque)
         self.joins: dict[int, deque[datetime]] = defaultdict(deque)
+        self.fast_joins: dict[int, deque[datetime]] = defaultdict(deque)
+        self.young_joins: dict[int, deque[datetime]] = defaultdict(deque)
         self.recent_join_members: dict[int, deque[tuple[datetime, int]]] = defaultdict(deque)
         self.lockdown_locks = defaultdict(asyncio.Lock)
         self.raid_locks = defaultdict(asyncio.Lock)
-        self.raid_kick_semaphores = defaultdict(lambda: asyncio.Semaphore(RAID_KICK_CONCURRENCY))
         self.audit_events: dict[tuple[int, int], deque[datetime]] = defaultdict(deque)
         self.raid_mode_until: dict[int, datetime] = {}
         self._raid_kicked_until: dict[tuple[int, int], datetime] = {}
+        self._raid_queued: set[tuple[int, int]] = set()
+        self._raid_kick_queue: asyncio.Queue[tuple[discord.Member, str]] = asyncio.Queue(
+            maxsize=RAID_KICK_QUEUE_MAX
+        )
+        self._raid_worker_tasks: list[asyncio.Task[None]] = []
+        self._raid_audit_buffer: deque[
+            tuple[int, int | None, int | None, str, str, int | None, dict[str, object] | None]
+        ] = deque()
+        self._raid_persist_last: dict[int, datetime] = {}
+        self._raid_failure_count: dict[int, int] = defaultdict(int)
+        self._raid_failure_last_report: dict[int, datetime] = {}
+        self._raid_blocked_count: dict[int, int] = defaultdict(int)
+        self._raid_trigger_count: dict[int, int] = defaultdict(int)
         self._audit_access_warned_at: dict[int, datetime] = {}
         self._initialized_guilds: set[int] = set()
-        self._message_policy_cache: dict[int, tuple[datetime, dict[str, object], set[str], tuple[str, ...]]] = {}
-        self._raid_config_cache: dict[int, tuple[datetime, dict[str, object]]] = {}
-        self._raid_case_buffer: dict[int, list[tuple[int, int | None, int | None, str, str, int | None, dict[str, object] | None]]] = defaultdict(list)
-        self._raid_flush_tasks: dict[int, asyncio.Task[None]] = {}
+        self._message_policy_cache: dict[
+            int,
+            tuple[datetime, dict[str, object], set[str], tuple[str, ...]],
+        ] = {}
+        self._raid_policy_cache: dict[int, tuple[datetime, dict[str, object]]] = {}
+
+    async def cog_load(self) -> None:
+        await self.bot.database.execute(
+            """CREATE TABLE IF NOT EXISTS guardian_raid_runtime (
+                guild_id INTEGER PRIMARY KEY,
+                active_until_epoch INTEGER NOT NULL DEFAULT 0,
+                blocked_count INTEGER NOT NULL DEFAULT 0,
+                trigger_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        await self._restore_raid_runtime()
+        self._raid_worker_tasks = [
+            asyncio.create_task(
+                self._raid_kick_worker(),
+                name=f"guardian-raid-kick-{index}",
+            )
+            for index in range(RAID_KICK_WORKERS)
+        ]
+        self.raid_audit_loop.start()
+
+    def cog_unload(self) -> None:
+        self.raid_audit_loop.cancel()
+        for worker in self._raid_worker_tasks:
+            worker.cancel()
+        if self._raid_audit_buffer:
+            asyncio.create_task(self._flush_raid_audit())
+
+    async def _restore_raid_runtime(self) -> None:
+        now_epoch = int(datetime.now(UTC).timestamp())
+        rows = await self.bot.database.fetchall(
+            "SELECT guild_id, active_until_epoch, blocked_count, trigger_count "
+            "FROM guardian_raid_runtime WHERE active_until_epoch > ?",
+            (now_epoch,),
+        )
+        for row in rows:
+            guild_id = int(row["guild_id"])
+            self.raid_mode_until[guild_id] = datetime.fromtimestamp(
+                int(row["active_until_epoch"]),
+                UTC,
+            )
+            self._raid_blocked_count[guild_id] = int(row["blocked_count"])
+            self._raid_trigger_count[guild_id] = int(row["trigger_count"])
+
+    def _prune_hot_state(self, now: datetime) -> None:
+        if len(self._raid_kicked_until) > 1000:
+            self._raid_kicked_until = {
+                key: until
+                for key, until in self._raid_kicked_until.items()
+                if until > now
+            }
+        if len(self.messages) > 5000:
+            cutoff = now - timedelta(minutes=10)
+            checked = 0
+            for key in list(self.messages):
+                if checked >= 1000:
+                    break
+                checked += 1
+                window = self.messages.get(key)
+                if not window or window[-1][0] < cutoff:
+                    self.messages.pop(key, None)
 
     async def _ensure_guild_once(self, guild_id: int) -> None:
         if guild_id in self._initialized_guilds:
             return
         await self.bot.database.ensure_guild(guild_id)
         self._initialized_guilds.add(guild_id)
+
+    def invalidate_security_caches(self, guild_id: int) -> None:
+        self._message_policy_cache.pop(guild_id, None)
+        self._raid_policy_cache.pop(guild_id, None)
 
     async def _message_policy(
         self,
@@ -95,77 +223,199 @@ class SecurityCog(commands.Cog):
         self._message_policy_cache[guild_id] = (now, config, allowed_domains, bad_words)
         return config, allowed_domains, bad_words
 
-    async def _raid_config(self, guild_id: int) -> dict[str, object]:
+    async def _raid_policy(self, guild_id: int) -> dict[str, object]:
         now = datetime.now(UTC)
-        cached = self._raid_config_cache.get(guild_id)
-        if cached is not None and now - cached[0] < timedelta(seconds=RAID_CONFIG_CACHE_SECONDS):
+        cached = self._raid_policy_cache.get(guild_id)
+        if cached is not None and now - cached[0] < timedelta(seconds=RAID_POLICY_CACHE_SECONDS):
             return cached[1]
-        row = await self.bot.database.fetchone("SELECT * FROM raid_config WHERE guild_id = ?", (guild_id,))
+
+        await self._ensure_guild_once(guild_id)
+        row = await self.bot.database.fetchone(
+            "SELECT * FROM raid_config WHERE guild_id = ?",
+            (guild_id,),
+        )
         assert row is not None
         config = dict(row)
-        self._raid_config_cache[guild_id] = (now, config)
+        self._raid_policy_cache[guild_id] = (now, config)
         return config
 
+    def is_internal_removal(self, guild_id: int, user_id: int) -> bool:
+        key = (guild_id, user_id)
+        until = self._raid_kicked_until.get(key)
+        now = datetime.now(UTC)
+        if until is None:
+            return False
+        if until <= now:
+            self._raid_kicked_until.pop(key, None)
+            return False
+        return True
+
+    def is_raid_mode_active(self, guild_id: int) -> bool:
+        return raid_mode_active(
+            self.raid_mode_until.get(guild_id),
+            datetime.now(UTC),
+        )
+
+    def _mark_internal_removal(self, guild_id: int, user_id: int) -> None:
+        self._raid_kicked_until[(guild_id, user_id)] = datetime.now(UTC) + timedelta(
+            minutes=2
+        )
+
+    async def _persist_raid_runtime(self, guild_id: int, until: datetime) -> None:
+        await self.bot.database.execute(
+            "INSERT INTO guardian_raid_runtime "
+            "(guild_id, active_until_epoch, blocked_count, trigger_count, updated_at) "
+            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(guild_id) DO UPDATE SET "
+            "active_until_epoch=excluded.active_until_epoch, "
+            "blocked_count=excluded.blocked_count, "
+            "trigger_count=excluded.trigger_count, "
+            "updated_at=CURRENT_TIMESTAMP",
+            (
+                guild_id,
+                int(until.timestamp()),
+                int(self._raid_blocked_count[guild_id]),
+                int(self._raid_trigger_count[guild_id]),
+            ),
+        )
+
+    def _schedule_raid_persist(
+        self,
+        guild_id: int,
+        until: datetime,
+        *,
+        force: bool = False,
+    ) -> None:
+        now = datetime.now(UTC)
+        last = self._raid_persist_last.get(guild_id)
+        if (
+            not force
+            and last is not None
+            and now - last < timedelta(seconds=RAID_RUNTIME_PERSIST_SECONDS)
+        ):
+            return
+        self._raid_persist_last[guild_id] = now
+        asyncio.create_task(self._persist_raid_runtime(guild_id, until))
+
+    async def _clear_raid_runtime(self, guild_id: int) -> None:
+        await self.bot.database.execute(
+            "UPDATE guardian_raid_runtime SET active_until_epoch=0, updated_at=CURRENT_TIMESTAMP "
+            "WHERE guild_id=?",
+            (guild_id,),
+        )
+
     def _queue_raid_case(self, member: discord.Member, reason: str) -> None:
-        guild_id = member.guild.id
-        self._raid_case_buffer[guild_id].append((
-            guild_id,
-            member.id,
-            self.bot.user.id if self.bot.user else None,
-            "RAID_JOIN_BLOCKED",
-            reason,
-            None,
-            None,
-        ))
-        task = self._raid_flush_tasks.get(guild_id)
-        if task is None or task.done():
-            self._raid_flush_tasks[guild_id] = asyncio.create_task(self._flush_raid_cases(guild_id))
+        self._raid_audit_buffer.append(
+            (
+                member.guild.id,
+                member.id,
+                self.bot.user.id if self.bot.user else None,
+                "RAID_JOIN_BLOCKED",
+                reason,
+                None,
+                None,
+            )
+        )
+        self._raid_blocked_count[member.guild.id] += 1
+        until = self.raid_mode_until.get(member.guild.id)
+        if until is not None:
+            self._schedule_raid_persist(member.guild.id, until)
 
-    async def _flush_raid_cases(self, guild_id: int) -> None:
-        await asyncio.sleep(0.75)
-        rows = self._raid_case_buffer.pop(guild_id, [])
-        if rows:
-            await self.bot.database.create_cases_bulk(rows)
+    async def _flush_raid_audit(self) -> int:
+        if not self._raid_audit_buffer:
+            return 0
+        batch = []
+        while self._raid_audit_buffer and len(batch) < RAID_AUDIT_BATCH_SIZE:
+            batch.append(self._raid_audit_buffer.popleft())
+        try:
+            return await self.bot.database.create_cases_bulk(batch)
+        except Exception:
+            for row in reversed(batch):
+                self._raid_audit_buffer.appendleft(row)
+            return 0
 
-    async def _kick_for_raid(self, member: discord.Member, reason: str) -> bool:
+    @tasks.loop(seconds=1)
+    async def raid_audit_loop(self) -> None:
+        await self._flush_raid_audit()
+
+    async def _raid_kick_worker(self) -> None:
+        while True:
+            member, reason = await self._raid_kick_queue.get()
+            key = (member.guild.id, member.id)
+            try:
+                await self._kick_for_raid(member, reason)
+            finally:
+                self._raid_queued.discard(key)
+                self._raid_kick_queue.task_done()
+
+    def _enqueue_raid_kick(self, member: discord.Member, reason: str) -> bool:
         if member.bot or member.id == member.guild.owner_id:
             return False
-        async with self.raid_kick_semaphores[member.guild.id]:
-            self._raid_kicked_until[(member.guild.id, member.id)] = datetime.now(UTC) + timedelta(minutes=2)
-            try:
-                await member.kick(reason=f"ESN Guardian raid containment: {reason}"[:512])
-                self._queue_raid_case(member, reason)
-                return True
-            except (discord.Forbidden, discord.HTTPException):
-                self._raid_kicked_until.pop((member.guild.id, member.id), None)
-                await self._security_case(
-                    member.guild,
-                    member,
-                    "RAID_CONTAINMENT_FAILED",
-                    f"Could not remove member during raid containment: {reason}",
-                )
-                return False
+        key = (member.guild.id, member.id)
+        if key in self._raid_queued or self.is_internal_removal(*key):
+            return False
+        self._raid_queued.add(key)
+        try:
+            self._raid_kick_queue.put_nowait((member, reason))
+        except asyncio.QueueFull:
+            self._raid_queued.discard(key)
+            asyncio.create_task(self._kick_for_raid(member, reason))
+        return True
 
-    async def _contain_recent_raid_joiners(
+    def _queue_recent_raid_joiners(
         self,
         guild: discord.Guild,
         member_ids: list[int],
         reason: str,
     ) -> int:
-        semaphore = asyncio.Semaphore(RAID_KICK_CONCURRENCY)
-
-        async def remove(member_id: int) -> bool:
+        queued = 0
+        for member_id in member_ids:
             member = guild.get_member(member_id)
-            if member is None or member.bot or member.id == guild.owner_id:
-                return False
-            async with semaphore:
-                return await self._kick_for_raid(member, reason)
+            if member is not None and self._enqueue_raid_kick(member, reason):
+                queued += 1
+        return queued
 
-        results = await asyncio.gather(
-            *(remove(member_id) for member_id in member_ids[-25:]),
-            return_exceptions=True,
+    def _note_raid_failure(self, member: discord.Member, reason: str) -> None:
+        guild_id = member.guild.id
+        self._raid_failure_count[guild_id] += 1
+        now = datetime.now(UTC)
+        last = self._raid_failure_last_report.get(guild_id)
+        if last is not None and now - last < timedelta(seconds=30):
+            return
+        count = self._raid_failure_count[guild_id]
+        self._raid_failure_count[guild_id] = 0
+        self._raid_failure_last_report[guild_id] = now
+        asyncio.create_task(
+            self._security_case(
+                member.guild,
+                member,
+                "RAID_CONTAINMENT_DEGRADED",
+                f"{count} raid removal attempt(s) failed recently; latest reason: {reason}. "
+                "Check Kick Members permission and Guardian role hierarchy.",
+            )
         )
-        return sum(result is True for result in results)
+
+    async def _kick_for_raid(self, member: discord.Member, reason: str) -> bool:
+        if member.bot or member.id == member.guild.owner_id:
+            return False
+
+        bot_member = member.guild.me
+        if bot_member is not None and member.top_role >= bot_member.top_role:
+            self._note_raid_failure(member, "target role is not below Guardian")
+            return False
+
+        self._mark_internal_removal(member.guild.id, member.id)
+        try:
+            await member.kick(reason=f"ESN Guardian raid containment: {reason}"[:512])
+            self._queue_raid_case(member, reason)
+            return True
+        except discord.NotFound:
+            self._queue_raid_case(member, f"{reason}; member already left")
+            return True
+        except (discord.Forbidden, discord.HTTPException):
+            self._raid_kicked_until.pop((member.guild.id, member.id), None)
+            self._note_raid_failure(member, reason)
+            return False
 
     async def _security_case(self, guild: discord.Guild, target: discord.abc.User | None, action: str, reason: str, channel_id: int | None = None) -> int:
         case_id = await self.bot.database.create_case(guild.id, target.id if target else None, self.bot.user.id if self.bot.user else None, action, reason, channel_id)
@@ -581,7 +831,8 @@ class SecurityCog(commands.Cog):
 
         if member.bot:
             blocked_app = await self.bot.database.fetchone(
-                "SELECT application_id FROM blocked_external_apps WHERE guild_id = ? AND application_id = ?",
+                "SELECT application_id FROM blocked_external_apps "
+                "WHERE guild_id = ? AND application_id = ?",
                 (member.guild.id, member.id),
             )
             if blocked_app is not None:
@@ -606,67 +857,82 @@ class SecurityCog(commands.Cog):
                     )
                 return
 
-        antinuke = await self.bot.database.fetchone(
-            "SELECT enabled FROM anti_nuke_config WHERE guild_id = ?",
-            (member.guild.id,),
-        )
-        if member.bot and antinuke is not None and antinuke["enabled"]:
-            executor = await self._audit_executor(
-                member.guild,
-                discord.AuditLogAction.bot_add,
-                member.id,
+            antinuke = await self.bot.database.fetchone(
+                "SELECT enabled FROM anti_nuke_config WHERE guild_id = ?",
+                (member.guild.id,),
             )
-            if not await self._is_trusted_executor(member.guild, executor):
-                try:
-                    await member.kick(reason="ESN Guardian anti-nuke: untrusted bot addition")
-                    await self._security_case(
-                        member.guild,
-                        executor,
-                        "BOT_ADD_BLOCKED",
-                        f"Removed untrusted bot {member} ({member.id})",
-                    )
-                except (discord.Forbidden, discord.HTTPException):
-                    await self._security_case(
-                        member.guild,
-                        executor,
-                        "ANTINUKE_CONTAINMENT_FAILED",
-                        f"Could not remove untrusted bot {member} ({member.id})",
-                    )
-                await self._check_nuke_action(
+            if antinuke is not None and antinuke["enabled"]:
+                executor = await self._audit_executor(
                     member.guild,
                     discord.AuditLogAction.bot_add,
                     member.id,
-                    "untrusted bot addition",
-                    executor,
-                    allow_unattributed=True,
                 )
-                return
-
-        config = await self._raid_config(member.guild.id)
-        if not config["enabled"] or member.bot:
+                if not await self._is_trusted_executor(member.guild, executor):
+                    try:
+                        await member.kick(
+                            reason="ESN Guardian anti-nuke: untrusted bot addition"
+                        )
+                        await self._security_case(
+                            member.guild,
+                            executor,
+                            "BOT_ADD_BLOCKED",
+                            f"Removed untrusted bot {member} ({member.id})",
+                        )
+                    except (discord.Forbidden, discord.HTTPException):
+                        await self._security_case(
+                            member.guild,
+                            executor,
+                            "ANTINUKE_CONTAINMENT_FAILED",
+                            f"Could not remove untrusted bot {member} ({member.id})",
+                        )
+                    await self._check_nuke_action(
+                        member.guild,
+                        discord.AuditLogAction.bot_add,
+                        member.id,
+                        "untrusted bot addition",
+                        executor,
+                        allow_unattributed=True,
+                    )
+                    return
             return
 
+        config = await self._raid_policy(member.guild.id)
+        if not bool(config["enabled"]):
+            return
+
+        now = datetime.now(UTC)
+        min_age_days = int(config["min_account_age_days"])
+        account_age = now - member.created_at
+        is_young = account_age < timedelta(days=min_age_days) if min_age_days > 0 else False
+
+        action = "allow"
+        trigger_reason: str | None = None
+        recent_member_ids: list[int] = []
+
         async with self.raid_locks[member.guild.id]:
-            now = datetime.now(UTC)
-            if len(self._raid_kicked_until) > 1000:
-                self._raid_kicked_until = {
-                    key: until for key, until in self._raid_kicked_until.items()
-                    if until > now
-                }
-            if len(self.messages) > 5000:
-                cutoff = now - timedelta(minutes=10)
-                for key in list(self.messages)[:1000]:
-                    window = self.messages.get(key)
-                    if not window or window[-1][0] < cutoff:
-                        self.messages.pop(key, None)
+            self._prune_hot_state(now)
             join_window = timedelta(seconds=int(config["join_window_seconds"]))
             joins = self.joins[member.guild.id]
+            fast_joins = self.fast_joins[member.guild.id]
+            young_joins = self.young_joins[member.guild.id]
             recent_members = self.recent_join_members[member.guild.id]
 
             joins.append(now)
+            fast_joins.append(now)
             recent_members.append((now, member.id))
+            if is_young:
+                young_joins.append(now)
+
             while joins and now - joins[0] > join_window:
                 joins.popleft()
+            while fast_joins and now - fast_joins[0] > timedelta(
+                seconds=RAID_FAST_WINDOW_SECONDS
+            ):
+                fast_joins.popleft()
+            while young_joins and now - young_joins[0] > timedelta(
+                seconds=RAID_YOUNG_WINDOW_SECONDS
+            ):
+                young_joins.popleft()
             while recent_members and now - recent_members[0][0] > join_window:
                 recent_members.popleft()
 
@@ -674,66 +940,82 @@ class SecurityCog(commands.Cog):
             active = raid_mode_active(raid_until, now)
             if raid_until is not None and not active:
                 self.raid_mode_until.pop(member.guild.id, None)
+                asyncio.create_task(self._clear_raid_runtime(member.guild.id))
 
-            activate = should_activate_raid(
-                len(joins),
-                int(config["join_limit"]),
-                active,
-            )
-            surge_reason = (
-                f"Join surge exceeded {config['join_limit']} members/"
-                f"{config['join_window_seconds']}s"
+            trigger_reason = raid_trigger_reason(
+                join_count=len(joins),
+                fast_count=len(fast_joins),
+                young_count=len(young_joins),
+                join_limit=int(config["join_limit"]),
+                min_account_age_days=min_age_days,
+                already_active=active,
             )
 
-            if activate:
-                self.raid_mode_until[member.guild.id] = now + timedelta(
-                    minutes=RAID_CONTAINMENT_MINUTES
+            if trigger_reason is not None:
+                until = now + timedelta(minutes=RAID_CONTAINMENT_MINUTES)
+                self.raid_mode_until[member.guild.id] = until
+                self._raid_trigger_count[member.guild.id] += 1
+                self._schedule_raid_persist(member.guild.id, until, force=True)
+
+                burst_cap = min(
+                    200,
+                    max(25, int(config["join_limit"]) * 2),
                 )
-                member_ids = [member_id for _, member_id in recent_members]
-                asyncio.create_task(
-                    self._contain_recent_raid_joiners(
-                        member.guild,
-                        member_ids,
-                        surge_reason,
-                    )
+                recent_member_ids = [
+                    member_id for _, member_id in list(recent_members)[-burst_cap:]
+                ]
+                action = "activate"
+            elif active:
+                until = now + timedelta(minutes=RAID_CONTAINMENT_MINUTES)
+                self.raid_mode_until[member.guild.id] = until
+                self._schedule_raid_persist(member.guild.id, until)
+                action = "block"
+            elif is_young:
+                action = "quarantine"
+
+        if action == "activate":
+            assert trigger_reason is not None
+            queued = self._queue_recent_raid_joiners(
+                member.guild,
+                recent_member_ids,
+                trigger_reason,
+            )
+            asyncio.create_task(
+                self._lockdown(
+                    member.guild,
+                    f"Automatic raid lockdown: {trigger_reason}",
                 )
-                asyncio.create_task(
-                    self._lockdown(
-                        member.guild,
-                        f"Automatic raid lockdown: {surge_reason}",
-                    )
-                )
-                await self._security_case(
+            )
+            asyncio.create_task(
+                self._security_case(
                     member.guild,
                     None,
                     "RAID_MODE",
-                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; {surge_reason}",
+                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; "
+                    f"{trigger_reason}; queued removals: {queued}",
                 )
-                return
+            )
+            return
 
-            if active:
-                self.raid_mode_until[member.guild.id] = now + timedelta(
-                    minutes=RAID_CONTAINMENT_MINUTES
-                )
-                await self._kick_for_raid(
-                    member,
-                    "Server is in active raid containment mode",
-                )
-                return
+        if action == "block":
+            self._enqueue_raid_kick(
+                member,
+                "Server is in active raid containment mode",
+            )
+            return
 
-            account_age = now - member.created_at
-            if account_age < timedelta(days=int(config["min_account_age_days"])):
-                reason = (
-                    f"Account is younger than {config['min_account_age_days']} days "
-                    f"(age: {account_age.days} days)"
-                )
-                await self._security_case(
-                    member.guild,
-                    member,
-                    "SUSPICIOUS_JOIN",
-                    reason,
-                )
-                await self._quarantine(member, reason)
+        if action == "quarantine":
+            reason = (
+                f"Account is younger than {min_age_days} days "
+                f"(age: {account_age.days} days)"
+            )
+            await self._security_case(
+                member.guild,
+                member,
+                "SUSPICIOUS_JOIN",
+                reason,
+            )
+            await self._quarantine(member, reason)
 
     async def _check_webhook_change(self, channel: discord.abc.GuildChannel) -> None:
         await asyncio.sleep(0.8)
@@ -852,9 +1134,7 @@ class SecurityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        key = (member.guild.id, member.id)
-        raid_kick_until = self._raid_kicked_until.pop(key, None)
-        if raid_kick_until is not None and raid_kick_until > datetime.now(UTC):
+        if self.is_internal_removal(member.guild.id, member.id):
             return
         await log_event(
             self.bot,
@@ -897,18 +1177,28 @@ class SecurityCog(commands.Cog):
                 saved_rows,
             )
 
-        changed = 0
-        for channel, overwrite in prepared:
-            try:
-                overwrite.send_messages = False
-                await channel.set_permissions(
-                    guild.default_role,
-                    overwrite=overwrite,
-                    reason=reason,
-                )
-                changed += 1
-            except (discord.Forbidden, discord.HTTPException):
-                continue
+        semaphore = asyncio.Semaphore(LOCKDOWN_CONCURRENCY)
+
+        async def lock_channel(
+            channel: discord.TextChannel,
+            overwrite: discord.PermissionOverwrite,
+        ) -> bool:
+            async with semaphore:
+                try:
+                    overwrite.send_messages = False
+                    await channel.set_permissions(
+                        guild.default_role,
+                        overwrite=overwrite,
+                        reason=reason,
+                    )
+                    return True
+                except (discord.Forbidden, discord.HTTPException):
+                    return False
+
+        results = await asyncio.gather(
+            *(lock_channel(channel, overwrite) for channel, overwrite in prepared)
+        )
+        changed = sum(result is True for result in results)
 
         await self.bot.database.update_setting(guild.id, "lockdown_active", 1)
         await self._security_case(
@@ -929,25 +1219,33 @@ class SecurityCog(commands.Cog):
             (guild.id,),
         )
         saved = {int(row["channel_id"]): row["send_messages"] for row in saved_rows}
-        restored_ids: list[tuple[int, int]] = []
-        changed = 0
+        semaphore = asyncio.Semaphore(LOCKDOWN_CONCURRENCY)
 
-        for channel in guild.text_channels:
+        async def restore_channel(channel: discord.TextChannel) -> int | None:
             if channel.id not in saved:
-                continue
-            try:
-                overwrite = channel.overwrites_for(guild.default_role)
-                value = saved[channel.id]
-                overwrite.send_messages = None if value is None else bool(value)
-                await channel.set_permissions(
-                    guild.default_role,
-                    overwrite=overwrite,
-                    reason=reason,
-                )
-                restored_ids.append((guild.id, channel.id))
-                changed += 1
-            except (discord.Forbidden, discord.HTTPException):
-                continue
+                return None
+            async with semaphore:
+                try:
+                    overwrite = channel.overwrites_for(guild.default_role)
+                    value = saved[channel.id]
+                    overwrite.send_messages = None if value is None else bool(value)
+                    await channel.set_permissions(
+                        guild.default_role,
+                        overwrite=overwrite,
+                        reason=reason,
+                    )
+                    return channel.id
+                except (discord.Forbidden, discord.HTTPException):
+                    return None
+
+        restored = await asyncio.gather(
+            *(restore_channel(channel) for channel in guild.text_channels)
+        )
+        restored_ids = [
+            (guild.id, channel_id)
+            for channel_id in restored
+            if channel_id is not None
+        ]
 
         if restored_ids:
             await self.bot.database.executemany(
@@ -968,9 +1266,9 @@ class SecurityCog(commands.Cog):
             guild,
             None,
             "UNLOCKDOWN",
-            f"{reason}; channels restored: {changed}",
+            f"{reason}; channels restored: {len(restored_ids)}",
         )
-        return changed
+        return len(restored_ids)
 
     @app_commands.command(description="Lock the current channel for @everyone.")
     @guild_only()
@@ -1097,6 +1395,7 @@ class SecurityCog(commands.Cog):
             "WHERE guild_id = ?",
             (interaction.guild_id,),
         )
+        self.invalidate_security_caches(interaction.guild_id)
         advanced = self.bot.get_cog("AdvancedSecurityCog")
         if advanced is not None and interaction.guild is not None and hasattr(advanced, "harden_guild"):
             changed, failed = await advanced.harden_guild(interaction.guild)
@@ -1159,16 +1458,44 @@ class SecurityCog(commands.Cog):
                 await respond(interaction, "The quarantine role must be below my highest role.")
                 return
         await self.bot.database.execute("UPDATE raid_config SET enabled = ?, join_limit = ?, join_window_seconds = ?, min_account_age_days = ?, quarantine_role_id = ? WHERE guild_id = ?", (int(enabled), join_limit, join_window_seconds, minimum_account_age_days, quarantine_role.id if quarantine_role else None, interaction.guild_id))
-        await respond(interaction, "Raid detection and quarantine policy updated.")
+        self.invalidate_security_caches(interaction.guild_id)
+        await respond(interaction, "Raid detection and containment policy updated.")
 
-    @security.command(name="raid-status", description="Show join-rate, account-age, and quarantine configuration.")
+    @security.command(name="raid-status", description="Show live raid containment state and thresholds.")
     @guild_only()
     @staff_only()
     async def security_raid_status(self, interaction: discord.Interaction) -> None:
         await self.bot.database.ensure_guild(interaction.guild_id)
-        config = await self.bot.database.fetchone("SELECT * FROM raid_config WHERE guild_id = ?", (interaction.guild_id,))
+        config = await self.bot.database.fetchone(
+            "SELECT * FROM raid_config WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
         assert config is not None
-        await respond(interaction, f"Enabled: {'yes' if config['enabled'] else 'no'}\nJoin rate: {config['join_limit']} members / {config['join_window_seconds']}s\nMinimum account age: {config['min_account_age_days']} days\nQuarantine role: <@&{config['quarantine_role_id']}>")
+        now = datetime.now(UTC)
+        until = self.raid_mode_until.get(interaction.guild_id)
+        active = raid_mode_active(until, now)
+        queue_depth = self._raid_kick_queue.qsize()
+        quarantine = (
+            f"<@&{config['quarantine_role_id']}>"
+            if config["quarantine_role_id"]
+            else "not configured"
+        )
+        await respond(
+            interaction,
+            "**Guardian Raid Engine v3**\n"
+            f"Enabled: {'yes' if config['enabled'] else 'no'}\n"
+            f"Containment: {'ACTIVE' if active else 'inactive'}\n"
+            f"Active until: {until.isoformat() if active and until else 'n/a'}\n"
+            f"Configured threshold: {config['join_limit']} joins / {config['join_window_seconds']}s\n"
+            f"Fast-burst threshold: {fast_burst_limit(int(config['join_limit']))} joins / {RAID_FAST_WINDOW_SECONDS}s\n"
+            f"Young-account burst: 3 accounts / {RAID_YOUNG_WINDOW_SECONDS}s when account-age checks are enabled\n"
+            f"Minimum account age: {config['min_account_age_days']} days\n"
+            f"Kick workers: {RAID_KICK_WORKERS}\n"
+            f"Kick queue: {queue_depth}/{RAID_KICK_QUEUE_MAX}\n"
+            f"Blocked this runtime: {self._raid_blocked_count[interaction.guild_id]}\n"
+            f"Raid triggers this runtime: {self._raid_trigger_count[interaction.guild_id]}\n"
+            f"Quarantine role: {quarantine}",
+        )
 
     @security.command(name="quarantine", description="Assign the configured quarantine role to a member.")
     @guild_only()
