@@ -620,7 +620,18 @@ class AdvancedSecurityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        actor = await self._audit_executor(member.guild, discord.AuditLogAction.kick, member.id)
+        security = self.bot.get_cog("SecurityCog")
+        if (
+            security is not None
+            and hasattr(security, "is_internal_removal")
+            and security.is_internal_removal(member.guild.id, member.id)
+        ):
+            return
+        actor = await self._audit_executor(
+            member.guild,
+            discord.AuditLogAction.kick,
+            member.id,
+        )
         if actor is not None:
             await self._record_destructive(member.guild, actor, "member kick")
 
