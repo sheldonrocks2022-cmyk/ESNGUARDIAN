@@ -57,12 +57,18 @@ function syncLedger(db,guildId,batchSize=500){
   return count
 }
 function verifyLedger(db,guildId){
-  const rows=db.all('SELECT l.sequence,l.case_id,l.previous_hash,l.case_hash,c.guild_id,c.target_id,c.moderator_id,c.action,c.reason,c.channel_id,c.details,c.created_at FROM guardian_security_ledger l JOIN cases c ON c.case_id=l.case_id WHERE l.guild_id=? ORDER BY l.sequence ASC',BigInt(guildId))
+  const rows=db.all(
+    'SELECT l.sequence,l.case_id,l.previous_hash,l.case_hash,c.guild_id AS c_guild_id,c.target_id,c.moderator_id,c.action,c.reason,c.channel_id,c.details,c.created_at '+
+    'FROM guardian_security_ledger l LEFT JOIN cases c ON c.guild_id=l.guild_id AND c.case_id=l.case_id WHERE l.guild_id=? ORDER BY l.sequence ASC',
+    BigInt(guildId)
+  )
   let prev=GENESIS,checked=0
   for(const row of rows){
     checked++
-    if(String(row.previous_hash)!==prev)return{ok:false,checked,reason:'Ledger chain broke before case #'+row.case_id+'.'}
-    const expected=digest(row,prev)
+    if(row.c_guild_id==null)return{ok:false,checked,reason:'Case #'+row.case_id+' is missing from the database.'}
+    if(String(row.previous_hash)!==prev)return{ok:false,checked,reason:'Ledger chain break at sequence '+row.sequence+'.'}
+    const sealed={...row,guild_id:row.c_guild_id}
+    const expected=digest(sealed,prev)
     if(expected!==String(row.case_hash))return{ok:false,checked,reason:'Case #'+row.case_id+' no longer matches its sealed hash.'}
     prev=expected
   }
