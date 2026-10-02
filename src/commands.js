@@ -635,7 +635,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'suggest') {
-      if (!interaction.channel?.isTextBased?.()) return respond(interaction, 'Use this command in a text channel.')
+      if (interaction.channel?.type !== ChannelType.GuildText) return respond(interaction, 'Use this command in a text channel.')
       const suggestion=interaction.options.getString('suggestion',true)
       const message=await interaction.channel.send({embeds:[embed(suggestion,'Suggestion').setAuthor({name:interaction.user.tag,iconURL:interaction.user.displayAvatarURL()})],allowedMentions:{parse:[]}}).catch(()=>null)
       if(!message)return respond(interaction,'I could not post that suggestion. Check my channel permissions.')
@@ -696,13 +696,19 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'unban') {
-      if (!await requirePermission(interaction,PermissionFlagsBits.BanMembers,'Ban Members')) return
+      if (!await requirePermission(interaction,PermissionFlagsBits.BanMembers)) return
       const userId = interaction.options.getString('user_id', true)
       const reason = interaction.options.getString('reason') || 'Unbanned'
+      if(!/^\d+$/.test(userId))return respond(interaction,'Provide a valid Discord user ID.')
       const user = await client.users.fetch(userId).catch(() => null)
       if (!user) return respond(interaction, 'Provide a valid Discord user ID.')
       const caseId = await moderationCase(db, interaction, user, 'UNBAN', reason)
-      await interaction.guild.members.unban(userId, `Case #${caseId}: ${reason}`)
+      try{
+        await interaction.guild.members.unban(userId, `Case #${caseId}: ${reason}`)
+      }catch(error){
+        if(error?.code===50013)return respond(interaction,'I lack permission to perform that action.')
+        return respond(interaction,'Discord rejected the action. Please retry shortly.')
+      }
       await logCase(db, interaction, caseId, user, 'UNBAN', reason)
       return respond(interaction, `Unbanned ${user.tag}. Case #${caseId}.`)
     }
@@ -719,11 +725,17 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'slowmode') {
-      if (!await requirePermission(interaction,PermissionFlagsBits.ManageChannels,'Manage Channels')) return
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageChannels)) return
       const seconds = interaction.options.getInteger('seconds', true)
-      if (!interaction.channel?.setRateLimitPerUser) return respond(interaction, 'This command requires a text channel.')
+      if (interaction.channel?.type !== ChannelType.GuildText) return respond(interaction, 'This command requires a text channel.')
       const caseId = await moderationCase(db, interaction, null, 'SLOWMODE', `Set to ${seconds} seconds`)
-      await interaction.channel.setRateLimitPerUser(seconds, `Case #${caseId}`)
+      try{
+        await interaction.channel.setRateLimitPerUser(seconds, `Case #${caseId}`)
+      }catch(error){
+        if(error?.code===50013)return respond(interaction,'I lack permission to perform that action.')
+        return respond(interaction,'Discord rejected the action. Please retry shortly.')
+      }
+      await logCase(db, interaction, caseId, null, 'SLOWMODE', `Set to ${seconds} seconds`)
       return respond(interaction, `Slowmode set to ${seconds}s. Case #${caseId}.`)
     }
 
@@ -741,33 +753,45 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'nickname') {
-      if (!await requirePermission(interaction,PermissionFlagsBits.ManageNicknames,'Manage Nicknames')) return
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageNicknames)) return
       const member = interaction.options.getMember('member')
       if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
       const nickname = interaction.options.getString('nickname')
       const reason = interaction.options.getString('reason') || 'Nickname changed'
       const caseId = await moderationCase(db, interaction, member, 'NICKNAME', reason)
-      await member.setNickname(nickname, `Case #${caseId}: ${reason}`)
-      return respond(interaction, `Nickname updated. Case #${caseId}.`)
+      try{
+        await member.setNickname(nickname, `Case #${caseId}: ${reason}`)
+      }catch(error){
+        if(error?.code===50013)return respond(interaction,'I lack permission to perform that action.')
+        return respond(interaction,'Discord rejected the action. Please retry shortly.')
+      }
+      await logCase(db, interaction, caseId, member.user, 'NICKNAME', reason)
+      return respond(interaction, `Updated nickname. Case #${caseId}.`)
     }
 
     if (name === 'role') {
-      if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
+      if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles)) return
       const member = interaction.options.getMember('member')
       const role = interaction.options.getRole('role')
+      if (!safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'That role is privileged, managed, or above the allowed role hierarchy.')
       if (!memberManageable(interaction.guild, interaction.member, member)) return respond(interaction, 'You cannot act on yourself, the owner, the bot, or a member at or above your role or my role.')
-      if (!safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'That role is privileged, managed, or above the allowed hierarchy.')
       const remove = interaction.options.getBoolean('remove') || false
       const reason = interaction.options.getString('reason') || 'Role updated'
       const caseId = await moderationCase(db, interaction, member, remove ? 'ROLE_REMOVE' : 'ROLE_ADD', reason)
-      await (remove ? member.roles.remove(role, `Case #${caseId}: ${reason}`) : member.roles.add(role, `Case #${caseId}: ${reason}`))
+      try{
+        await (remove ? member.roles.remove(role, `Case #${caseId}: ${reason}`) : member.roles.add(role, `Case #${caseId}: ${reason}`))
+      }catch(error){
+        if(error?.code===50013)return respond(interaction,'I lack permission to perform that action.')
+        return respond(interaction,'Discord rejected the action. Please retry shortly.')
+      }
+      await logCase(db, interaction, caseId, member.user, 'ROLE', reason)
       return respond(interaction, `Role updated for <@${member.id}>. Case #${caseId}.`)
     }
 
     if (name === 'massrole') {
       if (!await requirePermission(interaction,PermissionFlagsBits.ManageRoles,'Manage Roles')) return
       const role = interaction.options.getRole('role')
-      if (!safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'That role cannot be assigned by Guardian.')
+      if (!safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'That role is privileged, managed, or above the allowed role hierarchy.')
       const remove = interaction.options.getBoolean('remove') || false
       const includeBots = interaction.options.getBoolean('include_bots') || false
       await interaction.deferReply({ ephemeral: true })
@@ -779,7 +803,7 @@ async function handleCommand(interaction, db, settings) {
       }
       const summary = `${remove ? 'Removed' : 'Added'} ${role.name} for ${changed} members`
       const caseId = await moderationCase(db, interaction, null, 'MASSROLE', summary)
-      await logCase(db, interaction, caseId, null, 'MASSROLE', summary)
+      await logCase(db, interaction, caseId, null, 'MASSROLE', `${remove ? 'Removed' : 'Added'} <@&${role.id}> for ${changed} members`)
       return interaction.editReply(`Updated ${changed} members. Case #${caseId}.`)
     }
 
@@ -806,6 +830,7 @@ async function handleCommand(interaction, db, settings) {
     }
 
     if (name === 'panel') {
+      if (interaction.channel?.type !== ChannelType.GuildText) return respond(interaction, 'This command requires a text channel.')
       try {
         await client.guardianCommunity?.postPanel(interaction)
         return respond(interaction,'Control panel posted.')
