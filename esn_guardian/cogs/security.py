@@ -652,18 +652,6 @@ class SecurityCog(commands.Cog):
                 self.raid_mode_until[member.guild.id] = now + timedelta(
                     minutes=RAID_CONTAINMENT_MINUTES
                 )
-                await self._security_case(
-                    member.guild,
-                    None,
-                    "RAID_MODE",
-                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; {surge_reason}",
-                )
-                asyncio.create_task(
-                    self._lockdown(
-                        member.guild,
-                        f"Automatic raid lockdown: {surge_reason}",
-                    )
-                )
                 member_ids = [member_id for _, member_id in recent_members]
                 asyncio.create_task(
                     self._contain_recent_raid_joiners(
@@ -671,6 +659,18 @@ class SecurityCog(commands.Cog):
                         member_ids,
                         surge_reason,
                     )
+                )
+                asyncio.create_task(
+                    self._lockdown(
+                        member.guild,
+                        f"Automatic raid lockdown: {surge_reason}",
+                    )
+                )
+                await self._security_case(
+                    member.guild,
+                    None,
+                    "RAID_MODE",
+                    f"Raid containment enabled for {RAID_CONTAINMENT_MINUTES} minutes; {surge_reason}",
                 )
                 return
 
@@ -845,21 +845,41 @@ class SecurityCog(commands.Cog):
         settings = await self.bot.database.setting(guild.id)
         if settings["lockdown_active"]:
             return False
-        changed = 0
+
+        prepared: list[tuple[discord.TextChannel, discord.PermissionOverwrite]] = []
+        saved_rows: list[tuple[int, int, bool | None]] = []
         for channel in guild.text_channels:
+            overwrite = channel.overwrites_for(guild.default_role)
+            prepared.append((channel, overwrite))
+            saved_rows.append((guild.id, channel.id, overwrite.send_messages))
+
+        if saved_rows:
+            await self.bot.database.executemany(
+                "INSERT OR IGNORE INTO lockdown_overwrites "
+                "(guild_id, channel_id, send_messages) VALUES (?, ?, ?)",
+                saved_rows,
+            )
+
+        changed = 0
+        for channel, overwrite in prepared:
             try:
-                overwrite = channel.overwrites_for(guild.default_role)
-                await self.bot.database.execute(
-                    "INSERT OR IGNORE INTO lockdown_overwrites (guild_id, channel_id, send_messages) VALUES (?, ?, ?)",
-                    (guild.id, channel.id, overwrite.send_messages),
-                )
                 overwrite.send_messages = False
-                await channel.set_permissions(guild.default_role, overwrite=overwrite, reason=reason)
+                await channel.set_permissions(
+                    guild.default_role,
+                    overwrite=overwrite,
+                    reason=reason,
+                )
                 changed += 1
             except (discord.Forbidden, discord.HTTPException):
                 continue
+
         await self.bot.database.update_setting(guild.id, "lockdown_active", 1)
-        await self._security_case(guild, None, "LOCKDOWN", f"{reason}; channels secured: {changed}")
+        await self._security_case(
+            guild,
+            None,
+            "LOCKDOWN",
+            f"{reason}; channels secured: {changed}",
+        )
         return True
 
     async def _unlockdown(self, guild: discord.Guild, reason: str):
@@ -867,25 +887,52 @@ class SecurityCog(commands.Cog):
             return await self._unlockdown_locked(guild, reason)
 
     async def _unlockdown_locked(self, guild: discord.Guild, reason: str) -> int:
+        saved_rows = await self.bot.database.fetchall(
+            "SELECT channel_id, send_messages FROM lockdown_overwrites WHERE guild_id = ?",
+            (guild.id,),
+        )
+        saved = {int(row["channel_id"]): row["send_messages"] for row in saved_rows}
+        restored_ids: list[tuple[int, int]] = []
         changed = 0
+
         for channel in guild.text_channels:
+            if channel.id not in saved:
+                continue
             try:
-                saved = await self.bot.database.fetchone(
-                    "SELECT send_messages FROM lockdown_overwrites WHERE guild_id = ? AND channel_id = ?",
-                    (guild.id, channel.id),
-                )
-                if saved is None:
-                    continue
                 overwrite = channel.overwrites_for(guild.default_role)
-                overwrite.send_messages = None if saved["send_messages"] is None else bool(saved["send_messages"])
-                await channel.set_permissions(guild.default_role, overwrite=overwrite, reason=reason)
-                await self.bot.database.execute("DELETE FROM lockdown_overwrites WHERE guild_id = ? AND channel_id = ?", (guild.id, channel.id))
+                value = saved[channel.id]
+                overwrite.send_messages = None if value is None else bool(value)
+                await channel.set_permissions(
+                    guild.default_role,
+                    overwrite=overwrite,
+                    reason=reason,
+                )
+                restored_ids.append((guild.id, channel.id))
                 changed += 1
             except (discord.Forbidden, discord.HTTPException):
                 continue
-        pending = await self.bot.database.fetchone("SELECT 1 FROM lockdown_overwrites WHERE guild_id = ?", (guild.id,))
-        await self.bot.database.update_setting(guild.id, "lockdown_active", int(pending is not None))
-        await self._security_case(guild, None, "UNLOCKDOWN", f"{reason}; channels restored: {changed}")
+
+        if restored_ids:
+            await self.bot.database.executemany(
+                "DELETE FROM lockdown_overwrites WHERE guild_id = ? AND channel_id = ?",
+                restored_ids,
+            )
+
+        pending = await self.bot.database.fetchone(
+            "SELECT 1 FROM lockdown_overwrites WHERE guild_id = ?",
+            (guild.id,),
+        )
+        await self.bot.database.update_setting(
+            guild.id,
+            "lockdown_active",
+            int(pending is not None),
+        )
+        await self._security_case(
+            guild,
+            None,
+            "UNLOCKDOWN",
+            f"{reason}; channels restored: {changed}",
+        )
         return changed
 
     @app_commands.command(description="Lock the current channel for @everyone.")
