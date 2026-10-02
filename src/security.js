@@ -70,7 +70,7 @@ function snapshotGuild(guild) {
   }
 }
 
-function saveSnapshot(db, guild) {
+async function saveSnapshot(db, guild) {
   const data = snapshotGuild(guild)
   db.run(
     'INSERT INTO guardian_snapshots (guild_id,data,created_at) VALUES (?,?,CURRENT_TIMESTAMP) ON CONFLICT(guild_id) DO UPDATE SET data=excluded.data, created_at=CURRENT_TIMESTAMP',
@@ -84,6 +84,32 @@ function saveSnapshot(db, guild) {
       )
     }
   }
+
+  try {
+    const webhooks = await guild.fetchWebhooks()
+    for (const webhook of webhooks.values()) {
+      db.run(
+        'INSERT OR IGNORE INTO approved_webhooks (guild_id,webhook_id) VALUES (?,?)',
+        BigInt(guild.id), BigInt(webhook.id)
+      )
+    }
+  } catch {}
+
+  try {
+    const integrations = await guild.fetchIntegrations()
+    for (const integration of integrations.values()) {
+      const applicationId = integration.application?.id ? BigInt(integration.application.id) : null
+      db.run(
+        'INSERT OR IGNORE INTO approved_integrations (guild_id,integration_id,application_id) VALUES (?,?,?)',
+        BigInt(guild.id), BigInt(integration.id), applicationId
+      )
+    }
+  } catch {}
+
+  db.run(
+    'INSERT INTO guardian_baseline_state (guild_id,initialized_at) VALUES (?,CURRENT_TIMESTAMP) ON CONFLICT(guild_id) DO UPDATE SET initialized_at=CURRENT_TIMESTAMP',
+    BigInt(guild.id)
+  )
   return data
 }
 
@@ -111,7 +137,25 @@ function isApprovedBot(db, guildId, botId) {
 }
 
 async function createSecurityCase(db, guild, actorId, action, reason, details = {}) {
-  return db.createCase(guild.id, actorId, null, action, reason, null, details)
+  const caseId = db.createCase(guild.id, actorId, null, action, reason, null, details)
+
+  const upper = String(action || '').toUpperCase()
+  let score = 20
+  if (/GUARDIAN_TAMPER|ANTINUKE|EXTERNAL_APP|UNAPPROVED_BOT|ROLLBACK_FAILED/.test(upper)) score = 90
+  else if (/CREDENTIAL|WEBHOOK|INTEGRATION|ROLE_DELETE|CHANNEL_DELETE|PERMISSION/.test(upper)) score = 80
+  else if (/LOCKDOWN|RAID|FLOOD|SPAM|MENTION/.test(upper)) score = 70
+  else if (/LINK|INVITE|SUSPICIOUS/.test(upper)) score = 55
+
+  db.run(
+    'INSERT INTO security_signals (guild_id,subject_id,kind,score,details) VALUES (?,?,?,?,?)',
+    BigInt(guild.id),
+    actorId ? BigInt(actorId) : null,
+    upper || 'SECURITY',
+    score,
+    JSON.stringify({ caseId, reason, ...details })
+  )
+
+  return caseId
 }
 
 async function containActor(db, guild, actor, reason) {
@@ -250,7 +294,7 @@ async function hardenGuild(db, guild) {
     }
   }
 
-  saveSnapshot(db, guild)
+  await saveSnapshot(db, guild)
   return { rolesChanged }
 }
 
@@ -261,7 +305,7 @@ async function panicGuild(db, guild, enabled) {
     return { enabled: false, restored }
   }
 
-  saveSnapshot(db, guild)
+  await saveSnapshot(db, guild)
   await hardenGuild(db, guild)
 
   let botsRemoved = 0
@@ -605,10 +649,145 @@ function attachSecurity(client, db) {
 
   client.on(Events.WebhooksUpdate, async channel => {
     try {
-      const actor = await auditActor(channel.guild, AuditLogEvent.WebhookCreate, null)
-      if (actor) await registerDestructiveAction(db, channel.guild, actor, 'WEBHOOK_CHANGE', channel.id)
-      await logEvent(db, channel.guild, 'security_log_channel_id', 'Webhook configuration changed', `Channel: <#${channel.id}>\nActor: ${actor ? `<@${actor.id}>` : 'Unknown'}`)
+      const guild = channel.guild
+      db.ensureGuild(guild.id)
+      const guard = db.get('SELECT webhook_guard FROM guardian_config WHERE guild_id=?', BigInt(guild.id))
+      const actor = await auditActor(guild, AuditLogEvent.WebhookCreate, null)
+      if (actor) await registerDestructiveAction(db, guild, actor, 'WEBHOOK_CHANGE', channel.id)
+
+      const hooks = await guild.fetchWebhooks().catch(() => null)
+      let removed = 0
+      if (hooks && Number(guard?.webhook_guard ?? 1)) {
+        for (const hook of hooks.values()) {
+          const approved = db.get(
+            'SELECT 1 AS ok FROM approved_webhooks WHERE guild_id=? AND webhook_id=?',
+            BigInt(guild.id), BigInt(hook.id)
+          )
+          if (approved) continue
+
+          if (actor && trustedUser(db, guild, actor.id)) {
+            db.run(
+              'INSERT OR IGNORE INTO approved_webhooks (guild_id,webhook_id) VALUES (?,?)',
+              BigInt(guild.id), BigInt(hook.id)
+            )
+            continue
+          }
+
+          await hook.delete('ESN Guardian webhook guard: unapproved webhook').then(() => removed++).catch(() => {})
+        }
+      }
+
+      await logEvent(
+        db,
+        guild,
+        'security_log_channel_id',
+        'Webhook configuration changed',
+        `Channel: <#${channel.id}>\nActor: ${actor ? `<@${actor.id}>` : 'Unknown'}\nUnapproved webhooks removed: ${removed}`
+      )
+      if (removed) await createSecurityCase(db, guild, actor?.id || null, 'WEBHOOK_GUARD', `Removed ${removed} unapproved webhook(s)`, { channelId: channel.id })
+    } catch (error) {
+      console.error('[Guardian] webhook guard error', error)
+    }
+  })
+
+  client.on(Events.GuildIntegrationsUpdate, async guild => {
+    try {
+      db.ensureGuild(guild.id)
+      const guard = db.get('SELECT integration_guard FROM guardian_config WHERE guild_id=?', BigInt(guild.id))
+      if (!Number(guard?.integration_guard ?? 1)) return
+
+      const actor = await auditActor(guild, AuditLogEvent.IntegrationCreate, null)
+      const integrations = await guild.fetchIntegrations().catch(() => null)
+      if (!integrations) return
+
+      let removed = 0
+      for (const integration of integrations.values()) {
+        const approved = db.get(
+          'SELECT 1 AS ok FROM approved_integrations WHERE guild_id=? AND integration_id=?',
+          BigInt(guild.id), BigInt(integration.id)
+        )
+        if (approved) continue
+
+        if (actor && trustedUser(db, guild, actor.id)) {
+          db.run(
+            'INSERT OR IGNORE INTO approved_integrations (guild_id,integration_id,application_id) VALUES (?,?,?)',
+            BigInt(guild.id),
+            BigInt(integration.id),
+            integration.application?.id ? BigInt(integration.application.id) : null
+          )
+          continue
+        }
+
+        if (typeof integration.delete === 'function') {
+          await integration.delete('ESN Guardian integration guard: unapproved integration').then(() => removed++).catch(() => {})
+        }
+      }
+
+      if (actor) await registerDestructiveAction(db, guild, actor, 'INTEGRATION_CHANGE', guild.id)
+      if (removed) await createSecurityCase(db, guild, actor?.id || null, 'INTEGRATION_GUARD', `Removed ${removed} unapproved integration(s)`)
+      await logEvent(db, guild, 'security_log_channel_id', 'Integration configuration changed', `Actor: ${actor ? `<@${actor.id}>` : 'Unknown'}\nUnapproved integrations removed: ${removed}`)
+    } catch (error) {
+      console.error('[Guardian] integration guard error', error)
+    }
+  })
+
+  client.on(Events.GuildBanAdd, async ban => {
+    try {
+      const actor = await auditActor(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id)
+      await registerDestructiveAction(db, ban.guild, actor, 'MEMBER_BAN', ban.user.id)
     } catch {}
+  })
+
+  client.on(Events.MessageDelete, async message => {
+    if (!message.guild || !message.author || message.author.bot) return
+    await logEvent(
+      db,
+      message.guild,
+      'message_log_channel_id',
+      'Message deleted',
+      `Author: <@${message.author.id}> (${message.author.id})\nChannel: <#${message.channelId}>\nContent: ${String(message.content || '[unavailable]').slice(0, 3000)}`
+    ).catch(() => {})
+  })
+
+  client.on(Events.MessageBulkDelete, async messages => {
+    const first = messages.first()
+    if (!first?.guild) return
+    await logEvent(db, first.guild, 'message_log_channel_id', 'Messages bulk deleted', `Channel: <#${first.channelId}>\nCount: ${messages.size}`).catch(() => {})
+  })
+
+  client.on(Events.MessageUpdate, async (before, after) => {
+    if (!after.guild || !after.author || after.author.bot) return
+    if (before.content === after.content) return
+    await logEvent(
+      db,
+      after.guild,
+      'message_log_channel_id',
+      'Message edited',
+      `Author: <@${after.author.id}>\nChannel: <#${after.channelId}>\nBefore: ${String(before.content || '[unavailable]').slice(0, 1400)}\nAfter: ${String(after.content || '[unavailable]').slice(0, 1400)}`
+    ).catch(() => {})
+  })
+
+  client.on(Events.VoiceStateUpdate, async (before, after) => {
+    const guild = after.guild || before.guild
+    if (!guild) return
+    if (before.channelId === after.channelId) return
+    await logEvent(
+      db,
+      guild,
+      'voice_log_channel_id',
+      'Voice state changed',
+      `Member: <@${after.id}>\nFrom: ${before.channelId ? `<#${before.channelId}>` : 'none'}\nTo: ${after.channelId ? `<#${after.channelId}>` : 'none'}`
+    ).catch(() => {})
+  })
+
+  client.on(Events.InviteCreate, async invite => {
+    if (!invite.guild) return
+    await logEvent(db, invite.guild, 'invite_log_channel_id', 'Invite created', `Code: ${invite.code}\nChannel: ${invite.channelId ? `<#${invite.channelId}>` : 'unknown'}\nCreator: ${invite.inviter ? `<@${invite.inviter.id}>` : 'unknown'}`).catch(() => {})
+  })
+
+  client.on(Events.InviteDelete, async invite => {
+    if (!invite.guild) return
+    await logEvent(db, invite.guild, 'invite_log_channel_id', 'Invite deleted', `Code: ${invite.code}\nChannel: ${invite.channelId ? `<#${invite.channelId}>` : 'unknown'}`).catch(() => {})
   })
 }
 
