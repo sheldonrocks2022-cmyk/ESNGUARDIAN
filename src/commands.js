@@ -549,7 +549,7 @@ async function handleCommand(interaction, db, settings) {
       }
     }
 
-    if (!await requireGuild    if (!await requireGuild(interaction, db, settings)) return
+    if (!await requireGuild(interaction, db, settings)) return
 
     if (name === 'verify') return doVerify(interaction, db)
 
@@ -620,7 +620,7 @@ async function handleCommand(interaction, db, settings) {
       return respond(interaction,'Suggestion posted.')
     }
 
-    const staffCommands    const staffCommands = new Set([
+    const staffCommands = new Set([
       'warn','warnings','timeout','untimeout','kick','ban','unban','clear','slowmode','case','history','nickname','role','massrole',
       'lock','unlock','lockdown','unlockdown','panel','config','welcome','goodbye','autorole','logs','smpannounce',
       'ticket-config','verification','guardian','security','antinuke','overwatch','resilience','sentinel'
@@ -799,7 +799,7 @@ async function handleCommand(interaction, db, settings) {
       return respond(interaction,'Detailed '+(name==='welcome'?'join':'leave')+' notices will go to <#'+channel.id+'>.')
     }
 
-    if (name === 'autorole') {    if (name === 'autorole') {
+    if (name === 'autorole') {
       const role = interaction.options.getRole('role')
       if (role && !safeRole(interaction.guild, interaction.member, role)) return respond(interaction, 'Choose a manageable, non-privileged role.')
       db.updateSetting(interaction.guildId, 'autorole_id', role?.id || null)
@@ -936,7 +936,7 @@ async function handleCommand(interaction, db, settings) {
       }
     }
 
-    if (name === 'security') {    if (name === 'security') {
+    if (name === 'security') {
       const sub = interaction.options.getSubcommand()
       if (sub === 'harden') {
         if (!isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can apply the secure baseline.',true,'Access denied')
@@ -1118,7 +1118,7 @@ async function handleCommand(interaction, db, settings) {
         return respond(interaction,sentinel.explainSignal(interaction.guildId,signalId)||'Signal not found.')
       }
     }
-  } catch (error) {  } catch (error) {
+  } catch (error) {
     console.error(`[Guardian] command /${name} failed`, error)
     const text = 'The command failed safely. Staff can check the bot console/system log.'
     if (interaction.deferred || interaction.replied) await interaction.followUp({ content: text, ephemeral: true }).catch(() => {})
