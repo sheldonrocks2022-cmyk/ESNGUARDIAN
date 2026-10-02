@@ -1,15 +1,12 @@
-name: Raven Host package
+name: CogitHost Node package
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "esn_guardian/**"
-      - "main.py"
-      - "requirements.txt"
-      - "pyproject.toml"
-      - "Dockerfile"
+      - "src/**"
+      - "package.json"
       - ".env.example"
       - "README.md"
       - ".gitignore"
@@ -20,19 +17,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Build exact GitHub-style Raven ZIP
+      - name: Build CogitHost upload ZIP
         shell: bash
         run: |
-          rm -rf ESNGUARDIAN-main ESNGUARDIAN-main.zip
-          mkdir ESNGUARDIAN-main
-          rsync -a             --exclude '.git'             --exclude 'ESNGUARDIAN-main'             --exclude 'ESNGUARDIAN-main.zip'             ./ ESNGUARDIAN-main/
-          zip -qr ESNGUARDIAN-main.zip ESNGUARDIAN-main
-
-      - name: Upload exact Raven ZIP
+          rm -rf ESN-GUARDIAN-NODE ESN-GUARDIAN-NODE.zip
+          mkdir -p ESN-GUARDIAN-NODE
+          cp -r src ESN-GUARDIAN-NODE/src
+          cp package.json .env.example README.md .gitignore ESN-GUARDIAN-NODE/
+          cd ESN-GUARDIAN-NODE
+          zip -qr ../ESN-GUARDIAN-NODE.zip .
+      - name: Upload CogitHost ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: ESNGUARDIAN-main
-          path: ESNGUARDIAN-main.zip
+          name: ESN-GUARDIAN-NODE
+          path: ESN-GUARDIAN-NODE.zip
           if-no-files-found: error
           retention-days: 7
