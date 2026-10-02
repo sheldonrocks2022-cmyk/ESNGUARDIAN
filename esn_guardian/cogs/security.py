@@ -229,6 +229,12 @@ class SecurityCog(commands.Cog):
             return False
         return True
 
+    def is_raid_mode_active(self, guild_id: int) -> bool:
+        return raid_mode_active(
+            self.raid_mode_until.get(guild_id),
+            datetime.now(UTC),
+        )
+
     def _mark_internal_removal(self, guild_id: int, user_id: int) -> None:
         self._raid_kicked_until[(guild_id, user_id)] = datetime.now(UTC) + timedelta(
             minutes=2
@@ -1106,9 +1112,7 @@ class SecurityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        key = (member.guild.id, member.id)
-        raid_kick_until = self._raid_kicked_until.pop(key, None)
-        if raid_kick_until is not None and raid_kick_until > datetime.now(UTC):
+        if self.is_internal_removal(member.guild.id, member.id):
             return
         await log_event(
             self.bot,
