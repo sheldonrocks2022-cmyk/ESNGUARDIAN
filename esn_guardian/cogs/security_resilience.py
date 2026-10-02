@@ -282,6 +282,13 @@ class SecurityResilienceCog(commands.Cog):
     @tasks.loop(minutes=5)
     async def resilience_loop(self) -> None:
         for guild in list(self.bot.guilds):
+            security = self.bot.get_cog("SecurityCog")
+            if (
+                security is not None
+                and hasattr(security, "is_raid_mode_active")
+                and security.is_raid_mode_active(guild.id)
+            ):
+                continue
             try:
                 data = await self.record_snapshot(guild)
                 if data["score"] >= 55:
