@@ -144,6 +144,13 @@ class CommunityCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
+        security = self.bot.get_cog("SecurityCog")
+        if (
+            security is not None
+            and hasattr(security, "is_internal_removal")
+            and security.is_internal_removal(member.guild.id, member.id)
+        ):
+            return
         settings = await self.bot.database.setting(member.guild.id)
         channel = member.guild.get_channel(settings["goodbye_channel_id"]) if settings["goodbye_channel_id"] else None
         if isinstance(channel, discord.TextChannel):
