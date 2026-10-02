@@ -98,7 +98,6 @@ async function saveSnapshot(db,guild,approve=true){
   const data=snapshotGuild(guild)
   db.saveGuardianSnapshot(guild.id,JSON.stringify(data))
   if(approve)await approveCurrent(db,guild)
-  db.run('INSERT OR REPLACE INTO guardian_baseline_state (guild_id,initialized_at) VALUES (?,CURRENT_TIMESTAMP)',BigInt(guild.id))
   return data
 }
 function getSnapshot(db,guildId){
@@ -271,32 +270,59 @@ async function deleteUnapprovedWebhooks(db,guild,channel=null){
   let removed=0
   for(const hook of hooks.values()){
     if(approved.has(String(hook.id)))continue
-    await hook.delete('ESN Guardian: unauthorized webhook').then(()=>removed++).catch(()=>{})
+    const ok=await hook.delete('ESN Guardian: unauthorized webhook').then(()=>true).catch(()=>false)
+    if(ok){
+      removed++
+      await securityCase(db,guild,hook.user||null,'WEBHOOK_DESTROYED','Deleted unauthorized webhook '+(hook.name||hook.id),channel?.id||hook.channelId||null)
+    }else{
+      await securityCase(db,guild,hook.user||null,'WEBHOOK_DESTROY_FAILED','Could not delete unauthorized webhook '+(hook.name||hook.id),channel?.id||hook.channelId||null)
+    }
   }
   return removed
 }
 async function removeUnapprovedIntegrations(db,guild){
-  const key=String(guild.id);if(integrationLocks.has(key))return 0;integrationLocks.add(key)
+  const key=String(guild.id)
+  if(integrationLocks.has(key))return 0
+  integrationLocks.add(key)
   try{
     await ensureSafeBaseline(db,guild)
     const rows=db.all('SELECT integration_id,application_id FROM approved_integrations WHERE guild_id=?',BigInt(guild.id))
-    const approvedIds=new Set(rows.map(r=>String(r.integration_id))),approvedApps=new Set(rows.filter(r=>r.application_id!=null).map(r=>String(r.application_id)))
-    const integrations=await guild.fetchIntegrations().catch(()=>null);if(!integrations)return 0
+    const approvedIds=new Set(rows.map(r=>String(r.integration_id)))
+    const approvedApps=new Set(rows.filter(r=>r.application_id!=null).map(r=>String(r.application_id)))
+    const integrations=await guild.fetchIntegrations().catch(()=>null)
+    if(!integrations)return 0
     let removed=0
     for(const integration of integrations.values()){
-      const appId=integration.application?.id,userId=integration.user?.id
+      const appId=integration.application?.id
+      const userId=integration.user?.id
       if(String(appId||userId||'')===String(guild.client.user?.id))continue
       if(approvedIds.has(String(integration.id))||(appId&&approvedApps.has(String(appId))))continue
-      if(typeof integration.delete==='function')await integration.delete('ESN Guardian: unauthorized integration').then(()=>removed++).catch(()=>{})
+      const ok=typeof integration.delete==='function'
+        ?await integration.delete('ESN Guardian: unauthorized integration').then(()=>true).catch(()=>false)
+        :false
+      if(ok){
+        removed++
+        await securityCase(db,guild,integration.user||null,'INTEGRATION_REMOVED','Removed unauthorized integration '+(integration.name||integration.id))
+      }else{
+        await securityCase(db,guild,integration.user||null,'INTEGRATION_REMOVE_FAILED','Could not remove unauthorized integration '+(integration.name||integration.id))
+      }
     }
     return removed
-  }finally{integrationLocks.delete(key)}
+  }finally{
+    integrationLocks.delete(key)
+  }
 }
 async function banUnapprovedBots(db,guild){
   let removed=0
   for(const member of guild.members.cache.values()){
     if(!member.user.bot||member.id===guild.members.me?.id||isApprovedBot(db,guild.id,member.id))continue
-    if(member.bannable)await member.ban({reason:'ESN Guardian: bot is not approved'}).then(()=>removed++).catch(()=>{})
+    const ok=await guild.members.ban(member.id,{reason:'ESN Guardian: bot is not approved',deleteMessageSeconds:0}).then(()=>true).catch(()=>false)
+    if(ok){
+      removed++
+      await securityCase(db,guild,member,'UNAPPROVED_BOT_BANNED','Banned unapproved bot '+member.user.tag+' ('+member.id+')')
+    }else{
+      await securityCase(db,guild,member,'UNAPPROVED_BOT_BAN_FAILED','Could not ban unapproved bot '+member.user.tag+' ('+member.id+')')
+    }
   }
   return removed
 }
@@ -324,38 +350,62 @@ function overwriteData(saved,guild){
   return(saved.overwrites||[]).map(o=>({id:String(o.target_id),type:o.target_type==='role'?0:1,allow:BigInt(o.allow||'0'),deny:BigInt(o.deny||'0')}))
 }
 async function restoreDeletedChannel(db,guild,deleted){
-  const key='channel:'+guild.id+':'+deleted.id;if(rollbackGuard.has(key))return
-  const snapshot=getSnapshot(db,guild.id),saved=snapshot?.channels?.find(x=>String(x.id)===String(deleted.id));if(!saved)return
+  const key='channel:'+guild.id+':'+deleted.id
+  if(rollbackGuard.has(key))return
   rollbackGuard.add(key)
   try{
-    const options={name:saved.name,type:Number(saved.type),permissionOverwrites:overwriteData(saved,guild),reason:'ESN Guardian automatic rollback of unauthorized channel deletion'}
-    if(saved.category_id&&guild.channels.cache.has(String(saved.category_id)))options.parent=String(saved.category_id)
-    if(saved.topic!=null&&[ChannelType.GuildText,ChannelType.GuildAnnouncement,ChannelType.GuildForum].includes(Number(saved.type)))options.topic=saved.topic
-    if(saved.slowmode_delay!=null)options.rateLimitPerUser=Number(saved.slowmode_delay)
-    const recreated=await guild.channels.create(options)
-    if(Number.isFinite(Number(saved.position)))await recreated.setPosition(Number(saved.position)).catch(()=>{})
-    if(Number(saved.type)===ChannelType.GuildCategory){
-      for(const childData of snapshot.channels.filter(x=>String(x.category_id)===String(deleted.id))){
-        const child=guild.channels.cache.get(String(childData.id));if(child)await child.setParent(recreated.id,{lockPermissions:false,reason:'ESN Guardian category rollback'}).catch(()=>{})
+    const restored=await deleted.clone({reason:'ESN Guardian automatic rollback of unauthorized channel deletion'})
+    const edits={}
+    if(Number.isFinite(Number(deleted.rawPosition)))edits.position=Number(deleted.rawPosition)
+    if(deleted.type!==ChannelType.GuildCategory&&deleted.parentId){
+      const category=guild.channels.cache.get(String(deleted.parentId))
+      if(category?.type===ChannelType.GuildCategory)edits.parent=category.id
+    }
+    if(Object.keys(edits).length)await restored.edit({...edits,reason:'ESN Guardian rollback positioning'}).catch(()=>{})
+
+    if(deleted.type===ChannelType.GuildCategory&&restored.type===ChannelType.GuildCategory){
+      const snapshot=getSnapshot(db,guild.id)
+      if(snapshot){
+        for(const item of snapshot.channels||[]){
+          if(String(item.category_id)!==String(deleted.id))continue
+          const child=guild.channels.cache.get(String(item.id))
+          if(child)await child.setParent(restored.id,{lockPermissions:false,reason:'ESN Guardian category rollback'}).catch(()=>{})
+        }
       }
     }
-    await securityCase(db,guild,null,'AUTO_ROLLBACK_CHANNEL','Recreated deleted channel/category '+saved.name)
-  }catch{await securityCase(db,guild,null,'AUTO_ROLLBACK_FAILED','Could not recreate deleted channel/category '+deleted.name)}
-  finally{setTimeout(()=>rollbackGuard.delete(key),3000).unref?.()}
+    await securityCase(db,guild,null,'AUTO_ROLLBACK_CHANNEL','Recreated deleted channel/category '+deleted.name)
+  }catch{
+    await securityCase(db,guild,null,'AUTO_ROLLBACK_FAILED','Could not recreate deleted channel/category '+deleted.name)
+  }finally{
+    setTimeout(()=>rollbackGuard.delete(key),3000).unref?.()
+  }
 }
 async function restoreDeletedRole(db,guild,deleted){
-  const key='role:'+guild.id+':'+deleted.id;if(rollbackGuard.has(key))return
-  const snapshot=getSnapshot(db,guild.id),saved=snapshot?.roles?.find(x=>String(x.id)===String(deleted.id));if(!saved)return
+  const key='role:'+guild.id+':'+deleted.id
+  if(rollbackGuard.has(key))return
   rollbackGuard.add(key)
   try{
-    const role=await guild.roles.create({name:saved.name,permissions:BigInt(saved.permissions||'0'),color:Number(saved.colour||0),hoist:Boolean(saved.hoist),mentionable:Boolean(saved.mentionable),reason:'ESN Guardian automatic rollback of unauthorized role deletion'})
-    if(Number.isFinite(Number(saved.position)))await role.setPosition(Number(saved.position)).catch(()=>{})
-    for(const memberId of saved.members||[]){
-      const member=guild.members.cache.get(String(memberId));if(member&&role.editable)await member.roles.add(role,'ESN Guardian role rollback').catch(()=>{})
+    const role=await guild.roles.create({
+      name:deleted.name,
+      permissions:deleted.permissions,
+      color:deleted.color,
+      hoist:deleted.hoist,
+      mentionable:deleted.mentionable,
+      reason:'ESN Guardian automatic rollback of unauthorized role deletion'
+    })
+    if(Number.isFinite(Number(deleted.position)))await role.setPosition(Number(deleted.position)).catch(()=>{})
+    const snapshot=getSnapshot(db,guild.id)
+    const saved=snapshot?.roles?.find(item=>String(item.id)===String(deleted.id))
+    for(const memberId of saved?.members||[]){
+      const member=guild.members.cache.get(String(memberId))
+      if(member&&role.editable)await member.roles.add(role,'ESN Guardian role rollback').catch(()=>{})
     }
-    await securityCase(db,guild,null,'AUTO_ROLLBACK_ROLE','Recreated deleted role '+saved.name)
-  }catch{await securityCase(db,guild,null,'AUTO_ROLLBACK_FAILED','Could not recreate deleted role '+deleted.name)}
-  finally{setTimeout(()=>rollbackGuard.delete(key),3000).unref?.()}
+    await securityCase(db,guild,null,'AUTO_ROLLBACK_ROLE','Recreated deleted role '+deleted.name)
+  }catch{
+    await securityCase(db,guild,null,'AUTO_ROLLBACK_FAILED','Could not recreate deleted role '+deleted.name)
+  }finally{
+    setTimeout(()=>rollbackGuard.delete(key),3000).unref?.()
+  }
 }
 function suspiciousLinkReason(text){
   const values=String(text||'').match(/(?:https?:\/\/|discord(?:app)?\.com\/invite\/|discord\.gg\/)[^\s]+/gi)||[]
