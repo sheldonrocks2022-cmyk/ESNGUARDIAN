@@ -221,6 +221,33 @@ class GuardianDB {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(guild_id, bot_id)
       );
+      CREATE TABLE IF NOT EXISTS guardian_config (
+        guild_id INTEGER PRIMARY KEY,
+        external_app_lock INTEGER NOT NULL DEFAULT 1,
+        bot_approval INTEGER NOT NULL DEFAULT 1,
+        webhook_guard INTEGER NOT NULL DEFAULT 1,
+        integration_guard INTEGER NOT NULL DEFAULT 1,
+        credential_guard INTEGER NOT NULL DEFAULT 1,
+        rollback_enabled INTEGER NOT NULL DEFAULT 1,
+        panic_mode INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS approved_webhooks (
+        guild_id INTEGER NOT NULL,
+        webhook_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(guild_id, webhook_id)
+      );
+      CREATE TABLE IF NOT EXISTS approved_integrations (
+        guild_id INTEGER NOT NULL,
+        integration_id INTEGER NOT NULL,
+        application_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(guild_id, integration_id)
+      );
+      CREATE TABLE IF NOT EXISTS guardian_baseline_state (
+        guild_id INTEGER PRIMARY KEY,
+        initialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
       CREATE TABLE IF NOT EXISTS guardian_snapshots (
         guild_id INTEGER PRIMARY KEY,
         data TEXT NOT NULL,
@@ -267,6 +294,7 @@ class GuardianDB {
     this.run('INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)', g)
     this.run('INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)', g)
     this.run('INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)', g)
+    this.run('INSERT OR IGNORE INTO guardian_config (guild_id) VALUES (?)', g)
   }
 
   setting(guildId) {
