@@ -31,6 +31,7 @@ RAID_KICK_WORKERS = 4
 RAID_KICK_QUEUE_MAX = 4096
 RAID_AUDIT_BATCH_SIZE = 200
 RAID_RUNTIME_PERSIST_SECONDS = 30
+LOCKDOWN_CONCURRENCY = 4
 MESSAGE_POLICY_CACHE_SECONDS = 10
 RAID_POLICY_CACHE_SECONDS = 10
 
@@ -1155,18 +1156,28 @@ class SecurityCog(commands.Cog):
                 saved_rows,
             )
 
-        changed = 0
-        for channel, overwrite in prepared:
-            try:
-                overwrite.send_messages = False
-                await channel.set_permissions(
-                    guild.default_role,
-                    overwrite=overwrite,
-                    reason=reason,
-                )
-                changed += 1
-            except (discord.Forbidden, discord.HTTPException):
-                continue
+        semaphore = asyncio.Semaphore(LOCKDOWN_CONCURRENCY)
+
+        async def lock_channel(
+            channel: discord.TextChannel,
+            overwrite: discord.PermissionOverwrite,
+        ) -> bool:
+            async with semaphore:
+                try:
+                    overwrite.send_messages = False
+                    await channel.set_permissions(
+                        guild.default_role,
+                        overwrite=overwrite,
+                        reason=reason,
+                    )
+                    return True
+                except (discord.Forbidden, discord.HTTPException):
+                    return False
+
+        results = await asyncio.gather(
+            *(lock_channel(channel, overwrite) for channel, overwrite in prepared)
+        )
+        changed = sum(result is True for result in results)
 
         await self.bot.database.update_setting(guild.id, "lockdown_active", 1)
         await self._security_case(
@@ -1187,25 +1198,33 @@ class SecurityCog(commands.Cog):
             (guild.id,),
         )
         saved = {int(row["channel_id"]): row["send_messages"] for row in saved_rows}
-        restored_ids: list[tuple[int, int]] = []
-        changed = 0
+        semaphore = asyncio.Semaphore(LOCKDOWN_CONCURRENCY)
 
-        for channel in guild.text_channels:
+        async def restore_channel(channel: discord.TextChannel) -> int | None:
             if channel.id not in saved:
-                continue
-            try:
-                overwrite = channel.overwrites_for(guild.default_role)
-                value = saved[channel.id]
-                overwrite.send_messages = None if value is None else bool(value)
-                await channel.set_permissions(
-                    guild.default_role,
-                    overwrite=overwrite,
-                    reason=reason,
-                )
-                restored_ids.append((guild.id, channel.id))
-                changed += 1
-            except (discord.Forbidden, discord.HTTPException):
-                continue
+                return None
+            async with semaphore:
+                try:
+                    overwrite = channel.overwrites_for(guild.default_role)
+                    value = saved[channel.id]
+                    overwrite.send_messages = None if value is None else bool(value)
+                    await channel.set_permissions(
+                        guild.default_role,
+                        overwrite=overwrite,
+                        reason=reason,
+                    )
+                    return channel.id
+                except (discord.Forbidden, discord.HTTPException):
+                    return None
+
+        restored = await asyncio.gather(
+            *(restore_channel(channel) for channel in guild.text_channels)
+        )
+        restored_ids = [
+            (guild.id, channel_id)
+            for channel_id in restored
+            if channel_id is not None
+        ]
 
         if restored_ids:
             await self.bot.database.executemany(
@@ -1226,9 +1245,9 @@ class SecurityCog(commands.Cog):
             guild,
             None,
             "UNLOCKDOWN",
-            f"{reason}; channels restored: {changed}",
+            f"{reason}; channels restored: {len(restored_ids)}",
         )
-        return changed
+        return len(restored_ids)
 
     @app_commands.command(description="Lock the current channel for @everyone.")
     @guild_only()
