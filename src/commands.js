@@ -920,8 +920,8 @@ async function handleCommand(interaction, db, settings) {
       const sub=interaction.options.getSubcommand()
       if (['snapshot','approve-bot','unapprove-bot','panic'].includes(sub) && !isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can use this Guardian control.',true,'Access denied')
       if (sub==='snapshot') {
-        const snap=await saveSnapshot(db,interaction.guild,true)
-        return respond(interaction,'Guardian recovery snapshot saved with '+snap.roles.length+' roles and '+snap.channels.length+' channels. Current bots, webhooks, and integrations are now the trusted baseline.')
+        await saveSnapshot(db,interaction.guild,true)
+        return respond(interaction,'Guardian recovery snapshot saved. Current bots, webhooks, and integrations are now the trusted baseline.')
       }
       if (sub==='approve-bot'||sub==='unapprove-bot') {
         const botId=interaction.options.getString('bot_id',true)
@@ -934,11 +934,11 @@ async function handleCommand(interaction, db, settings) {
         const enabled=interaction.options.getBoolean('enabled')??true
         const result=await panicGuild(db,interaction.guild,enabled)
         if(enabled)return respond(interaction,'PANIC enabled. External-app locks changed '+result.externalChanged+' permission entries ('+result.externalFailed+' failed); removed '+result.botsRemoved+' unapproved bots, '+result.webhooksRemoved+' webhooks, and '+result.integrationsRemoved+' integrations.')
-        return respond(interaction,'PANIC released. Core protections remain enabled. Restored '+result.restored+' channel(s).')
+        return respond(interaction,'PANIC released. Core protections remain enabled.')
       }
       if (sub==='audit') {
-        const a=securityAudit(db,interaction.guild)
-        return respond(interaction,'Guardian Security Scoreboard\nScore: '+a.score+'/100\nMissing Guardian permissions: '+(a.missing.join(', ')||'none')+'\nHigh-risk roles: '+a.riskyRoles+'\nUnapproved bots: '+a.unapprovedBots+'\nRoles still allowing external apps: '+a.externalEnabled+'\nRollback: '+(Number(a.guardian?.rollback_enabled)?'ON':'OFF')+'\nWebhook guard: '+(Number(a.guardian?.webhook_guard)?'ON':'OFF')+'\nIntegration guard: '+(Number(a.guardian?.integration_guard)?'ON':'OFF')+'\nCredential leak guard: '+(Number(a.guardian?.credential_guard)?'ON':'OFF'))
+        const a=await securityAudit(db,interaction.guild)
+        return respond(interaction,'Guardian Security Scoreboard\nScore: '+a.score+'/100\nMissing Guardian permissions: '+(a.missing.join(', ')||'none')+'\nHigh-risk roles: '+a.riskyRoles+'\nUnapproved bots: '+(a.unapprovedBots.slice(0,10).join(', ')||'none')+'\nRoles still allowing external apps: '+a.externalEnabled+'\nCurrent webhooks: '+a.webhookCount+'\nRollback: '+(Number(a.guardian?.rollback_enabled)?'ON':'OFF')+'\nWebhook guard: '+(Number(a.guardian?.webhook_guard)?'ON':'OFF')+'\nIntegration guard: '+(Number(a.guardian?.integration_guard)?'ON':'OFF')+'\nCredential leak guard: '+(Number(a.guardian?.credential_guard)?'ON':'OFF'))
       }
       if (sub==='status') {
         const cfg=db.get('SELECT * FROM guardian_config WHERE guild_id=?',BigInt(interaction.guildId))
@@ -951,23 +951,33 @@ async function handleCommand(interaction, db, settings) {
     if (name === 'security') {
       const sub = interaction.options.getSubcommand()
       if (sub === 'harden') {
-        if (!isGuildOwner(interaction)) return respond(interaction,'Only the Discord server owner can apply the secure baseline.',true,'Access denied')
+        if (!isGuildOwner(interaction)) return accessDenied(interaction)
         const r = await hardenGuild(db, interaction.guild)
-        return respond(interaction, `Secure baseline applied. Anti-nuke, raid protection, and AutoMod are enabled. Removed Use External Apps from ${r.rolesChanged} manageable role(s). Recovery snapshot refreshed.`)
+        return respond(interaction, `Secure baseline applied with advanced protection. External-app permission entries changed: ${r.rolesChanged}; failed: ${r.failed}. Current bots, webhooks, and integrations were saved as the trusted baseline.`)
       }
       if (sub === 'status') {
         const c = db.get('SELECT * FROM security_config WHERE guild_id=?', BigInt(interaction.guildId))
         const a = db.get('SELECT * FROM anti_nuke_config WHERE guild_id=?', BigInt(interaction.guildId))
-        return respond(interaction, `AutoMod: ${Number(c.automod_enabled) ? 'ON' : 'OFF'}\nFlood: ${c.flood_limit} messages / ${c.flood_window_seconds}s\nMax mentions: ${c.max_mentions}\nCaps threshold: ${c.caps_percentage}%\nBlock invites: ${Number(c.block_invites) ? 'YES' : 'NO'}\nStrict links: ${Number(c.strict_links) ? 'YES' : 'NO'}\nAnti-nuke: ${Number(a.enabled) ? 'ON' : 'OFF'}`)
+        return respond(interaction, `AutoMod: ${Number(c.automod_enabled) ? 'enabled' : 'disabled'}\nFlood: ${c.flood_limit} messages / ${c.flood_window_seconds}s\nMentions: ${c.max_mentions}\nCaps: ${c.caps_percentage}%\nInvite blocking: ${Number(c.block_invites) ? 'enabled' : 'disabled'}\nStrict links: ${Number(c.strict_links) ? 'enabled' : 'disabled'}\nAnti-nuke: ${Number(a.enabled) ? 'enabled' : 'disabled'}`)
       }
       if (sub === 'scan') {
-        const a = securityAudit(db, interaction.guild)
-        return respond(interaction, `Permissions missing: ${a.missing.length ? a.missing.join(', ') : 'none'}\nRisky roles: ${a.riskyRoles}\nUnapproved bots: ${a.unapprovedBots}\nExternal-app exposed roles: ${a.externalEnabled}`)
+        const botMember=interaction.guild.members.me
+        if(!botMember)return respond(interaction,'I cannot inspect my server member record yet. Retry shortly.')
+        const required=[
+          ['view audit log',PermissionFlagsBits.ViewAuditLog],['manage messages',PermissionFlagsBits.ManageMessages],
+          ['moderate members',PermissionFlagsBits.ModerateMembers],['kick members',PermissionFlagsBits.KickMembers],
+          ['ban members',PermissionFlagsBits.BanMembers],['manage roles',PermissionFlagsBits.ManageRoles],
+          ['manage channels',PermissionFlagsBits.ManageChannels],['manage webhooks',PermissionFlagsBits.ManageWebhooks]
+        ]
+        const missing=required.filter(([,bit])=>!botMember.permissions.has(bit)).map(([name])=>name)
+        const manageable=interaction.guild.roles.cache.filter(role=>!role.managed&&role.comparePositionTo(botMember.roles.highest)<0).size
+        const riskyAbove=interaction.guild.roles.cache.filter(role=>!role.managed&&role.comparePositionTo(botMember.roles.highest)>0&&dangerousRole(role)).map(role=>role.name)
+        return respond(interaction,'Security scan\nMissing permissions: '+(missing.join(', ')||'none')+'\nRoles below bot: '+manageable+'\nBot top role: '+botMember.roles.highest.name+'\nHigh-risk roles above bot: '+(riskyAbove.slice(0,10).join(', ')||'none')+'\nAudit attribution: '+(missing.includes('view audit log')?'unavailable':'ready'))
       }
       if (sub === 'cases') {
         const limit = interaction.options.getInteger('limit') || 10
-        const rows = db.all("SELECT case_id,action,target_id,reason,created_at FROM cases WHERE guild_id=? AND (action LIKE 'ANTI%' OR action LIKE 'SECURITY%' OR action LIKE 'AUTOMOD%' OR action LIKE 'RAID%' OR action LIKE 'EXTERNAL%') ORDER BY case_id DESC LIMIT ?", BigInt(interaction.guildId), limit)
-        return respond(interaction, rows.length ? rows.map(r => `#${r.case_id} ${r.action} — ${r.reason}`).join('\n') : 'No security cases found.')
+        const rows = db.all("SELECT case_id,action,reason,created_at FROM cases WHERE guild_id=? AND (action LIKE 'AUTOMOD_%' OR action LIKE 'ANTINUKE_%' OR action IN ('LOCKDOWN','UNLOCKDOWN','SUSPICIOUS_JOIN','WEBHOOK_CHANGE','CHANNEL_DELETE','ROLE_DELETE','ROLE_PERMISSION_CHANGE','QUARANTINE','QUARANTINE_RELEASE')) ORDER BY case_id DESC LIMIT ?", BigInt(interaction.guildId), limit)
+        return respond(interaction, rows.length ? rows.map(r => `#${r.case_id} ${r.action}: ${r.reason}`).join('\n') : 'No security cases found.')
       }
       if (sub === 'automod') {
         const enabled = interaction.options.getBoolean('enabled', true)
