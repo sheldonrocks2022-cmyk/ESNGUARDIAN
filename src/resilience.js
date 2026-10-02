@@ -1,13 +1,31 @@
 'use strict'
 
+const { PermissionFlagsBits }=require('discord.js')
 const { logEvent }=require('./utils')
 
-const REQUIRED_MODULES=['guardianSecurity','guardianIntelligence','guardianOverwatch','guardianSentinel']
+const REQUIRED_MODULES=[
+  ['SecurityCog','guardianSecurity'],
+  ['AdvancedSecurityCog','guardianSecurity'],
+  ['SecurityIntelligenceCog','guardianIntelligence'],
+  ['SecurityOverwatchCog','guardianOverwatch'],
+  ['SecuritySentinelCog','guardianSentinel']
+]
+const REQUIRED_PERMISSIONS=[
+  ['view_audit_log',PermissionFlagsBits.ViewAuditLog],
+  ['manage_messages',PermissionFlagsBits.ManageMessages],
+  ['moderate_members',PermissionFlagsBits.ModerateMembers],
+  ['kick_members',PermissionFlagsBits.KickMembers],
+  ['ban_members',PermissionFlagsBits.BanMembers],
+  ['manage_roles',PermissionFlagsBits.ManageRoles],
+  ['manage_channels',PermissionFlagsBits.ManageChannels],
+  ['manage_webhooks',PermissionFlagsBits.ManageWebhooks]
+]
 function readinessGrade(score){if(score>=90)return'READY';if(score>=75)return'STRONG';if(score>=55)return'DEGRADED';if(score>=30)return'WEAK';return'CRITICAL'}
 function snapshot(client,db,guild){
   db.ensureGuild(guild.id)
-  const missingModules=REQUIRED_MODULES.filter(name=>!client[name])
-  const missingPermissions=client.guardianIntelligence?.snapshot(guild)?.missing_permissions||[]
+  const missingModules=REQUIRED_MODULES.filter(([,property])=>!client[property]).map(([name])=>name)
+  const botMember=guild.members.me
+  const missingPermissions=REQUIRED_PERMISSIONS.filter(([,bit])=>!botMember?.permissions.has(bit)).map(([name])=>name)
   const security=db.get('SELECT automod_enabled FROM security_config WHERE guild_id=?',BigInt(guild.id))
   const anti=db.get('SELECT enabled FROM anti_nuke_config WHERE guild_id=?',BigInt(guild.id))
   const raid=db.get('SELECT enabled FROM raid_config WHERE guild_id=?',BigInt(guild.id))
