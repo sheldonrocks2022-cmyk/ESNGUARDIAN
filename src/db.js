@@ -10,7 +10,26 @@ function id(value) {
 }
 
 function cleanBackupReason(value) {
-  return String(value || 'snapshot').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'snapshot'
+  return String(value || 'snapshot')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 32) || 'snapshot'
+}
+
+function sqliteFileOk(filePath) {
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).size === 0) return false
+  let db
+  try {
+    db = new DatabaseSync(filePath)
+    const statement = db.prepare('PRAGMA quick_check')
+    const row = statement.get()
+    return Boolean(row && Object.values(row)[0] === 'ok')
+  } catch {
+    return false
+  } finally {
+    try { db?.close() } catch {}
+  }
 }
 
 class GuardianDB {
@@ -19,20 +38,47 @@ class GuardianDB {
     fs.mkdirSync(path.dirname(this.path), { recursive: true })
     this.backupDir = path.join(path.dirname(this.path), 'backups')
     fs.mkdirSync(this.backupDir, { recursive: true })
+
+    this.recoverIfNeeded()
     this.db = new DatabaseSync(this.path)
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
     this.migrate()
   }
 
+  recoverIfNeeded() {
+    if (!fs.existsSync(this.path) || fs.statSync(this.path).size === 0) return
+    if (sqliteFileOk(this.path)) return
+
+    const backups = fs.readdirSync(this.backupDir)
+      .filter(name => name.endsWith('.db'))
+      .map(name => ({ name, full: path.join(this.backupDir, name), mtime: fs.statSync(path.join(this.backupDir, name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+
+    const source = backups.find(item => sqliteFileOk(item.full))
+    if (!source) {
+      throw new Error(`Guardian database is corrupt and no valid backup exists in ${this.backupDir}. The database was not reset automatically.`)
+    }
+
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
+    const corrupt = this.path + '.corrupt-' + stamp
+    fs.renameSync(this.path, corrupt)
+    for (const suffix of ['-wal', '-shm']) {
+      const sidecar = this.path + suffix
+      if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar)
+    }
+    fs.copyFileSync(source.full, this.path)
+    if (!sqliteFileOk(this.path)) throw new Error('Guardian restored a database backup, but the restored file failed SQLite integrity checking.')
+  }
+
   close() {
-    try { this.backup('shutdown') } catch {}
+    try { this.backup('shutdown') } catch (error) { console.error('[Guardian] shutdown backup failed', error) }
     this.db.close()
   }
 
   stmt(sql, bigInts = true) {
-    const s = this.db.prepare(sql)
-    if (bigInts && typeof s.setReadBigInts === 'function') s.setReadBigInts(true)
-    return s
+    const statement = this.db.prepare(sql)
+    if (bigInts && typeof statement.setReadBigInts === 'function') statement.setReadBigInts(true)
+    return statement
   }
 
   run(sql, ...values) {
@@ -41,6 +87,18 @@ class GuardianDB {
 
   execute(sql, values = []) {
     return this.run(sql, ...values)
+  }
+
+  executemany(sql, rows = []) {
+    const statement = this.db.prepare(sql)
+    this.db.exec('BEGIN')
+    try {
+      for (const row of rows) statement.run(...row)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    }
   }
 
   get(sql, ...values) {
@@ -57,6 +115,22 @@ class GuardianDB {
 
   fetchall(sql, values = []) {
     return this.all(sql, ...values)
+  }
+
+  columns(table) {
+    try {
+      return new Set(this.all(`PRAGMA table_info(${table})`).map(row => String(row.name)))
+    } catch {
+      return new Set()
+    }
+  }
+
+  hasColumn(table, column) {
+    return this.columns(table).has(column)
+  }
+
+  addColumnIfMissing(table, column, definition) {
+    if (!this.hasColumn(table, column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
   migrate() {
@@ -214,13 +288,13 @@ class GuardianDB {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE TABLE IF NOT EXISTS approved_bots (
-        guild_id INTEGER NOT NULL,
-        bot_id INTEGER NOT NULL,
-        added_by_id INTEGER NOT NULL,
+      CREATE TABLE IF NOT EXISTS status_subscriptions (
+        user_id INTEGER NOT NULL,
+        topic TEXT NOT NULL CHECK(topic IN ('smp', 'bot')),
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY(guild_id, bot_id)
+        PRIMARY KEY(user_id, topic)
       );
+
       CREATE TABLE IF NOT EXISTS guardian_config (
         guild_id INTEGER PRIMARY KEY,
         external_app_lock INTEGER NOT NULL DEFAULT 1,
@@ -230,6 +304,13 @@ class GuardianDB {
         credential_guard INTEGER NOT NULL DEFAULT 1,
         rollback_enabled INTEGER NOT NULL DEFAULT 1,
         panic_mode INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS approved_bots (
+        guild_id INTEGER NOT NULL,
+        bot_id INTEGER NOT NULL,
+        approved_by_id INTEGER,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(guild_id, bot_id)
       );
       CREATE TABLE IF NOT EXISTS approved_webhooks (
         guild_id INTEGER NOT NULL,
@@ -244,57 +325,127 @@ class GuardianDB {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(guild_id, integration_id)
       );
+      CREATE TABLE IF NOT EXISTS guardian_snapshots (
+        guild_id INTEGER PRIMARY KEY,
+        snapshot_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
       CREATE TABLE IF NOT EXISTS guardian_baseline_state (
         guild_id INTEGER PRIMARY KEY,
         initialized_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE TABLE IF NOT EXISTS guardian_snapshots (
+
+      CREATE TABLE IF NOT EXISTS guardian_raid_runtime (
         guild_id INTEGER PRIMARY KEY,
-        data TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        active_until_epoch INTEGER NOT NULL DEFAULT 0,
+        blocked_count INTEGER NOT NULL DEFAULT 0,
+        trigger_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE TABLE IF NOT EXISTS security_signals (
-        signal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+      CREATE TABLE IF NOT EXISTS guardian_security_ledger (
         guild_id INTEGER NOT NULL,
-        subject_id INTEGER,
-        kind TEXT NOT NULL,
-        score INTEGER NOT NULL DEFAULT 0,
-        details TEXT,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        sequence INTEGER NOT NULL,
+        case_id INTEGER NOT NULL,
+        previous_hash TEXT NOT NULL,
+        case_hash TEXT NOT NULL,
+        sealed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (guild_id, sequence),
+        UNIQUE (guild_id, case_id)
       );
-      CREATE TABLE IF NOT EXISTS incident_sessions (
+      CREATE TABLE IF NOT EXISTS guardian_policy_baseline (
+        guild_id INTEGER PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS guardian_incidents (
         incident_id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER NOT NULL,
-        kind TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'open',
-        details TEXT,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        severity TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         closed_at TEXT
       );
-      CREATE TABLE IF NOT EXISTS policy_baselines (
-        guild_id INTEGER PRIMARY KEY,
-        data TEXT NOT NULL,
-        sha256 TEXT NOT NULL,
+      CREATE INDEX IF NOT EXISTS idx_guardian_incidents_open
+        ON guardian_incidents(guild_id, closed_at, incident_id DESC);
+
+      CREATE TABLE IF NOT EXISTS guardian_resilience_history (
+        check_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        guild_id INTEGER NOT NULL,
+        score INTEGER NOT NULL,
+        grade TEXT NOT NULL,
+        missing_cogs INTEGER NOT NULL,
+        missing_permissions INTEGER NOT NULL,
+        disabled_layers INTEGER NOT NULL,
+        integrity_ok INTEGER NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
-      CREATE TABLE IF NOT EXISTS message_rate_state (
+      CREATE INDEX IF NOT EXISTS idx_guardian_resilience_history_guild
+        ON guardian_resilience_history(guild_id, check_id DESC);
+
+      CREATE TABLE IF NOT EXISTS guardian_sentinel_state (
+        guild_id INTEGER PRIMARY KEY,
+        last_case_id INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE IF NOT EXISTS guardian_sentinel_signals (
+        signal_id INTEGER PRIMARY KEY AUTOINCREMENT,
         guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        last_seen REAL NOT NULL,
-        PRIMARY KEY(guild_id, user_id)
+        case_id INTEGER NOT NULL,
+        subject_id INTEGER,
+        target_id INTEGER,
+        action TEXT NOT NULL,
+        category TEXT NOT NULL,
+        score INTEGER NOT NULL,
+        severity TEXT NOT NULL,
+        explanation_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(guild_id, case_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_guardian_sentinel_signals_guild
+        ON guardian_sentinel_signals(guild_id, signal_id DESC);
+      CREATE TABLE IF NOT EXISTS guardian_sentinel_subject_profile (
+        guild_id INTEGER NOT NULL,
+        subject_id INTEGER NOT NULL,
+        total_cases INTEGER NOT NULL DEFAULT 0,
+        weighted_score INTEGER NOT NULL DEFAULT 0,
+        last_action TEXT,
+        last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(guild_id, subject_id)
+      );
+      CREATE TABLE IF NOT EXISTS guardian_sentinel_action_baseline (
+        guild_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        seen_count INTEGER NOT NULL DEFAULT 0,
+        last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY(guild_id, action)
       );
     `)
+
+    for (const column of ['guild_log_channel_id','voice_log_channel_id','invite_log_channel_id','role_log_channel_id','command_log_channel_id']) {
+      this.addColumnIfMissing('guild_settings', column, 'INTEGER')
+    }
+
+    // Compatibility with the first Node conversion build.
+    const approved = this.columns('approved_bots')
+    if (!approved.has('approved_by_id')) this.addColumnIfMissing('approved_bots', 'approved_by_id', 'INTEGER')
+    const snapshots = this.columns('guardian_snapshots')
+    if (!snapshots.has('snapshot_json')) this.addColumnIfMissing('guardian_snapshots', 'snapshot_json', 'TEXT')
   }
 
   ensureGuild(guildId) {
     const g = id(guildId)
-    this.run('INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)', g)
-    this.run('INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)', g)
-    this.run('INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)', g)
-    this.run('INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)', g)
-    this.run('INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)', g)
-    this.run('INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)', g)
-    this.run('INSERT OR IGNORE INTO guardian_config (guild_id) VALUES (?)', g)
+    for (const sql of [
+      'INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)',
+      'INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)',
+      'INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)',
+      'INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)',
+      'INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)',
+      'INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)',
+      'INSERT OR IGNORE INTO guardian_config (guild_id) VALUES (?)'
+    ]) this.run(sql, g)
   }
 
   setting(guildId) {
@@ -320,9 +471,28 @@ class GuardianDB {
   createCase(guildId, targetId, moderatorId, action, reason, channelId = null, details = {}) {
     const result = this.run(
       'INSERT INTO cases (guild_id,target_id,moderator_id,action,reason,channel_id,details) VALUES (?,?,?,?,?,?,?)',
-      id(guildId), id(targetId), id(moderatorId), action, reason, id(channelId), JSON.stringify(details)
+      id(guildId), id(targetId), id(moderatorId), action, reason, id(channelId), JSON.stringify(details || {})
     )
     return Number(result.lastInsertRowid)
+  }
+
+  createCasesBulk(rows) {
+    if (!rows?.length) return 0
+    const statement = this.db.prepare(
+      'INSERT INTO cases (guild_id,target_id,moderator_id,action,reason,channel_id,details) VALUES (?,?,?,?,?,?,?)'
+    )
+    this.db.exec('BEGIN')
+    try {
+      for (const row of rows) {
+        const [guildId,targetId,moderatorId,action,reason,channelId,details] = row
+        statement.run(id(guildId),id(targetId),id(moderatorId),action,reason,id(channelId),JSON.stringify(details || {}))
+      }
+      this.db.exec('COMMIT')
+      return rows.length
+    } catch (error) {
+      try { this.db.exec('ROLLBACK') } catch {}
+      throw error
+    }
   }
 
   isGuildBlacklisted(guildId) {
@@ -345,16 +515,92 @@ class GuardianDB {
     )
   }
 
+  subscribeToStatus(userId, topic) {
+    this.run('INSERT OR IGNORE INTO status_subscriptions (user_id,topic) VALUES (?,?)', id(userId), topic)
+  }
+
+  unsubscribeFromStatus(userId, topic) {
+    this.run('DELETE FROM status_subscriptions WHERE user_id=? AND topic=?', id(userId), topic)
+  }
+
+  statusSubscriptions(userId) {
+    return new Set(this.all('SELECT topic FROM status_subscriptions WHERE user_id=?', id(userId)).map(row => String(row.topic)))
+  }
+
+  statusSubscriberIds(topic) {
+    return this.all('SELECT user_id FROM status_subscriptions WHERE topic=?', topic).map(row => String(row.user_id))
+  }
+
+  insertApprovedBot(guildId, botId, approvedById) {
+    const columns = this.columns('approved_bots')
+    if (columns.has('added_by_id') && columns.has('approved_by_id')) {
+      this.run(
+        'INSERT OR REPLACE INTO approved_bots (guild_id,bot_id,added_by_id,approved_by_id) VALUES (?,?,?,?)',
+        id(guildId), id(botId), id(approvedById), id(approvedById)
+      )
+    } else if (columns.has('added_by_id')) {
+      this.run(
+        'INSERT OR REPLACE INTO approved_bots (guild_id,bot_id,added_by_id) VALUES (?,?,?)',
+        id(guildId), id(botId), id(approvedById)
+      )
+    } else {
+      this.run(
+        'INSERT OR REPLACE INTO approved_bots (guild_id,bot_id,approved_by_id) VALUES (?,?,?)',
+        id(guildId), id(botId), id(approvedById)
+      )
+    }
+  }
+
+  saveGuardianSnapshot(guildId, json) {
+    const columns = this.columns('guardian_snapshots')
+    if (columns.has('data') && columns.has('snapshot_json')) {
+      this.run(
+        'INSERT INTO guardian_snapshots (guild_id,data,snapshot_json,created_at) VALUES (?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(guild_id) DO UPDATE SET data=excluded.data,snapshot_json=excluded.snapshot_json,created_at=CURRENT_TIMESTAMP',
+        id(guildId), json, json
+      )
+    } else if (columns.has('data')) {
+      this.run(
+        'INSERT INTO guardian_snapshots (guild_id,data,created_at) VALUES (?,?,CURRENT_TIMESTAMP) ON CONFLICT(guild_id) DO UPDATE SET data=excluded.data,created_at=CURRENT_TIMESTAMP',
+        id(guildId), json
+      )
+    } else {
+      this.run(
+        'INSERT INTO guardian_snapshots (guild_id,snapshot_json,created_at) VALUES (?,?,CURRENT_TIMESTAMP) ON CONFLICT(guild_id) DO UPDATE SET snapshot_json=excluded.snapshot_json,created_at=CURRENT_TIMESTAMP',
+        id(guildId), json
+      )
+    }
+  }
+
+  guardianSnapshotJson(guildId) {
+    const columns = this.columns('guardian_snapshots')
+    const select = columns.has('snapshot_json') && columns.has('data')
+      ? 'COALESCE(snapshot_json,data)'
+      : columns.has('snapshot_json') ? 'snapshot_json' : 'data'
+    const row = this.get(`SELECT ${select} AS payload FROM guardian_snapshots WHERE guild_id=?`, id(guildId))
+    return row?.payload ? String(row.payload) : null
+  }
+
   backup(reason = 'scheduled', keep = 20) {
-    if (!fs.existsSync(this.path)) return null
     try { this.db.exec('PRAGMA wal_checkpoint(FULL)') } catch {}
+    if (!fs.existsSync(this.path)) return null
+
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
-    const target = path.join(this.backupDir, `${path.basename(this.path, path.extname(this.path))}-${stamp}-${cleanBackupReason(reason)}.db`)
+    const target = path.join(
+      this.backupDir,
+      `${path.basename(this.path, path.extname(this.path))}-${stamp}-${cleanBackupReason(reason)}.db`
+    )
     fs.copyFileSync(this.path, target)
+
+    if (!sqliteFileOk(target)) {
+      try { fs.unlinkSync(target) } catch {}
+      throw new Error(`Backup integrity check failed for ${path.basename(target)}`)
+    }
+
     const backups = fs.readdirSync(this.backupDir)
       .filter(name => name.endsWith('.db'))
       .map(name => ({ name, full: path.join(this.backupDir, name), mtime: fs.statSync(path.join(this.backupDir, name)).mtimeMs }))
       .sort((a,b) => b.mtime - a.mtime)
+
     for (const stale of backups.slice(Math.max(keep, 3))) {
       try { fs.unlinkSync(stale.full) } catch {}
     }
@@ -363,13 +609,18 @@ class GuardianDB {
 
   backupInfo() {
     const backups = fs.existsSync(this.backupDir)
-      ? fs.readdirSync(this.backupDir).filter(name => name.endsWith('.db')).map(name => ({
-          name,
-          mtime: fs.statSync(path.join(this.backupDir, name)).mtimeMs
-        })).sort((a,b) => b.mtime - a.mtime)
+      ? fs.readdirSync(this.backupDir)
+        .filter(name => name.endsWith('.db'))
+        .map(name => ({ name, mtime: fs.statSync(path.join(this.backupDir, name)).mtimeMs }))
+        .sort((a,b) => b.mtime - a.mtime)
       : []
-    return { count: backups.length, latest: backups[0]?.name || null, directory: this.backupDir, database: this.path }
+    return {
+      count: backups.length,
+      latest: backups[0]?.name || null,
+      directory: this.backupDir,
+      database: this.path
+    }
   }
 }
 
-module.exports = { GuardianDB, id }
+module.exports = { GuardianDB, id, sqliteFileOk }
