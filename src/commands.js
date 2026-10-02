@@ -8,6 +8,7 @@ const {
   SlashCommandBuilder
 } = require('discord.js')
 const {
+  HIGH_RISK_PERMISSIONS,
   embed,
   respond,
   isStaff,
@@ -365,10 +366,33 @@ async function logCase(db, interaction, caseId, target, action, reason) {
   }
 }
 
+function safeVerificationRole(guild, role) {
+  const me = guild.members.me
+  if (!me || !role || role.id === guild.id || role.managed) return false
+  if (role.comparePositionTo(me.roles.highest) >= 0) return false
+  if (HIGH_RISK_PERMISSIONS.some(bit => role.permissions.has(bit))) return false
+  return true
+}
+
+function verificationRoleAllowedForStaff(guild, actor, role) {
+  if (!safeVerificationRole(guild, role)) return false
+  if (actor?.id !== guild.ownerId && role.comparePositionTo(actor.roles.highest) >= 0) return false
+  return true
+}
+
 async function doVerify(interaction, db) {
-  if (!await requireGuild(interaction, db, interaction.client.guardianSettings)) return
+  if (!interaction.inGuild()) {
+    return respond(interaction, 'Verification is available only in a server.')
+  }
+
+  if (db.isGuildBlacklisted(interaction.guildId) || db.stateEnabled('maintenance')) {
+    return respond(interaction, 'Verification is currently unavailable.')
+  }
+
+  db.ensureGuild(interaction.guildId)
   const cfg = db.get('SELECT * FROM verification_config WHERE guild_id=?', BigInt(interaction.guildId))
   if (!cfg || !Number(cfg.enabled)) return respond(interaction, 'Verification is not enabled here.')
+
   const existing = db.get('SELECT 1 AS ok FROM verified_members WHERE guild_id=? AND user_id=?', BigInt(interaction.guildId), BigInt(interaction.user.id))
   if (existing) return respond(interaction, 'You are already verified.')
 
@@ -376,15 +400,33 @@ async function doVerify(interaction, db) {
   const accountAgeDays = (Date.now() - interaction.user.createdTimestamp) / 86400000
   if (accountAgeDays < minDays) return respond(interaction, `Your account must be at least ${minDays} days old.`)
 
-  const member = await interaction.guild.members.fetch(interaction.user.id)
   const verifiedRole = cfg.verified_role_id ? interaction.guild.roles.cache.get(String(cfg.verified_role_id)) : null
   const unverifiedRole = cfg.unverified_role_id ? interaction.guild.roles.cache.get(String(cfg.unverified_role_id)) : null
-  if (!verifiedRole || !safeRole(interaction.guild, interaction.guild.members.me, verifiedRole)) return respond(interaction, 'Verification is incomplete: staff need to configure a manageable verified role.')
 
-  await member.roles.add(verifiedRole, 'ESN Guardian verification').catch(() => null)
-  if (unverifiedRole && member.roles.cache.has(unverifiedRole.id) && unverifiedRole.editable) {
-    await member.roles.remove(unverifiedRole, 'ESN Guardian verification').catch(() => {})
+  if (
+    !safeVerificationRole(interaction.guild, verifiedRole) ||
+    (unverifiedRole && !safeVerificationRole(interaction.guild, unverifiedRole)) ||
+    (verifiedRole && unverifiedRole && verifiedRole.id === unverifiedRole.id)
+  ) {
+    return respond(interaction, 'Verification is incomplete: ask staff to configure the verified role.')
   }
+
+  let member
+  try {
+    member = await interaction.guild.members.fetch(interaction.user.id)
+    await member.roles.add(verifiedRole, 'ESN Guardian verification')
+    if (unverifiedRole && member.roles.cache.has(unverifiedRole.id)) {
+      await member.roles.remove(unverifiedRole, 'ESN Guardian verification')
+    }
+  } catch (error) {
+    console.error('[Guardian] verification role update failed', {
+      guild: interaction.guildId,
+      user: interaction.user.id,
+      error: error?.message || String(error)
+    })
+    return respond(interaction, 'I could not update your verification roles. Staff need to check my role permissions.')
+  }
+
   db.run('INSERT OR IGNORE INTO verified_members (guild_id,user_id) VALUES (?,?)', BigInt(interaction.guildId), BigInt(member.id))
   const caseId = db.createCase(interaction.guildId, member.id, interaction.client.user?.id, 'VERIFY', 'Member verified', interaction.channelId)
   await logEvent(db, interaction.guild, 'verification_log_channel_id', `Verified | Case #${caseId}`, `Member: <@${member.id}> (${member.id})`)
@@ -755,11 +797,30 @@ async function handleCommand(interaction, db, settings) {
         const verified = interaction.options.getRole('verified_role', true)
         const unverified = interaction.options.getRole('unverified_role')
         const minDays = interaction.options.getInteger('minimum_account_age_days') || 0
-        if (!safeRole(interaction.guild, interaction.member, verified) || (unverified && !safeRole(interaction.guild, interaction.member, unverified)) || unverified?.id === verified.id) return respond(interaction, 'Choose distinct, manageable, non-privileged roles.')
-        const message = await channel.send({
-          embeds: [embed('Press **VERIFY** to complete verification.', 'ESN Guardian Verification')],
-          components: [{ type: 1, components: [{ type: 2, style: 3, label: 'VERIFY', emoji: { name: '✅' }, custom_id: 'esn_guardian:verify' }] }]
-        })
+        if (
+          !verificationRoleAllowedForStaff(interaction.guild, interaction.member, verified) ||
+          (unverified && !verificationRoleAllowedForStaff(interaction.guild, interaction.member, unverified)) ||
+          unverified?.id === verified.id
+        ) {
+          return respond(interaction, 'Choose distinct, non-privileged, unmanaged roles below your role and my role.')
+        }
+
+        let message
+        try {
+          message = await channel.send({
+            embeds: [embed('Press **VERIFY** to complete verification.', 'ESN Guardian Verification')],
+            components: [{ type: 1, components: [{ type: 2, style: 3, label: 'VERIFY', emoji: { name: '✅' }, custom_id: 'esn_guardian:verify' }] }],
+            allowedMentions: { parse: [] }
+          })
+        } catch (error) {
+          console.error('[Guardian] could not post verification panel', {
+            guild: interaction.guildId,
+            channel: channel.id,
+            error: error?.message || String(error)
+          })
+          return respond(interaction, 'I could not post in that channel.')
+        }
+
         db.run('UPDATE verification_config SET channel_id=?,message_id=?,verified_role_id=?,unverified_role_id=?,min_account_age_days=? WHERE guild_id=?', BigInt(channel.id), BigInt(message.id), BigInt(verified.id), unverified ? BigInt(unverified.id) : null, minDays, BigInt(interaction.guildId))
         db.run("INSERT OR REPLACE INTO panel_messages (guild_id,panel_type,channel_id,message_id) VALUES (?,'verification',?,?)", BigInt(interaction.guildId), BigInt(channel.id), BigInt(message.id))
         return respond(interaction, `Verification panel posted in <#${channel.id}>.`)
