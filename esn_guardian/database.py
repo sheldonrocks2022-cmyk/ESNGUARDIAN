@@ -335,12 +335,17 @@ class Database:
         return await cursor.fetchall()
 
     async def ensure_guild(self, guild_id: int) -> None:
-        await self.execute("INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)", (guild_id,))
-        await self.execute("INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)", (guild_id,))
-        await self.execute("INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)", (guild_id,))
-        await self.execute("INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)", (guild_id,))
-        await self.execute("INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)", (guild_id,))
-        await self.execute("INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)", (guild_id,))
+        connection = self._require_connection()
+        for query in (
+            "INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)",
+            "INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)",
+            "INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)",
+            "INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)",
+            "INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)",
+            "INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)",
+        ):
+            await connection.execute(query, (guild_id,))
+        await connection.commit()
 
     async def setting(self, guild_id: int) -> aiosqlite.Row:
         await self.ensure_guild(guild_id)
