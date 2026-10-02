@@ -1421,14 +1421,41 @@ class SecurityCog(commands.Cog):
         self.invalidate_security_caches(interaction.guild_id)
         await respond(interaction, "Raid detection and containment policy updated.")
 
-    @security.command(name="raid-status", description="Show join-rate, account-age, and quarantine configuration.")
+    @security.command(name="raid-status", description="Show live raid containment state and thresholds.")
     @guild_only()
     @staff_only()
     async def security_raid_status(self, interaction: discord.Interaction) -> None:
         await self.bot.database.ensure_guild(interaction.guild_id)
-        config = await self.bot.database.fetchone("SELECT * FROM raid_config WHERE guild_id = ?", (interaction.guild_id,))
+        config = await self.bot.database.fetchone(
+            "SELECT * FROM raid_config WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
         assert config is not None
-        await respond(interaction, f"Enabled: {'yes' if config['enabled'] else 'no'}\nJoin rate: {config['join_limit']} members / {config['join_window_seconds']}s\nMinimum account age: {config['min_account_age_days']} days\nQuarantine role: <@&{config['quarantine_role_id']}>")
+        now = datetime.now(UTC)
+        until = self.raid_mode_until.get(interaction.guild_id)
+        active = raid_mode_active(until, now)
+        queue_depth = self._raid_kick_queue.qsize()
+        quarantine = (
+            f"<@&{config['quarantine_role_id']}>"
+            if config["quarantine_role_id"]
+            else "not configured"
+        )
+        await respond(
+            interaction,
+            "**Guardian Raid Engine v3**\n"
+            f"Enabled: {'yes' if config['enabled'] else 'no'}\n"
+            f"Containment: {'ACTIVE' if active else 'inactive'}\n"
+            f"Active until: {until.isoformat() if active and until else 'n/a'}\n"
+            f"Configured threshold: {config['join_limit']} joins / {config['join_window_seconds']}s\n"
+            f"Fast-burst threshold: {fast_burst_limit(int(config['join_limit']))} joins / {RAID_FAST_WINDOW_SECONDS}s\n"
+            f"Young-account burst: 3 accounts / {RAID_YOUNG_WINDOW_SECONDS}s when account-age checks are enabled\n"
+            f"Minimum account age: {config['min_account_age_days']} days\n"
+            f"Kick workers: {RAID_KICK_WORKERS}\n"
+            f"Kick queue: {queue_depth}/{RAID_KICK_QUEUE_MAX}\n"
+            f"Blocked this runtime: {self._raid_blocked_count[interaction.guild_id]}\n"
+            f"Raid triggers this runtime: {self._raid_trigger_count[interaction.guild_id]}\n"
+            f"Quarantine role: {quarantine}",
+        )
 
     @security.command(name="quarantine", description="Assign the configured quarantine role to a member.")
     @guild_only()
