@@ -265,7 +265,7 @@ class SecurityIntelligenceCog(commands.Cog):
         ]
         return "**Recent Guardian incidents**\n" + "\n".join(lines)
 
-    @tasks.loop(seconds=60)
+    @tasks.loop(seconds=90)
     async def incident_correlation_loop(self) -> None:
         now = datetime.now(UTC)
         for guild in list(self.bot.guilds):
@@ -313,7 +313,7 @@ class SecurityIntelligenceCog(commands.Cog):
     async def before_incident_correlation_loop(self) -> None:
         await self.bot.wait_until_ready()
 
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=10)
     async def security_heartbeat_loop(self) -> None:
         now = datetime.now(UTC)
         for guild in list(self.bot.guilds):
