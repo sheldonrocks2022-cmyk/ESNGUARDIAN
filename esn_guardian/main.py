@@ -36,26 +36,43 @@ class GuardianBot(commands.Bot):
         intents.members = True
         intents.message_content = True
         intents.moderation = True
-        super().__init__(command_prefix="!", intents=intents, help_command=None, allowed_mentions=discord.AllowedMentions.none())
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+            allowed_mentions=discord.AllowedMentions.none(),
+            max_messages=1000,
+        )
         self.settings = settings
         self.database = Database(settings.database_path)
         self.started_at = datetime.now(UTC)
         self._guild_commands_synced = False
         self._global_commands_cleared = False
         self._backup_task: asyncio.Task[None] | None = None
+        self._health_task: asyncio.Task[None] | None = None
+        self.runtime_health: dict[str, object] = {
+            "event_loop_lag_ms": 0.0,
+            "gateway_latency_ms": 0.0,
+            "database_ok": True,
+            "last_check": None,
+            "guilds": 0,
+            "members": 0,
+        }
 
     async def setup_hook(self) -> None:
         await self.database.connect()
         for extension in EXTENSIONS:
             await self.load_extension(extension)
         self._backup_task = asyncio.create_task(self._database_backup_loop(), name="guardian-database-backups")
+        self._health_task = asyncio.create_task(self._runtime_health_loop(), name="guardian-runtime-health")
 
     async def _database_backup_loop(self) -> None:
         try:
             await self.wait_until_ready()
             while not self.is_closed():
-                await asyncio.sleep(6 * 60 * 60)
+                await asyncio.sleep(3 * 60 * 60)
                 try:
+                    await self.database.checkpoint()
                     backup_path = await self.database.backup("scheduled")
                 except Exception:
                     LOG.exception("Automatic Guardian database backup failed")
@@ -65,7 +82,47 @@ class GuardianBot(commands.Bot):
         except asyncio.CancelledError:
             raise
 
+    async def _runtime_health_loop(self) -> None:
+        try:
+            await self.wait_until_ready()
+            checks = 0
+            loop = asyncio.get_running_loop()
+            while not self.is_closed():
+                started = loop.time()
+                await asyncio.sleep(1)
+                lag_ms = max(0.0, (loop.time() - started - 1.0) * 1000.0)
+                checks += 1
+
+                database_ok = bool(self.runtime_health.get("database_ok", True))
+                if checks == 1 or checks % 5 == 0:
+                    try:
+                        database_ok = await self.database.quick_check()
+                    except Exception:
+                        database_ok = False
+                        LOG.exception("Guardian runtime database health check failed")
+
+                self.runtime_health.update(
+                    {
+                        "event_loop_lag_ms": round(lag_ms, 1),
+                        "gateway_latency_ms": round(max(0.0, self.latency) * 1000.0, 1),
+                        "database_ok": database_ok,
+                        "last_check": datetime.now(UTC),
+                        "guilds": len(self.guilds),
+                        "members": sum(guild.member_count or 0 for guild in self.guilds),
+                    }
+                )
+                await asyncio.sleep(59)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("Guardian runtime health monitor stopped unexpectedly")
+
     async def close(self) -> None:
+        if self._health_task is not None:
+            self._health_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._health_task
+            self._health_task = None
         if self._backup_task is not None:
             self._backup_task.cancel()
             with suppress(asyncio.CancelledError):
