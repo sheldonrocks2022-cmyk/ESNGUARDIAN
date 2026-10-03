@@ -1,9 +1,11 @@
-name: Node Guardian CI
+name: Node Guardian CI (legacy)
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main, node-hosting]
+    branches: [node-hosting]
   pull_request:
+    branches: [node-hosting]
 
 jobs:
   node:
