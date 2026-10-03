@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import discord
@@ -182,15 +183,34 @@ class ModerationCog(commands.Cog):
             return
         assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True)
-        changed = 0
-        for member in interaction.guild.members:
-            if (member.bot and not include_bots) or not can_target(interaction.guild, interaction.user, member):
-                continue
-            try:
-                await (member.remove_roles(role, reason=f"Mass role by {interaction.user}") if remove else member.add_roles(role, reason=f"Mass role by {interaction.user}"))
-                changed += 1
-            except discord.HTTPException:
-                continue
+        semaphore = asyncio.Semaphore(3)
+
+        async def update_member(member: discord.Member) -> bool:
+            if (
+                (member.bot and not include_bots)
+                or not can_target(interaction.guild, interaction.user, member)
+            ):
+                return False
+            async with semaphore:
+                try:
+                    if remove:
+                        await member.remove_roles(
+                            role,
+                            reason=f"Mass role by {interaction.user}",
+                        )
+                    else:
+                        await member.add_roles(
+                            role,
+                            reason=f"Mass role by {interaction.user}",
+                        )
+                    return True
+                except (discord.Forbidden, discord.HTTPException):
+                    return False
+
+        results = await asyncio.gather(
+            *(update_member(member) for member in interaction.guild.members)
+        )
+        changed = sum(result is True for result in results)
         case_id = await self._case(interaction, None, "MASSROLE", f"{'Removed' if remove else 'Added'} {role.name} for {changed} members")
         await self._log_case(interaction, case_id, None, "MASSROLE", f"{'Removed' if remove else 'Added'} {role.mention} for {changed} members")
         await respond(interaction, f"Updated {changed} members. Case #{case_id}.")
