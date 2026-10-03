@@ -149,11 +149,31 @@ class SecurityResilienceCog(commands.Cog):
 
         backup_info = self.bot.database.backup_info()
         has_backup = int(backup_info.get("count", 0) or 0) > 0
+        latest_backup_at = backup_info.get("latest_at")
+        backup_age_hours: float | None = None
+        if latest_backup_at:
+            try:
+                backup_time = datetime.fromisoformat(str(latest_backup_at))
+                if backup_time.tzinfo is None:
+                    backup_time = backup_time.replace(tzinfo=UTC)
+                backup_age_hours = max(
+                    0.0,
+                    (datetime.now(UTC) - backup_time.astimezone(UTC)).total_seconds() / 3600,
+                )
+            except ValueError:
+                backup_age_hours = None
         snapshot_row = await self.bot.database.fetchone(
             "SELECT created_at FROM guardian_snapshots WHERE guild_id = ?",
             (guild.id,),
         )
         has_snapshot = snapshot_row is not None
+
+        database_ok = True
+        try:
+            database_ok = await self.bot.database.quick_check()
+        except Exception:
+            LOG.exception("Resilience database quick_check failed for guild %s", guild.id)
+            database_ok = False
 
         integrity_ok = True
         overwatch = self.bot.get_cog("SecurityOverwatchCog")
@@ -171,7 +191,7 @@ class SecurityResilienceCog(commands.Cog):
             disabled_layers=len(disabled_layers),
             has_backup=has_backup,
             has_snapshot=has_snapshot,
-            integrity_ok=integrity_ok,
+            integrity_ok=integrity_ok and database_ok,
         )
 
         return {
@@ -183,9 +203,13 @@ class SecurityResilienceCog(commands.Cog):
             "has_backup": has_backup,
             "backup_count": int(backup_info.get("count", 0) or 0),
             "latest_backup": backup_info.get("latest"),
+            "latest_backup_at": latest_backup_at,
+            "backup_age_hours": backup_age_hours,
             "has_snapshot": has_snapshot,
             "snapshot_at": snapshot_row["created_at"] if snapshot_row else None,
             "integrity_ok": integrity_ok,
+            "database_ok": database_ok,
+            "runtime": dict(getattr(self.bot, "runtime_health", {})),
             "layers": layers,
         }
 
@@ -209,15 +233,26 @@ class SecurityResilienceCog(commands.Cog):
 
     async def status_report(self, guild: discord.Guild) -> str:
         data = await self.snapshot(guild)
+        runtime = data.get("runtime", {})
+        lag = float(runtime.get("event_loop_lag_ms", 0.0) or 0.0)
+        latency = float(runtime.get("gateway_latency_ms", 0.0) or 0.0)
+        backup_age = data.get("backup_age_hours")
+        backup_age_text = (
+            f"{backup_age:.1f}h ago"
+            if isinstance(backup_age, (int, float))
+            else "unknown"
+        )
         return (
-            "**Guardian Resilience**\n"
+            "**Guardian Resilience v5 MAX**\n"
             f"Readiness: {data['score']}/100 ({data['grade']})\n"
+            f"Database integrity: {'OK' if data['database_ok'] else 'FAILED'}\n"
+            f"Tamper-evident ledger: {'OK' if data['integrity_ok'] else 'FAILED'}\n"
+            f"Gateway latency: {latency:.1f} ms • Event-loop lag: {lag:.1f} ms\n"
             f"Missing security modules: {', '.join(data['missing_cogs']) if data['missing_cogs'] else 'none'}\n"
             f"Missing permissions: {', '.join(name.replace('_', ' ') for name in data['missing_permissions']) if data['missing_permissions'] else 'none'}\n"
             f"Disabled protection layers: {', '.join(data['disabled_layers']) if data['disabled_layers'] else 'none'}\n"
-            f"Tamper-evident ledger: {'OK' if data['integrity_ok'] else 'FAILED'}\n"
             f"Recovery snapshot: {data['snapshot_at'] or 'none'}\n"
-            f"Backups: {data['backup_count']} • Latest: {data['latest_backup'] or 'none'}"
+            f"Backups: {data['backup_count']} • Latest: {data['latest_backup'] or 'none'} ({backup_age_text})"
         )
 
     async def drill_report(self, guild: discord.Guild) -> str:
@@ -226,7 +261,9 @@ class SecurityResilienceCog(commands.Cog):
             ("Core security modules loaded", not data["missing_cogs"]),
             ("Critical Discord permissions available", not data["missing_permissions"]),
             ("Protection layers enabled", not data["disabled_layers"]),
+            ("SQLite database passes integrity check", data["database_ok"]),
             ("Case ledger verifies", data["integrity_ok"]),
+            ("Runtime event-loop lag below 1 second", float(data.get("runtime", {}).get("event_loop_lag_ms", 0.0) or 0.0) < 1000.0),
             ("Recovery snapshot exists", data["has_snapshot"]),
             ("At least one database backup exists", data["has_backup"]),
         ]
@@ -260,9 +297,18 @@ class SecurityResilienceCog(commands.Cog):
                 + ", ".join(data["disabled_layers"])
                 + "."
             )
+        if not data["database_ok"]:
+            steps.append(
+                "Treat the SQLite integrity failure as critical; preserve backups and restart Guardian only after confirming a valid database copy exists."
+            )
         if not data["integrity_ok"]:
             steps.append(
                 "Treat the case ledger integrity failure as high priority; preserve current backups and investigate before approving a new baseline."
+            )
+        runtime_lag = float(data.get("runtime", {}).get("event_loop_lag_ms", 0.0) or 0.0)
+        if runtime_lag >= 1000.0:
+            steps.append(
+                "Runtime event-loop lag is above 1 second; reduce non-critical load and inspect host CPU/RAM pressure before it delays security actions."
             )
         if not data["has_snapshot"]:
             steps.append(
@@ -291,7 +337,22 @@ class SecurityResilienceCog(commands.Cog):
                 continue
             try:
                 data = await self.record_snapshot(guild)
-                if data["score"] >= 55:
+
+                backup_age = data.get("backup_age_hours")
+                if (
+                    not data["has_backup"]
+                    or (isinstance(backup_age, (int, float)) and backup_age >= 4.0)
+                ):
+                    try:
+                        await self.bot.database.checkpoint()
+                        await self.bot.database.backup("resilience-auto")
+                    except Exception:
+                        LOG.exception(
+                            "Guardian automatic resilience backup failed for guild %s",
+                            guild.id,
+                        )
+
+                if data["score"] >= 55 and data["database_ok"]:
                     continue
                 now = datetime.now(UTC)
                 last = self._last_alert.get(guild.id)
@@ -308,6 +369,7 @@ class SecurityResilienceCog(commands.Cog):
                         f"Missing modules: {len(data['missing_cogs'])}\n"
                         f"Missing permissions: {len(data['missing_permissions'])}\n"
                         f"Disabled layers: {len(data['disabled_layers'])}\n"
+                        f"Database integrity: {'OK' if data['database_ok'] else 'FAILED'}\n"
                         f"Ledger integrity: {'OK' if data['integrity_ok'] else 'FAILED'}"
                     ),
                     color=discord.Color.red() if data["score"] < 30 else discord.Color.orange(),
