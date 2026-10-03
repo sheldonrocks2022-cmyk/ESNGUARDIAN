@@ -17,7 +17,7 @@ MEMBER_RE = re.compile(
 
 
 class ESNGuardianAI2Cog(ESNGuardianAICog):
-    """ESNG Intelligence v4: live multi-layer Guardian security reasoning."""
+    """ESNG Intelligence v5 MAX: live multi-layer Guardian security reasoning."""
 
     def _intel(self):
         return self.bot.get_cog("SecurityIntelligenceCog")
@@ -83,7 +83,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
 
         if not p or _contains(p, "help", "what can you do", "what do you know"):
             return (
-                "**ESNG Intelligence v4**\n"
+                "**ESNG Intelligence v5 MAX**\n"
                 "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
                 "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
                 "Sentinel anomaly signals, subject behavior, multi-step attack chains, resilience readiness, recovery drills, member history, backups, anti-nuke, "
@@ -103,6 +103,13 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "self health",
                 "self-health",
                 "defense readiness",
+                "runtime health",
+                "guardian lag",
+                "bot lag",
+                "gateway latency",
+                "database health",
+                "sqlite health",
+                "backup freshness",
             ):
                 return await resilience.status_report(guild)
 
@@ -456,10 +463,11 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             "new ai",
         ):
             return (
-                "**ESNG Intelligence v4**\n"
+                "**ESNG Intelligence v5 MAX**\n"
                 "I now combine live configuration, threat history, tamper-evident case verification, policy drift, "
                 "persistent incident sessions, threat trends, Sentinel behavioral correlation, subject profiles, Guardian Resilience self-health, "
-                "multi-step attack-chain context, member security history, protection health, backups, and ESN knowledge. "
+                "runtime latency/event-loop health, SQLite integrity, backup freshness, multi-step attack-chain context, "
+                "member security history, protection health, verification health, and ESN knowledge. "
                 "I explain the evidence behind scores and do not invent live data."
             )
 
