@@ -1,12 +1,13 @@
-name: CogitHost Node package
+name: Python Guardian deployment package
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "src/**"
-      - "package.json"
+      - "esn_guardian/**"
+      - "main.py"
+      - "requirements.txt"
       - ".env.example"
       - "README.md"
       - ".gitignore"
@@ -17,19 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build CogitHost upload ZIP
+      - name: Build Python Guardian upload ZIP
         shell: bash
         run: |
-          rm -rf ESN-GUARDIAN-NODE ESN-GUARDIAN-NODE.zip
-          mkdir -p ESN-GUARDIAN-NODE
-          cp -r src ESN-GUARDIAN-NODE/src
-          cp package.json .env.example README.md .gitignore ESN-GUARDIAN-NODE/
-          cd ESN-GUARDIAN-NODE
-          zip -qr ../ESN-GUARDIAN-NODE.zip .
-      - name: Upload CogitHost ZIP
+          rm -rf ESN-GUARDIAN-PYTHON ESN-GUARDIAN-PYTHON.zip
+          mkdir -p ESN-GUARDIAN-PYTHON
+          cp -r esn_guardian ESN-GUARDIAN-PYTHON/esn_guardian
+          cp main.py requirements.txt .env.example README.md .gitignore ESN-GUARDIAN-PYTHON/
+          find ESN-GUARDIAN-PYTHON -type d -name '__pycache__' -prune -exec rm -rf {} +
+          find ESN-GUARDIAN-PYTHON -type f -name '*.pyc' -delete
+          cd ESN-GUARDIAN-PYTHON
+          zip -qr ../ESN-GUARDIAN-PYTHON.zip .
+      - name: Upload Python Guardian ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: ESN-GUARDIAN-NODE
-          path: ESN-GUARDIAN-NODE.zip
+          name: ESN-GUARDIAN-PYTHON
+          path: ESN-GUARDIAN-PYTHON.zip
           if-no-files-found: error
           retention-days: 7
