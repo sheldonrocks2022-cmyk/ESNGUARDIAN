@@ -136,6 +136,11 @@ class Database:
         return {
             "count": len(backups),
             "latest": latest.name if latest else None,
+            "latest_at": (
+                datetime.fromtimestamp(latest.stat().st_mtime, UTC).isoformat()
+                if latest
+                else None
+            ),
             "directory": str(self.backup_dir),
             "database": str(self.path),
         }
