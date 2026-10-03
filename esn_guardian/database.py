@@ -18,6 +18,8 @@ class Database:
         self.connection: aiosqlite.Connection | None = None
         self.backup_dir = self.path.parent / "backups"
         self.last_backup_path: Path | None = None
+        self._write_lock = asyncio.Lock()
+        self._backup_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,8 +29,13 @@ class Database:
         self.connection.row_factory = aiosqlite.Row
         await self.connection.execute("PRAGMA journal_mode = WAL")
         await self.connection.execute("PRAGMA foreign_keys = ON")
-        await self.connection.execute("PRAGMA busy_timeout = 5000")
+        await self.connection.execute("PRAGMA busy_timeout = 10000")
+        await self.connection.execute("PRAGMA synchronous = NORMAL")
+        await self.connection.execute("PRAGMA wal_autocheckpoint = 1000")
+        await self.connection.execute("PRAGMA temp_store = MEMORY")
+        await self.connection.execute("PRAGMA cache_size = -32768")
         await self._migrate()
+        await self.connection.execute("PRAGMA optimize")
         await self.backup("startup")
 
     async def close(self) -> None:
@@ -91,32 +98,33 @@ class Database:
         if not self._sqlite_file_ok(self.path):
             raise RuntimeError("Guardian restored a database backup, but the restored file failed SQLite integrity checking.")
 
-    async def backup(self, reason: str = "scheduled", *, keep: int = 20) -> Path | None:
+    async def backup(self, reason: str = "scheduled", *, keep: int = 32) -> Path | None:
         if self.connection is None:
             return None
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
-        clean_reason = self._clean_backup_reason(reason)
-        backup_path = self.backup_dir / f"{self.path.stem}-{self._backup_timestamp()}-{clean_reason}.db"
+        async with self._backup_lock:
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
+            clean_reason = self._clean_backup_reason(reason)
+            backup_path = self.backup_dir / f"{self.path.stem}-{self._backup_timestamp()}-{clean_reason}.db"
 
-        async with aiosqlite.connect(backup_path) as target:
-            await self.connection.backup(target)
-            row = await (await target.execute("PRAGMA quick_check")).fetchone()
-            if not row or row[0] != "ok":
-                raise RuntimeError(f"Backup integrity check failed for {backup_path.name}")
+            async with aiosqlite.connect(backup_path) as target:
+                await self.connection.backup(target)
+                row = await (await target.execute("PRAGMA quick_check")).fetchone()
+                if not row or row[0] != "ok":
+                    raise RuntimeError(f"Backup integrity check failed for {backup_path.name}")
 
-        backups = sorted(
-            self.backup_dir.glob(f"{self.path.stem}-*.db"),
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )
-        for stale in backups[max(keep, 3):]:
-            try:
-                stale.unlink()
-            except FileNotFoundError:
-                pass
+            backups = sorted(
+                self.backup_dir.glob(f"{self.path.stem}-*.db"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+            for stale in backups[max(keep, 5):]:
+                try:
+                    stale.unlink()
+                except FileNotFoundError:
+                    pass
 
-        self.last_backup_path = backup_path
-        return backup_path
+            self.last_backup_path = backup_path
+            return backup_path
 
     def backup_info(self) -> dict[str, Any]:
         backups = sorted(
@@ -323,13 +331,29 @@ class Database:
 
     async def execute(self, query: str, values: Iterable[Any] = ()) -> None:
         connection = self._require_connection()
-        await connection.execute(query, tuple(values))
-        await connection.commit()
+        async with self._write_lock:
+            await connection.execute(query, tuple(values))
+            await connection.commit()
 
     async def executemany(self, query: str, rows: Iterable[Iterable[Any]]) -> None:
         connection = self._require_connection()
-        await connection.executemany(query, [tuple(row) for row in rows])
-        await connection.commit()
+        prepared = [tuple(row) for row in rows]
+        if not prepared:
+            return
+        async with self._write_lock:
+            await connection.executemany(query, prepared)
+            await connection.commit()
+
+    async def quick_check(self) -> bool:
+        connection = self._require_connection()
+        row = await (await connection.execute("PRAGMA quick_check")).fetchone()
+        return bool(row and row[0] == "ok")
+
+    async def checkpoint(self) -> None:
+        connection = self._require_connection()
+        async with self._write_lock:
+            await connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            await connection.execute("PRAGMA optimize")
 
     async def fetchone(self, query: str, values: Iterable[Any] = ()) -> aiosqlite.Row | None:
         cursor = await self._require_connection().execute(query, tuple(values))
@@ -341,16 +365,17 @@ class Database:
 
     async def ensure_guild(self, guild_id: int) -> None:
         connection = self._require_connection()
-        for query in (
-            "INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)",
-            "INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)",
-            "INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)",
-            "INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)",
-            "INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)",
-            "INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)",
-        ):
-            await connection.execute(query, (guild_id,))
-        await connection.commit()
+        async with self._write_lock:
+            for query in (
+                "INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)",
+                "INSERT OR IGNORE INTO verification_config (guild_id) VALUES (?)",
+                "INSERT OR IGNORE INTO anti_nuke_config (guild_id) VALUES (?)",
+                "INSERT OR IGNORE INTO security_config (guild_id) VALUES (?)",
+                "INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)",
+                "INSERT OR IGNORE INTO raid_config (guild_id) VALUES (?)",
+            ):
+                await connection.execute(query, (guild_id,))
+            await connection.commit()
 
     async def setting(self, guild_id: int) -> aiosqlite.Row:
         await self.ensure_guild(guild_id)
@@ -374,12 +399,13 @@ class Database:
 
     async def create_case(self, guild_id: int, target_id: int | None, moderator_id: int | None, action: str, reason: str, channel_id: int | None = None, details: dict[str, Any] | None = None) -> int:
         connection = self._require_connection()
-        cursor = await connection.execute(
-            "INSERT INTO cases (guild_id, target_id, moderator_id, action, reason, channel_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (guild_id, target_id, moderator_id, action, reason, channel_id, json.dumps(details or {}, ensure_ascii=True)),
-        )
-        await connection.commit()
-        return int(cursor.lastrowid)
+        async with self._write_lock:
+            cursor = await connection.execute(
+                "INSERT INTO cases (guild_id, target_id, moderator_id, action, reason, channel_id, details) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (guild_id, target_id, moderator_id, action, reason, channel_id, json.dumps(details or {}, ensure_ascii=True)),
+            )
+            await connection.commit()
+            return int(cursor.lastrowid)
 
     async def create_cases_bulk(
         self,
@@ -392,12 +418,13 @@ class Database:
         ]
         if not prepared:
             return 0
-        await connection.executemany(
-            "INSERT INTO cases (guild_id, target_id, moderator_id, action, reason, channel_id, details) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            prepared,
-        )
-        await connection.commit()
+        async with self._write_lock:
+            await connection.executemany(
+                "INSERT INTO cases (guild_id, target_id, moderator_id, action, reason, channel_id, details) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                prepared,
+            )
+            await connection.commit()
         return len(prepared)
 
     async def is_guild_blacklisted(self, guild_id: int) -> bool:
