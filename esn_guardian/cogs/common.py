@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 LOG = logging.getLogger("esn_guardian.cogs")
 OBSIDIAN_BLUE = discord.Color(0x0B3D91)
 PROTECTED_FOOTER = "Protected by ESN Guardian"
+LOG_SEND_SEMAPHORE = asyncio.Semaphore(4)
+LOG_SEND_TIMEOUT_SECONDS = 12
 
 
 def set_protected_footer(embed: discord.Embed) -> discord.Embed:
@@ -157,10 +159,16 @@ async def log_event(bot: "GuardianBot", guild: discord.Guild, setting_field: str
     channel = guild.get_channel(channel_id)
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = discord.Embed(title=title, description=description[:4096], color=OBSIDIAN_BLUE, timestamp=datetime.now(UTC))
+    embed = discord.Embed(title=title, description=description[:4096], color=color, timestamp=datetime.now(UTC))
     set_protected_footer(embed)
     try:
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        async with LOG_SEND_SEMAPHORE:
+            await asyncio.wait_for(
+                channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none()),
+                timeout=LOG_SEND_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError:
+        LOG.warning("Timed out writing %s log for guild %s", setting_field, guild.id)
     except (discord.Forbidden, discord.HTTPException):
         LOG.exception("Could not write %s log for guild %s", setting_field, guild.id)
 
