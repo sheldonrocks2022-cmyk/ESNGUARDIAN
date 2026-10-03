@@ -1,13 +1,15 @@
-name: Node Guardian checks
+name: Node Guardian checks (legacy)
 
 on:
   workflow_dispatch:
   push:
+    branches: [node-hosting]
     paths:
       - "src/**"
       - "package.json"
       - ".github/workflows/security.yml"
   pull_request:
+    branches: [node-hosting]
     paths:
       - "src/**"
       - "package.json"
