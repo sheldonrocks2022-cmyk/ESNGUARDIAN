@@ -509,8 +509,10 @@ class SecurityCog(commands.Cog):
                 return "URL shortener detected"
             if any(token in host for token in SUSPICIOUS_DOMAIN_TOKENS):
                 return "Known phishing-style domain detected"
-            if host.startswith("xn--"):
+            if any(label.startswith("xn--") for label in host.split(".")):
                 return "Punycode lookalike domain detected"
+            if any(character in value for character in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff")):
+                return "Hidden Unicode characters detected in link"
             try:
                 ipaddress.ip_address(host.strip("[]"))
             except ValueError:
@@ -680,6 +682,27 @@ class SecurityCog(commands.Cog):
                 invoker,
                 "EXTERNAL_APP_BAN_FAILED",
                 f"{reason}; invoking member could not be resolved",
+                channel_id,
+            )
+            return True
+
+        if member.id == guild.owner_id:
+            await self._security_case(
+                guild,
+                member,
+                "EXTERNAL_APP_OWNER_UNPUNISHABLE",
+                f"{reason}; Discord does not allow bots to ban the server owner",
+                channel_id,
+            )
+            return True
+
+        bot_member = guild.me
+        if bot_member is None or member.top_role >= bot_member.top_role:
+            await self._security_case(
+                guild,
+                member,
+                "EXTERNAL_APP_HIERARCHY_BLOCKED",
+                f"{reason}; invoking member is at or above Guardian's role",
                 channel_id,
             )
             return True
