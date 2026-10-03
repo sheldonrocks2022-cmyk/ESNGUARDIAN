@@ -696,8 +696,15 @@ class SecurityCog(commands.Cog):
             )
             return True
 
-        bot_member = guild.me
-        if bot_member is None or member.top_role >= bot_member.top_role:
+        bot_member = getattr(guild, "me", None)
+        member_top_role = getattr(member, "top_role", None)
+        bot_top_role = getattr(bot_member, "top_role", None)
+        if (
+            bot_member is not None
+            and member_top_role is not None
+            and bot_top_role is not None
+            and member_top_role >= bot_top_role
+        ):
             await self._security_case(
                 guild,
                 member,
