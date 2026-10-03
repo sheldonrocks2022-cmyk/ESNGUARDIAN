@@ -44,4 +44,4 @@ jobs:
       - name: Compile all Python modules
         run: python -m compileall -q main.py esn_guardian tests
       - name: Run Guardian test suite
-        run: pytest -q
+        run: PYTHONPATH=. python -m pytest -q
