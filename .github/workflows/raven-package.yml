@@ -24,7 +24,7 @@ jobs:
           rm -rf ESN-GUARDIAN-PYTHON ESN-GUARDIAN-PYTHON.zip
           mkdir -p ESN-GUARDIAN-PYTHON
           cp -r esn_guardian ESN-GUARDIAN-PYTHON/esn_guardian
-          cp main.py requirements.txt .env.example README.md .gitignore ESN-GUARDIAN-PYTHON/
+          cp main.py bot.py requirements.txt .env.example README.md .gitignore ESN-GUARDIAN-PYTHON/
           find ESN-GUARDIAN-PYTHON -type d -name '__pycache__' -prune -exec rm -rf {} +
           find ESN-GUARDIAN-PYTHON -type f -name '*.pyc' -delete
           cd ESN-GUARDIAN-PYTHON
