@@ -853,9 +853,12 @@ class SecurityV7Cog(commands.Cog):
         except ValueError:
             return
         from aiohttp import web
+        token = os.getenv("GUARDIAN_DASHBOARD_TOKEN", "").strip()
+        if not token:
+            LOG.warning("GUARDIAN_DASHBOARD_PORT is set but GUARDIAN_DASHBOARD_TOKEN is empty; HTTP dashboard disabled.")
+            return
         async def health(request: web.Request) -> web.Response:
-            token = os.getenv("GUARDIAN_DASHBOARD_TOKEN", "")
-            if token and not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + token):
+            if not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + token):
                 raise web.HTTPUnauthorized()
             return web.json_response(await self.dashboard_payload())
         app = web.Application()
@@ -894,6 +897,48 @@ class SecurityV7Cog(commands.Cog):
             async with self.session.post(endpoint, json=payload, headers=headers) as response:
                 if response.status >= 400:
                     LOG.warning("Guardian threat-intel endpoint returned %s", response.status)
+                    return
+                remote = {}
+                if "application/json" in response.headers.get("Content-Type", ""):
+                    remote = await response.json()
+                remote_subjects = remote.get("subjects", []) if isinstance(remote, dict) else []
+                if remote_subjects:
+                    local_lookup = {
+                        (str(row["subject_type"]), self._subject_hash(str(row["subject_key"]))): str(row["subject_key"])
+                        for row in rows
+                    }
+                    for item in remote_subjects[:500]:
+                        if not isinstance(item, dict):
+                            continue
+                        subject_type = str(item.get("type", ""))
+                        subject_hash = str(item.get("hash", ""))
+                        local_key = local_lookup.get((subject_type, subject_hash))
+                        if local_key is None:
+                            continue
+                        try:
+                            remote_reputation = int(item.get("reputation", 0))
+                            remote_count = int(item.get("evidence_count", 0))
+                        except (TypeError, ValueError):
+                            continue
+                        current = await self.bot.database.fetchone(
+                            "SELECT reputation,evidence_count FROM guardian_v7_reputation WHERE subject_type=? AND subject_key=?",
+                            (subject_type, local_key),
+                        )
+                        if current is None:
+                            continue
+                        merged_reputation = min(int(current["reputation"]), remote_reputation)
+                        merged_count = max(int(current["evidence_count"]), remote_count)
+                        await self.bot.database.execute(
+                            "UPDATE guardian_v7_reputation SET reputation=?,evidence_count=?,last_reason=?,updated_at=CURRENT_TIMESTAMP "
+                            "WHERE subject_type=? AND subject_key=?",
+                            (
+                                merged_reputation,
+                                merged_count,
+                                "Federated Guardian threat-intelligence match",
+                                subject_type,
+                                local_key,
+                            ),
+                        )
         except Exception:
             LOG.warning("Guardian threat-intel sync failed", exc_info=True)
 
