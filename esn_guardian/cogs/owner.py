@@ -281,7 +281,7 @@ class OwnerCog(commands.Cog):
         except ValueError:
             await respond(interaction, "Provide a numeric server ID.")
             return
-        await self.bot.database.execute("INSERT OR REPLACE INTO guild_blacklist (guild_id, reason) VALUES (?, ?)", (target_id, reason))
+        await self.bot.database.blacklist_guild(target_id, reason)
         guild = self.bot.get_guild(target_id)
         if guild is not None:
             if guild.owner is not None:
@@ -300,7 +300,7 @@ class OwnerCog(commands.Cog):
         except ValueError:
             await respond(interaction, "Provide a numeric server ID.")
             return
-        await self.bot.database.execute("DELETE FROM guild_blacklist WHERE guild_id = ?", (target_id,))
+        await self.bot.database.unblacklist_guild(target_id)
         await respond(interaction, f"Removed server `{target_id}` from the blacklist.")
 
 
