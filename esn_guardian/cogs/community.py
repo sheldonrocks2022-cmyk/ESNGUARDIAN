@@ -22,6 +22,7 @@ from esn_guardian.cogs.common import (
     staff_only,
     safe_public_role,
     require_role,
+    defer_response,
 )
 
 SMP_INFO = "**Minecraft Bedrock**\nServer: **ESN SMP**\nIP: `esnsmp.ggwp.cc`\nPort: `17058`\nDiscord: https://discord.gg/huFsDxkZ2g"
@@ -369,7 +370,7 @@ class CommunityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def config(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         settings = await self.bot.database.setting(interaction.guild_id)
         sections = ["Server settings"]
         sections.extend(f"{key.replace('_', ' ').title()}: {value if value is not None else 'Not set'}"
@@ -464,7 +465,7 @@ class CommunityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def logs_all(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         for field in LOG_FIELDS.values():
             await self.bot.database.update_setting(interaction.guild_id, field, channel.id)
         if self.bot.get_cog("SecurityV7Cog") is not None:
@@ -526,7 +527,7 @@ class CommunityCog(commands.Cog):
         if channel.guild.id != interaction.guild_id or not channel.permissions_for(interaction.user).send_messages:
             await respond(interaction, "Choose a channel in this server where you can send messages.")
             return
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         async with self.announcement_locks[interaction.guild_id]:
             settings = await self.bot.database.setting(interaction.guild_id)
             now = datetime.now(UTC)
