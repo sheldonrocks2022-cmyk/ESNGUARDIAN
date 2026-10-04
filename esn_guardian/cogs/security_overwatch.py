@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, guild_owner_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, guild_owner_only, log_event, respond, staff_only, defer_response
 from esn_guardian.cogs.security_intelligence import case_weight, risk_level
 
 LOG = logging.getLogger("esn_guardian.overwatch")
@@ -577,7 +577,7 @@ class SecurityOverwatchCog(commands.Cog):
     @staff_only()
     async def overwatch_status(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.posture_report(interaction.guild))
 
     @overwatch.command(name="integrity", description="Verify the tamper-evident case ledger and policy baseline.")
@@ -585,7 +585,7 @@ class SecurityOverwatchCog(commands.Cog):
     @staff_only()
     async def overwatch_integrity(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.integrity_report(interaction.guild))
 
     @overwatch.command(name="incidents", description="Show recent persistent Guardian incident sessions.")
