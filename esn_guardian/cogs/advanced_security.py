@@ -596,9 +596,19 @@ class AdvancedSecurityCog(commands.Cog):
         if before.permissions == after.permissions and before.position == after.position:
             return
         actor = await self._audit_executor(after.guild, discord.AuditLogAction.role_update, after.id)
+
+        # Discord role reorders emit position updates for neighboring roles without
+        # separate audit-log entries. Treating those collateral updates as attacks
+        # creates a self-heal feedback loop.
+        position_only = before.permissions == after.permissions and before.position != after.position
+        if position_only and actor is None:
+            return
+
         await self._record_destructive(after.guild, actor, "role permission/position change")
-        bot_member = after.guild.me
-        is_guardian_role = bot_member is not None and any(role.id == after.id for role in bot_member.roles)
+        bot_user_id = self.bot.user.id if self.bot.user else 0
+        role_tags = getattr(after, "tags", None)
+        managed_bot_id = getattr(role_tags, "bot_id", None)
+        is_guardian_role = bool(after.managed and managed_bot_id == bot_user_id)
         if is_guardian_role and (actor is None or actor.id != after.guild.owner_id):
             try:
                 await after.edit(permissions=before.permissions, position=before.position, reason="ESN Guardian tamper protection")
