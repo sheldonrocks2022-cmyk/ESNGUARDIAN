@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -55,6 +55,7 @@ class GuardianBot(commands.Bot):
         self._backup_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
         self._interaction_ack_tasks: set[asyncio.Task[None]] = set()
+        self._security_suppression: dict[int, tuple[datetime, str]] = {}
         # v7 wraps this check later and preserves it as its previous_check.
         # This gives every slash command a universal Discord-deadline safety net.
         self.tree.interaction_check = self._universal_interaction_check
@@ -66,6 +67,29 @@ class GuardianBot(commands.Bot):
             "guilds": 0,
             "members": 0,
         }
+
+    def suppress_security_events(self, guild_id: int, *, seconds: int = 90, reason: str = "Guardian internal operation") -> None:
+        """Temporarily ignore Discord audit/event echoes caused by Guardian itself."""
+        until = datetime.now(UTC) + timedelta(seconds=max(1, seconds))
+        current = self._security_suppression.get(guild_id)
+        if current is None or current[0] < until:
+            self._security_suppression[guild_id] = (until, reason)
+
+    def security_events_suppressed(self, guild_id: int) -> bool:
+        current = self._security_suppression.get(guild_id)
+        if current is None:
+            return False
+        until, _reason = current
+        if until <= datetime.now(UTC):
+            self._security_suppression.pop(guild_id, None)
+            return False
+        return True
+
+    def security_suppression_reason(self, guild_id: int) -> str | None:
+        if not self.security_events_suppressed(guild_id):
+            return None
+        current = self._security_suppression.get(guild_id)
+        return current[1] if current is not None else None
 
     async def _universal_interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.type is not discord.InteractionType.application_command:
