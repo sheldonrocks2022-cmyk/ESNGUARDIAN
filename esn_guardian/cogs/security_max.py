@@ -487,6 +487,11 @@ class SecurityMaxCog(commands.Cog):
                 use_external_apps=False,
             ),
         )
+        await self._safe_overwrite(
+            verification_channel,
+            verified,
+            discord.PermissionOverwrite(view_channel=False),
+        )
 
         jobs = []
         for channel in guild.channels:
@@ -625,6 +630,7 @@ class SecurityMaxCog(commands.Cog):
             attach_files=False,
             use_external_apps=False,
         )
+        verification_verified = discord.PermissionOverwrite(view_channel=False)
         deny = discord.PermissionOverwrite(
             view_channel=False,
             send_messages=False,
@@ -651,6 +657,13 @@ class SecurityMaxCog(commands.Cog):
             verification_unverified,
         ):
             if await self._safe_overwrite(verification_channel, unverified, verification_unverified):
+                changed_overwrites += 1
+
+        if not overwrite_equal(
+            verification_channel.overwrites_for(verified),
+            verification_verified,
+        ):
+            if await self._safe_overwrite(verification_channel, verified, verification_verified):
                 changed_overwrites += 1
 
         if not overwrite_equal(
@@ -777,6 +790,177 @@ class SecurityMaxCog(commands.Cog):
             "verification_message": message_id,
             "changed_overwrites": changed_overwrites,
             "evidence": evidence_result,
+        }
+
+    async def activate_verification_gate(self, guild: discord.Guild) -> dict[str, int | str]:
+        """Activate only the live verification gate without rerunning full MAX setup."""
+        if hasattr(self.bot, "suppress_security_events"):
+            self.bot.suppress_security_events(
+                guild.id,
+                seconds=120,
+                reason="Guardian MAX verification gate activation",
+            )
+
+        await self.bot.database.ensure_guild(guild.id)
+        config = await self._config(guild.id)
+
+        quarantine = guild.get_role(int(config["quarantine_role_id"] or 0)) if config else None
+        unverified = guild.get_role(int(config["unverified_role_id"] or 0)) if config else None
+        verified = guild.get_role(int(config["verified_role_id"] or 0)) if config else None
+
+        if quarantine is None:
+            quarantine = await self._ensure_role(guild, "Guardian Quarantine")
+        if unverified is None:
+            unverified = await self._ensure_role(guild, "Guardian Unverified")
+        if verified is None:
+            verified = await self._ensure_role(guild, "Guardian Verified")
+
+        verification_channel = (
+            guild.get_channel(int(config["verification_channel_id"] or 0))
+            if config and config["verification_channel_id"]
+            else None
+        )
+        if not isinstance(verification_channel, discord.TextChannel):
+            verification_channel = discord.utils.get(guild.text_channels, name="guardian-verification")
+        if verification_channel is None:
+            verification_channel = await guild.create_text_channel(
+                "guardian-verification",
+                reason="Guardian MAX activate verification gate",
+            )
+
+        await self._safe_overwrite(
+            verification_channel,
+            guild.default_role,
+            discord.PermissionOverwrite(view_channel=False),
+        )
+        await self._safe_overwrite(
+            verification_channel,
+            unverified,
+            discord.PermissionOverwrite(
+                view_channel=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=False,
+                attach_files=False,
+                use_external_apps=False,
+            ),
+        )
+        await self._safe_overwrite(
+            verification_channel,
+            verified,
+            discord.PermissionOverwrite(view_channel=False),
+        )
+        await self._safe_overwrite(
+            verification_channel,
+            quarantine,
+            discord.PermissionOverwrite(
+                view_channel=False,
+                send_messages=False,
+                add_reactions=False,
+                attach_files=False,
+                connect=False,
+                speak=False,
+                create_public_threads=False,
+                create_private_threads=False,
+                send_messages_in_threads=False,
+                use_external_apps=False,
+            ),
+        )
+        if guild.me is not None:
+            await self._safe_overwrite(
+                verification_channel,
+                guild.me,
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    read_message_history=True,
+                    send_messages=True,
+                    manage_messages=True,
+                ),
+            )
+
+        verification = await self.bot.database.fetchone(
+            "SELECT * FROM verification_config WHERE guild_id=?",
+            (guild.id,),
+        )
+        message_id = int(verification["message_id"] or 0) if verification else 0
+        panel_ok = False
+        if message_id:
+            try:
+                await asyncio.wait_for(
+                    verification_channel.fetch_message(message_id),
+                    timeout=4.0,
+                )
+                panel_ok = True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
+                panel_ok = False
+
+        if not panel_ok:
+            embed = discord.Embed(
+                title="ESN Guardian Verification v2 MAX",
+                description=(
+                    "Press **VERIFY** to verify and unlock the server.\n"
+                    "After successful verification, this channel disappears automatically."
+                ),
+                color=discord.Color.green(),
+            )
+            panel = await verification_channel.send(
+                embed=embed,
+                view=VerificationView(self.bot),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            message_id = panel.id
+
+        await self.bot.database.execute(
+            "UPDATE verification_config SET enabled=1,channel_id=?,message_id=?,verified_role_id=?,"
+            "unverified_role_id=?,min_account_age_days=3,captcha_enabled=1,cooldown_seconds=20 "
+            "WHERE guild_id=?",
+            (
+                verification_channel.id,
+                message_id,
+                verified.id,
+                unverified.id,
+                guild.id,
+            ),
+        )
+        await self.bot.database.execute(
+            "INSERT OR REPLACE INTO panel_messages (guild_id,panel_type,channel_id,message_id) "
+            "VALUES (?,'verification',?,?)",
+            (guild.id, verification_channel.id, message_id),
+        )
+        await self.bot.database.execute(
+            "UPDATE raid_config SET quarantine_role_id=? WHERE guild_id=?",
+            (quarantine.id, guild.id),
+        )
+        await self.bot.database.execute(
+            "INSERT INTO guardian_max_config "
+            "(guild_id,enabled,verification_v2,quarantine_max,quarantine_role_id,"
+            "verification_channel_id,verified_role_id,unverified_role_id) "
+            "VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET "
+            "enabled=1,verification_v2=1,quarantine_max=1,"
+            "quarantine_role_id=excluded.quarantine_role_id,"
+            "verification_channel_id=excluded.verification_channel_id,"
+            "verified_role_id=excluded.verified_role_id,"
+            "unverified_role_id=excluded.unverified_role_id,"
+            "updated_at=CURRENT_TIMESTAMP",
+            (
+                guild.id,
+                1,
+                1,
+                1,
+                quarantine.id,
+                verification_channel.id,
+                verified.id,
+                unverified.id,
+            ),
+        )
+
+        return {
+            "verification_channel": verification_channel.id,
+            "verification_message": message_id,
+            "verified_role": verified.id,
+            "unverified_role": unverified.id,
+            "quarantine_role": quarantine.id,
         }
 
     async def _verification_on_join(self, member: discord.Member, config) -> None:
@@ -1273,6 +1457,27 @@ class SecurityMaxCog(commands.Cog):
             f"Sentinel v2 correlation: {'ON' if config['sentinel_v2'] else 'OFF'}\n"
             f"Watchdog: {self.last_watchdog_push}\n"
             f"Off-host backup: {self.last_offhost_result}",
+        )
+
+    @guardianmax.command(
+        name="activate-verification",
+        description="Activate the live Guardian verification gate and automatic server unlock.",
+    )
+    @guild_only()
+    @guild_owner_only()
+    async def activate_verification(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        await defer_response(interaction)
+        result = await self.activate_verification_gate(interaction.guild)
+        await respond(
+            interaction,
+            "**Guardian Verification v2 is ACTIVE**\n"
+            f"Verification channel: <#{result['verification_channel']}>\n"
+            f"Unverified role: <@&{result['unverified_role']}>\n"
+            f"Verified role: <@&{result['verified_role']}>\n\n"
+            "New members receive the Unverified role and can access only the verification gate. "
+            "After they pass verification, Guardian adds Verified, removes Unverified, "
+            "the verification channel disappears, and their normal server access returns immediately.",
         )
 
     @guardianmax.command(name="setup-max", description="Safely configure Guardian's maximum protection baseline.")
