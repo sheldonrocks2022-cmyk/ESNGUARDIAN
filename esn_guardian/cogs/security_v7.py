@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+from cryptography.fernet import Fernet
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -29,7 +30,10 @@ POLICIES = {
     "maximum": {"elevated": 10, "high": 20, "critical": 32, "panic": 48, "two_person": 1},
 }
 STATE_ORDER = ("NORMAL", "ELEVATED", "HIGH", "CRITICAL", "PANIC")
-CATASTROPHIC = {"massrole", "globalban", "globalunban", "protection release", "shield restore", "shield temp-role"}
+CATASTROPHIC = {
+    "massrole", "globalban", "globalunban", "protection release", "shield restore",
+    "shield temp-role", "antinuke disable", "verification disable",
+}
 DANGEROUS = ("administrator", "manage_guild", "manage_roles", "manage_channels", "manage_webhooks", "ban_members", "kick_members", "moderate_members")
 LOG_FIELDS = (
     "moderation_log_channel_id", "security_log_channel_id", "member_log_channel_id",
@@ -105,7 +109,9 @@ class SecurityV7Cog(commands.Cog):
                 protected_assets INTEGER NOT NULL DEFAULT 1, behavior_baselines INTEGER NOT NULL DEFAULT 1,
                 privilege_paths INTEGER NOT NULL DEFAULT 1, evidence_chain INTEGER NOT NULL DEFAULT 1,
                 offhost_replication INTEGER NOT NULL DEFAULT 1, predictive_alerts INTEGER NOT NULL DEFAULT 1,
-                emergency_minimal INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                emergency_minimal INTEGER NOT NULL DEFAULT 1,
+                custom_elevated INTEGER, custom_high INTEGER, custom_critical INTEGER, custom_panic INTEGER,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )""",
             """CREATE TABLE IF NOT EXISTS guardian_v7_assets (
                 guild_id INTEGER NOT NULL, asset_type TEXT NOT NULL, asset_id INTEGER NOT NULL,
@@ -213,7 +219,12 @@ class SecurityV7Cog(commands.Cog):
             return True
         config = await self._config(interaction.guild.id)
         command_name = interaction.command.qualified_name.casefold()
-        if not config["two_person"] or command_name not in CATASTROPHIC:
+        dynamic_catastrophic = command_name in CATASTROPHIC
+        if command_name == "guardian panic" and getattr(interaction.namespace, "enabled", True) is False:
+            dynamic_catastrophic = True
+        if command_name == "security automod" and getattr(interaction.namespace, "enabled", True) is False:
+            dynamic_catastrophic = True
+        if not config["two_person"] or not dynamic_catastrophic:
             return True
         now = datetime.now(UTC)
         rows = await self.bot.database.fetchall(
@@ -597,7 +608,25 @@ class SecurityV7Cog(commands.Cog):
             config = await self._config(guild.id)
             profile = str(config["profile"])
             score = self.score(guild.id)
-            new_state = state_from_score(score, profile)
+            if profile == "custom" and all(config[name] is not None for name in ("custom_elevated", "custom_high", "custom_critical", "custom_panic")):
+                thresholds = {
+                    "elevated": int(config["custom_elevated"]),
+                    "high": int(config["custom_high"]),
+                    "critical": int(config["custom_critical"]),
+                    "panic": int(config["custom_panic"]),
+                }
+                if score >= thresholds["panic"]:
+                    new_state = "PANIC"
+                elif score >= thresholds["critical"]:
+                    new_state = "CRITICAL"
+                elif score >= thresholds["high"]:
+                    new_state = "HIGH"
+                elif score >= thresholds["elevated"]:
+                    new_state = "ELEVATED"
+                else:
+                    new_state = "NORMAL"
+            else:
+                new_state = state_from_score(score, profile)
             if minimal and STATE_ORDER.index(new_state) < STATE_ORDER.index("HIGH"):
                 new_state = "HIGH"
             await self._set_state(guild, new_state, score)
@@ -745,17 +774,97 @@ class SecurityV7Cog(commands.Cog):
         endpoint = os.getenv("GUARDIAN_BACKUP_ENDPOINT", "").strip()
         if not endpoint or self.session is None:
             return "not configured"
+        encryption_key = os.getenv("GUARDIAN_BACKUP_ENCRYPTION_KEY", "").strip()
+        if not encryption_key:
+            return "encryption key not configured"
+        try:
+            cipher = Fernet(encryption_key.encode("utf-8"))
+        except Exception:
+            return "invalid encryption key"
         backup = await self.bot.database.backup("v7-offhost")
         if backup is None:
             return "backup unavailable"
+        encrypted = cipher.encrypt(backup.read_bytes())
         data = aiohttp.FormData()
-        data.add_field("backup", backup.read_bytes(), filename=backup.name, content_type="application/octet-stream")
+        data.add_field(
+            "backup",
+            encrypted,
+            filename=backup.name + ".fernet",
+            content_type="application/octet-stream",
+        )
         headers = {}
         token = os.getenv("GUARDIAN_BACKUP_TOKEN", "")
         if token:
             headers["Authorization"] = "Bearer " + token
         async with self.session.post(endpoint, data=data, headers=headers) as response:
-            return "uploaded" if response.status < 400 else f"HTTP {response.status}"
+            return "encrypted upload complete" if response.status < 400 else f"HTTP {response.status}"
+
+    async def simulate_role_permission(self, guild: discord.Guild, role: discord.Role, permission_name: str) -> dict[str, Any]:
+        if permission_name not in DANGEROUS:
+            raise ValueError("Unsupported permission")
+        holders = [member for member in role.members if not member.bot]
+        reachable_roles = []
+        if permission_name in {"administrator", "manage_roles"}:
+            for target in guild.roles:
+                if target.is_default() or target.managed or target >= role:
+                    continue
+                if any(getattr(target.permissions, name, False) for name in DANGEROUS):
+                    reachable_roles.append(target)
+        bot_member = guild.me
+        guardian_can_revoke = bool(bot_member and role < bot_member.top_role)
+        return {
+            "permission": permission_name,
+            "holders": len(holders),
+            "holder_ids": [member.id for member in holders[:25]],
+            "reachable_dangerous_roles": len(reachable_roles),
+            "reachable_names": [target.name for target in reachable_roles[:20]],
+            "guardian_can_revoke": guardian_can_revoke,
+            "risk": (
+                "CRITICAL"
+                if permission_name == "administrator"
+                else "HIGH"
+                if permission_name in {"manage_roles", "manage_guild", "manage_webhooks"}
+                else "ELEVATED"
+            ),
+        }
+
+    async def chaos_report(self, guild: discord.Guild) -> str:
+        from esn_guardian.cogs.security_v6 import (
+            adaptive_risk_score,
+            attack_chain_score,
+            raid_fingerprint_score,
+            scam_text_score,
+        )
+        chain = attack_chain_score(["webhook_change", "permission_escalation", "channel_delete"])
+        raid = raid_fingerprint_score([0, 0, 1, 1, 2, 2], ["raider"] * 6)
+        risk = adaptive_risk_score(
+            account_age_days=0,
+            weighted_cases=18,
+            dangerous_roles=1,
+            failed_verifications=2,
+            external_app_events=1,
+            raid_cluster_score=10,
+        )
+        scam = scam_text_score(
+            "Free Nitro! Verify your account and scan this QR: https://bit.ly/example",
+            ("verify-qr.png",),
+        )
+        modules = all(
+            self.bot.get_cog(name) is not None
+            for name in ("SecurityCog", "AdvancedSecurityCog", "ProtectionV6Cog", "SecurityV7Cog")
+        )
+        checks = {
+            "compromised staff attack chain": chain >= 28,
+            "coordinated young-account raid": raid >= 18,
+            "adaptive high-risk account": risk >= 75,
+            "QR/link scam composite": scam >= 7,
+            "critical protection modules loaded": modules,
+        }
+        return (
+            "**Guardian v7 non-destructive chaos test**\n"
+            + "\n".join(f"• {'PASS' if ok else 'FAIL'} — {name}" for name, ok in checks.items())
+            + f"\nAttack-chain score: {chain} • Raid score: {raid} • Account risk: {risk} • Scam score: {scam}"
+        )
 
     async def benchmark(self, guild: discord.Guild) -> dict[str, Any]:
         checks = []
@@ -831,6 +940,31 @@ class SecurityV7Cog(commands.Cog):
         )
         await respond(interaction, f"Guardian v7 profile set to {profile.name}.")
 
+    @shield.command(name="custom-policy", description="Set custom Guardian v7 predictive state thresholds.")
+    @guild_only()
+    @guild_owner_only()
+    async def custom_policy(
+        self,
+        interaction: discord.Interaction,
+        elevated: app_commands.Range[int, 5, 70],
+        high: app_commands.Range[int, 10, 80],
+        critical: app_commands.Range[int, 15, 90],
+        panic: app_commands.Range[int, 20, 100],
+        two_person: bool = True,
+    ) -> None:
+        if not (elevated < high < critical < panic):
+            await respond(interaction, "Thresholds must increase in order: elevated < high < critical < panic.")
+            return
+        await self.bot.database.execute(
+            "UPDATE guardian_v7_config SET profile='custom',two_person=?,custom_elevated=?,custom_high=?,"
+            "custom_critical=?,custom_panic=?,updated_at=CURRENT_TIMESTAMP WHERE guild_id=?",
+            (1 if two_person else 0, elevated, high, critical, panic, interaction.guild_id),
+        )
+        await respond(
+            interaction,
+            f"Custom Guardian v7 policy saved: ELEVATED {elevated}, HIGH {high}, CRITICAL {critical}, PANIC {panic}.",
+        )
+
     @shield.command(name="approve", description="Approve another staff member's protected catastrophic action.")
     @guild_only()
     async def shield_approve(self, interaction: discord.Interaction, code: str) -> None:
@@ -898,6 +1032,78 @@ class SecurityV7Cog(commands.Cog):
                 (guild.id, kind, asset_id, label, interaction.user.id),
             )
         await respond(interaction, f"Guardian v7 canaries created: {role.name} and {channel.mention}. Legitimate staff should never modify them.")
+
+    @shield.command(name="simulate-role", description="Simulate the risk of granting a dangerous permission to a role.")
+    @app_commands.choices(permission=[
+        app_commands.Choice(name="Administrator", value="administrator"),
+        app_commands.Choice(name="Manage Server", value="manage_guild"),
+        app_commands.Choice(name="Manage Roles", value="manage_roles"),
+        app_commands.Choice(name="Manage Channels", value="manage_channels"),
+        app_commands.Choice(name="Manage Webhooks", value="manage_webhooks"),
+        app_commands.Choice(name="Ban Members", value="ban_members"),
+        app_commands.Choice(name="Kick Members", value="kick_members"),
+        app_commands.Choice(name="Moderate Members", value="moderate_members"),
+    ])
+    @guild_only()
+    @staff_only()
+    async def simulate_role(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        permission: app_commands.Choice[str],
+    ) -> None:
+        assert interaction.guild is not None
+        data = await self.simulate_role_permission(interaction.guild, role, permission.value)
+        await respond(
+            interaction,
+            (
+                f"**Guardian permission simulation — {role.name}**\n"
+                f"Proposed permission: {permission.name}\n"
+                f"Risk: {data['risk']}\n"
+                f"Members inheriting it: {data['holders']}\n"
+                f"Dangerous roles reachable: {data['reachable_dangerous_roles']}\n"
+                f"Guardian can revoke this role: {'yes' if data['guardian_can_revoke'] else 'NO'}\n"
+                f"Reachable roles: {', '.join(data['reachable_names']) if data['reachable_names'] else 'none'}"
+            ),
+        )
+
+    @shield.command(name="chaos-test", description="Safely simulate attack scenarios without changing the server.")
+    @guild_only()
+    @staff_only()
+    async def chaos_test(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        await respond(interaction, await self.chaos_report(interaction.guild))
+
+    @shield.command(name="reputation", description="Show Guardian's cross-server application, bot, or webhook reputation.")
+    @app_commands.choices(subject_type=[
+        app_commands.Choice(name="Application", value="application"),
+        app_commands.Choice(name="Bot", value="bot"),
+        app_commands.Choice(name="Webhook", value="webhook"),
+    ])
+    @guild_only()
+    @staff_only()
+    async def reputation(
+        self,
+        interaction: discord.Interaction,
+        subject_type: app_commands.Choice[str],
+        subject_id: str,
+    ) -> None:
+        row = await self.bot.database.fetchone(
+            "SELECT * FROM guardian_v7_reputation WHERE subject_type=? AND subject_key=?",
+            (subject_type.value, subject_id),
+        )
+        if row is None:
+            await respond(interaction, "Guardian has no negative reputation evidence for that subject.")
+            return
+        await respond(
+            interaction,
+            (
+                f"**Guardian reputation — {subject_type.name} {subject_id}**\n"
+                f"Score: {row['reputation']} (0 is neutral; more negative is worse)\n"
+                f"Evidence count: {row['evidence_count']}\n"
+                f"Latest reason: {row['last_reason']}"
+            ),
+        )
 
     @shield.command(name="benchmark", description="Run a safe non-destructive Guardian protection benchmark.")
     @guild_only()
@@ -992,7 +1198,36 @@ class SecurityV7Cog(commands.Cog):
             (interaction.guild_id, source_type.value, source_id, interaction.user.id, reason[:500]),
         )
         await self._evidence(interaction.guild_id, interaction.user.id, "FALSE_POSITIVE_REVIEW", source_id, {"source_type": source_type.value, "reason": reason[:500]})
-        await respond(interaction, f"Marked {source_type.name} #{source_id} as reviewed/legitimate.")
+        if source_type.value == "event":
+            event_row = await self.bot.database.fetchone(
+                "SELECT event_id,kind,target_id FROM guardian_v6_events WHERE guild_id=? AND event_id=?",
+                (interaction.guild_id, source_id),
+            )
+            if event_row is not None:
+                self.recent[interaction.guild_id] = deque(
+                    event for event in self.recent[interaction.guild_id]
+                    if int(event["event_id"]) != source_id
+                )
+                kind = str(event_row["kind"])
+                target_id = event_row["target_id"]
+                subject_type = (
+                    "application" if kind == "external_app"
+                    else "bot" if kind == "unapproved_bot"
+                    else "webhook" if kind == "webhook_change"
+                    else None
+                )
+                if subject_type is not None and target_id is not None:
+                    reputation_row = await self.bot.database.fetchone(
+                        "SELECT reputation FROM guardian_v7_reputation WHERE subject_type=? AND subject_key=?",
+                        (subject_type, str(target_id)),
+                    )
+                    if reputation_row is not None:
+                        adjusted = min(0, int(reputation_row["reputation"]) + 20)
+                        await self.bot.database.execute(
+                            "UPDATE guardian_v7_reputation SET reputation=?,last_reason=? WHERE subject_type=? AND subject_key=?",
+                            (adjusted, "False-positive review: " + reason[:300], subject_type, str(target_id)),
+                        )
+        await respond(interaction, f"Marked {source_type.name} #{source_id} as reviewed/legitimate and recalibrated current v7 risk where applicable.")
 
     @shield.command(name="integrity", description="Verify Guardian's cryptographic incident evidence chain.")
     @guild_only()
