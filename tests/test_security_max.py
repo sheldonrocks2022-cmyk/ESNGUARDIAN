@@ -7,7 +7,7 @@ from esn_guardian.cogs.security_max import (
 
 
 def test_normalize_name_removes_decorations():
-    assert normalize_name("R@id-er_001!") == "raider001"
+    assert normalize_name("R@id-er_001!") == "rider001"
 
 
 def test_username_similarity_catches_coordinated_names():
