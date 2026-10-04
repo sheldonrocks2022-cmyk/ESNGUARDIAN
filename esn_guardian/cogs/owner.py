@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import command_embed, notify_user, respond
+from esn_guardian.cogs.common import command_embed, notify_user, respond, defer_response
 
 
 OWNER_IDS = {
@@ -57,7 +57,7 @@ class OwnerCog(commands.Cog):
     @app_commands.command(description="Create a verified backup of Guardian's SQLite database.")
     @owner_only()
     async def backupdb(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         try:
             path = await self.bot.database.backup("manual")
         except Exception:
@@ -107,7 +107,7 @@ class OwnerCog(commands.Cog):
                 return
             guilds = [guild]
 
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         synced = 0
         failed = 0
         command_count = 0
@@ -141,7 +141,7 @@ class OwnerCog(commands.Cog):
             await respond(interaction, "A configured bot owner cannot be globally banned.")
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await self.bot.database.execute(
             "INSERT INTO global_bans (user_id, reason, banned_by_id) VALUES (?, ?, ?) "
             "ON CONFLICT(user_id) DO UPDATE SET reason = excluded.reason, banned_by_id = excluded.banned_by_id",
@@ -197,7 +197,7 @@ class OwnerCog(commands.Cog):
         except ValueError:
             await respond(interaction, "Provide a numeric user ID.")
             return
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await self.bot.database.execute("DELETE FROM global_bans WHERE user_id = ?", (target_id,))
         self._global_bans.pop(target_id, None)
         unbanned = 0
@@ -242,7 +242,7 @@ class OwnerCog(commands.Cog):
     @app_commands.command(description="Send an announcement to configured system log channels.")
     @owner_only()
     async def broadcast(self, interaction: discord.Interaction, message: str) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         delivered = 0
         for guild in self.bot.guilds:
             settings = await self.bot.database.setting(guild.id)
