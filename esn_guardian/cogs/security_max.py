@@ -587,6 +587,198 @@ class SecurityMaxCog(commands.Cog):
             "checkpoint": checkpoint_id,
         }
 
+    async def repair_core(self, guild: discord.Guild, repaired_by_id: int) -> dict[str, object]:
+        """Repair only the core checks reported by /guardianmax self-test."""
+        if hasattr(self.bot, "suppress_security_events"):
+            self.bot.suppress_security_events(
+                guild.id,
+                seconds=240,
+                reason="Guardian MAX targeted core repair",
+            )
+
+        await self.bot.database.ensure_guild(guild.id)
+        backup = await self.bot.database.backup("guardianmax-core-repair")
+
+        quarantine = await self._ensure_role(guild, "Guardian Quarantine")
+        unverified = await self._ensure_role(guild, "Guardian Unverified")
+        verified = await self._ensure_role(guild, "Guardian Verified")
+
+        verification_channel = discord.utils.get(guild.text_channels, name="guardian-verification")
+        if verification_channel is None:
+            verification_channel = await guild.create_text_channel(
+                "guardian-verification",
+                reason="Guardian MAX targeted verification repair",
+            )
+
+        def overwrite_equal(
+            current: discord.PermissionOverwrite,
+            desired: discord.PermissionOverwrite,
+        ) -> bool:
+            return current.pair() == desired.pair()
+
+        verification_default = discord.PermissionOverwrite(view_channel=False)
+        verification_unverified = discord.PermissionOverwrite(
+            view_channel=True,
+            read_message_history=True,
+            send_messages=False,
+            add_reactions=False,
+            attach_files=False,
+            use_external_apps=False,
+        )
+        deny = discord.PermissionOverwrite(
+            view_channel=False,
+            send_messages=False,
+            add_reactions=False,
+            attach_files=False,
+            connect=False,
+            speak=False,
+            create_public_threads=False,
+            create_private_threads=False,
+            send_messages_in_threads=False,
+            use_external_apps=False,
+        )
+
+        changed_overwrites = 0
+        if not overwrite_equal(
+            verification_channel.overwrites_for(guild.default_role),
+            verification_default,
+        ):
+            if await self._safe_overwrite(verification_channel, guild.default_role, verification_default):
+                changed_overwrites += 1
+
+        if not overwrite_equal(
+            verification_channel.overwrites_for(unverified),
+            verification_unverified,
+        ):
+            if await self._safe_overwrite(verification_channel, unverified, verification_unverified):
+                changed_overwrites += 1
+
+        if not overwrite_equal(
+            verification_channel.overwrites_for(quarantine),
+            deny,
+        ):
+            if await self._safe_overwrite(verification_channel, quarantine, deny):
+                changed_overwrites += 1
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def ensure_denied(channel: discord.abc.GuildChannel, role: discord.Role) -> bool:
+            if channel.id == verification_channel.id and role.id == unverified.id:
+                return False
+            current = channel.overwrites_for(role)
+            if overwrite_equal(current, deny):
+                return False
+            async with semaphore:
+                return await self._safe_overwrite(channel, role, deny)
+
+        jobs = []
+        for channel in guild.channels:
+            if channel.id == verification_channel.id:
+                continue
+            jobs.append(ensure_denied(channel, quarantine))
+            jobs.append(ensure_denied(channel, unverified))
+        if jobs:
+            results = await asyncio.gather(*jobs, return_exceptions=False)
+            changed_overwrites += sum(1 for result in results if result)
+
+        verification = await self.bot.database.fetchone(
+            "SELECT * FROM verification_config WHERE guild_id=?",
+            (guild.id,),
+        )
+        message_id = int(verification["message_id"] or 0) if verification else 0
+        panel_ok = False
+        if message_id:
+            try:
+                await asyncio.wait_for(
+                    verification_channel.fetch_message(message_id),
+                    timeout=4.0,
+                )
+                panel_ok = True
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
+                panel_ok = False
+
+        if not panel_ok:
+            embed = discord.Embed(
+                title="ESN Guardian Verification v2 MAX",
+                description=(
+                    "Press **VERIFY** to pass Guardian's adaptive verification.\n"
+                    "Guardian checks account age, human verification, and adaptive security risk."
+                ),
+                color=discord.Color.green(),
+            )
+            panel = await verification_channel.send(
+                embed=embed,
+                view=VerificationView(self.bot),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            message_id = panel.id
+
+        await self.bot.database.execute(
+            "UPDATE verification_config SET enabled=1,channel_id=?,message_id=?,verified_role_id=?,"
+            "unverified_role_id=?,min_account_age_days=3,captcha_enabled=1,cooldown_seconds=20 "
+            "WHERE guild_id=?",
+            (
+                verification_channel.id,
+                message_id,
+                verified.id,
+                unverified.id,
+                guild.id,
+            ),
+        )
+        await self.bot.database.execute(
+            "INSERT OR REPLACE INTO panel_messages (guild_id,panel_type,channel_id,message_id) "
+            "VALUES (?,'verification',?,?)",
+            (guild.id, verification_channel.id, message_id),
+        )
+        await self.bot.database.execute(
+            "UPDATE raid_config SET quarantine_role_id=? WHERE guild_id=?",
+            (quarantine.id, guild.id),
+        )
+        await self.bot.database.execute(
+            "INSERT INTO guardian_max_config "
+            "(guild_id,quarantine_role_id,verification_channel_id,verified_role_id,unverified_role_id) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET "
+            "verification_v2=1,quarantine_max=1,"
+            "quarantine_role_id=excluded.quarantine_role_id,"
+            "verification_channel_id=excluded.verification_channel_id,"
+            "verified_role_id=excluded.verified_role_id,"
+            "unverified_role_id=excluded.unverified_role_id,"
+            "updated_at=CURRENT_TIMESTAMP",
+            (guild.id, quarantine.id, verification_channel.id, verified.id, unverified.id),
+        )
+
+        evidence_result: dict[str, object] = {
+            "ok": False,
+            "repaired": 0,
+            "reason": "Security v7 unavailable.",
+        }
+        v7 = self.bot.get_cog("SecurityV7Cog")
+        if v7 is not None and hasattr(v7, "verify_chain"):
+            before = await v7.verify_chain(guild.id)
+            if before["ok"]:
+                evidence_result = {"ok": True, "repaired": 0, "reason": "Evidence chain was already valid."}
+            elif hasattr(v7, "repair_chain"):
+                evidence_result = await v7.repair_chain(guild.id, repaired_by_id)
+                after = await v7.verify_chain(guild.id)
+                if not after["ok"]:
+                    evidence_result = {
+                        **evidence_result,
+                        "ok": False,
+                        "reason": f"Repair verification failed: {after['reason']}",
+                    }
+
+        return {
+            "backup": backup.name if backup else "unavailable",
+            "quarantine_role": quarantine.id,
+            "verified_role": verified.id,
+            "unverified_role": unverified.id,
+            "verification_channel": verification_channel.id,
+            "verification_message": message_id,
+            "changed_overwrites": changed_overwrites,
+            "evidence": evidence_result,
+        }
+
     async def _verification_on_join(self, member: discord.Member, config) -> None:
         if not bool(config["verification_v2"]):
             return
@@ -1100,6 +1292,29 @@ class SecurityMaxCog(commands.Cog):
             f"Containment overwrites applied: {result['overwrites']}\n"
             f"Recovery checkpoint: #{result['checkpoint'] if result['checkpoint'] else 'not created'}\n"
             "Verification v2, Quarantine MAX, Strict Links, Raid v4, Anti-Nuke v2 and maximum v7 policy are enabled.",
+        )
+
+    @guardianmax.command(name="repair-core", description="Repair failed Guardian MAX core self-test checks.")
+    @guild_only()
+    @guild_owner_only()
+    async def repair_core_command(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        await defer_response(interaction)
+        result = await self.repair_core(interaction.guild, interaction.user.id)
+        evidence = result["evidence"]
+        await respond(
+            interaction,
+            "**Guardian MAX targeted core repair complete**\n"
+            f"Safety backup: `{result['backup']}`\n"
+            f"Verification channel: <#{result['verification_channel']}>\n"
+            f"Verified role: <@&{result['verified_role']}>\n"
+            f"Unverified role: <@&{result['unverified_role']}>\n"
+            f"Quarantine role: <@&{result['quarantine_role']}>\n"
+            f"Permission overwrites changed: {result['changed_overwrites']}\n"
+            f"Evidence chain: {'REPAIRED/VALID' if evidence['ok'] else 'FAILED'} "
+            f"({evidence.get('repaired', 0)} records re-chained)\n"
+            f"Evidence detail: {evidence['reason']}\n\n"
+            "Now run `/guardianmax self-test` again.",
         )
 
     @guardianmax.command(name="self-test", description="Run Guardian MAX's full protection self-test.")
