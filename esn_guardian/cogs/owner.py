@@ -145,11 +145,29 @@ class OwnerCog(commands.Cog):
         failed = 0
         target = discord.Object(id=target_id)
         for guild in self.bot.guilds:
+            outcome = "failed"
             try:
                 await guild.ban(target, reason=f"ESN Guardian global ban: {reason}", delete_message_seconds=0)
                 banned += 1
+                outcome = "banned"
             except (discord.Forbidden, discord.HTTPException):
                 failed += 1
+            v7 = self.bot.get_cog("SecurityV7Cog")
+            if v7 is not None and hasattr(v7, "_evidence"):
+                try:
+                    await v7._evidence(
+                        guild.id,
+                        interaction.user.id,
+                        "GLOBAL_BAN_ENFORCEMENT",
+                        target_id,
+                        {
+                            "reason": reason[:500],
+                            "outcome": outcome,
+                            "source": "bot_owner_globalban",
+                        },
+                    )
+                except Exception:
+                    pass
         await self._notify_user_by_id(
             target_id,
             f"You have been globally banned by ESN Guardian.\nReason: {reason}",
@@ -171,13 +189,28 @@ class OwnerCog(commands.Cog):
         failed = 0
         target = discord.Object(id=target_id)
         for guild in self.bot.guilds:
+            outcome = "not_banned"
             try:
                 await guild.unban(target, reason="ESN Guardian global ban removed")
                 unbanned += 1
+                outcome = "unbanned"
             except discord.NotFound:
-                continue
+                outcome = "not_banned"
             except (discord.Forbidden, discord.HTTPException):
                 failed += 1
+                outcome = "failed"
+            v7 = self.bot.get_cog("SecurityV7Cog")
+            if v7 is not None and hasattr(v7, "_evidence"):
+                try:
+                    await v7._evidence(
+                        guild.id,
+                        interaction.user.id,
+                        "GLOBAL_BAN_REMOVAL",
+                        target_id,
+                        {"outcome": outcome, "source": "bot_owner_globalunban"},
+                    )
+                except Exception:
+                    pass
         await self._notify_user_by_id(target_id, "Your ESN Guardian global ban has been removed.")
         await respond(interaction, f"Removed `{target_id}` from the global-ban list. Unbanned in {unbanned} server(s); failed in {failed}.")
 
