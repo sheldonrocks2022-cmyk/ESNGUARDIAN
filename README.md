@@ -23,6 +23,39 @@ python bot.py
 
 Never delete `data/` during an update. It contains the persistent Guardian database, backups, release guard state, status data, and last-known-good release snapshot.
 
+## Guardian MAX integrated layer
+
+Guardian MAX sits above the existing v6/v7 stack and turns the remaining optional hardening features into one coordinated protection layer.
+
+It adds:
+
+- Verification v2 MAX with automatic verified/unverified roles, a dedicated verification channel, human challenges, account-age rules, adaptive risk review, and quarantine escalation
+- Quarantine MAX with timed containment, dangerous-role stripping, automatic expiry, and safe role restoration
+- Link & Scam Protection MAX with composite phishing scoring, punycode/shortener/IP-link checks, zero-width text detection, QR-bait detection, and dangerous attachment screening
+- Raid Engine v4 identity-cluster detection using account age, default-avatar signals, username similarity, and coordinated join bursts
+- Anti-Nuke v2 slow-chain detection across five-minute audit-log windows, designed to catch attacks that deliberately stay below the fast anti-nuke threshold
+- Sentinel v2 duplicate-safe signal processing and correlation
+- Guardian AI Security Analyst server/member explanations through `/guardianmax analyst` and ESNG
+- Automatic six-hour encrypted off-host replication when the existing v7 backup endpoint/key are configured
+- Local MAX heartbeat JSON plus optional external heartbeat push
+- Full `/guardianmax self-test`
+- `/guardianmax setup-max` safe baseline automation
+- Interactive `/guardianmax center` security center
+
+Main Guardian MAX commands:
+
+- `/guardianmax status`
+- `/guardianmax setup-max`
+- `/guardianmax self-test`
+- `/guardianmax center`
+- `/guardianmax quarantine`
+- `/guardianmax release`
+- `/guardianmax analyst`
+- `/guardianmax backup`
+- `/guardianmax watchdog`
+
+`/guardianmax setup-max` intentionally affects **new-member access only** through the Guardian Unverified role. Existing members are not bulk-assigned that role.
+
 ## Guardian Protection v7 MAX
 
 v7 builds on the v6 anti-nuke, raid, rollback, Sentinel, Overwatch, Resilience, and adaptive-containment systems.
@@ -206,6 +239,8 @@ GUARDIAN_DASHBOARD_TOKEN=
 GUARDIAN_STATUS_URL=
 GUARDIAN_ALERT_WEBHOOK=
 GUARDIAN_EXPECTED_GUILD_IDS=
+GUARDIAN_WATCHDOG_HEARTBEAT_URL=
+GUARDIAN_WATCHDOG_HEARTBEAT_TOKEN=
 ```
 
 Encrypted off-host backups:
