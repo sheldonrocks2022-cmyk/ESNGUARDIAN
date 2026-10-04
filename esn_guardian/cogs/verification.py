@@ -34,6 +34,54 @@ async def _verification_config(bot: commands.Bot, guild_id: int):
     )
 
 
+async def _sync_verified_access(
+    bot: commands.Bot,
+    member: discord.Member,
+    config,
+) -> tuple[bool, str]:
+    """Make Discord roles match Guardian's verified state."""
+    verified_role = (
+        member.guild.get_role(config["verified_role_id"])
+        if config["verified_role_id"]
+        else None
+    )
+    unverified_role = (
+        member.guild.get_role(config["unverified_role_id"])
+        if config["unverified_role_id"]
+        else None
+    )
+    if (
+        verified_role is None
+        or not safe_public_role(verified_role, member.guild)
+        or (unverified_role is not None and not safe_public_role(unverified_role, member.guild))
+        or verified_role == unverified_role
+    ):
+        return False, "Verification is incomplete: ask staff to configure the verified role."
+
+    if hasattr(bot, "suppress_security_events"):
+        bot.suppress_security_events(
+            member.guild.id,
+            seconds=30,
+            reason="Guardian verification role transition",
+        )
+
+    try:
+        if verified_role not in member.roles:
+            await member.add_roles(
+                verified_role,
+                reason="ESN Guardian verification: unlock server access",
+            )
+        if unverified_role is not None and unverified_role in member.roles:
+            await member.remove_roles(
+                unverified_role,
+                reason="ESN Guardian verification: hide verification gate",
+            )
+    except (discord.Forbidden, discord.HTTPException):
+        return False, "I could not update your verification roles. Staff need to check my role permissions."
+
+    return True, "Verification roles synchronized."
+
+
 async def _complete_verification(
     bot: commands.Bot,
     interaction: discord.Interaction,
@@ -57,43 +105,13 @@ async def _complete_verification(
         await respond(interaction, f"Your account must be at least {minimum_age} days old.")
         return
 
-    verified_role = (
-        interaction.guild.get_role(config["verified_role_id"])
-        if config["verified_role_id"]
-        else None
+    roles_ok, roles_message = await _sync_verified_access(
+        bot,
+        interaction.user,
+        config,
     )
-    unverified_role = (
-        interaction.guild.get_role(config["unverified_role_id"])
-        if config["unverified_role_id"]
-        else None
-    )
-    if (
-        verified_role is None
-        or not safe_public_role(verified_role, interaction.guild)
-        or (unverified_role is not None and not safe_public_role(unverified_role, interaction.guild))
-        or verified_role == unverified_role
-    ):
-        await respond(
-            interaction,
-            "Verification is incomplete: ask staff to configure the verified role.",
-        )
-        return
-
-    try:
-        await interaction.user.add_roles(
-            verified_role,
-            reason="ESN Guardian verification",
-        )
-        if unverified_role and unverified_role in interaction.user.roles:
-            await interaction.user.remove_roles(
-                unverified_role,
-                reason="ESN Guardian verification",
-            )
-    except (discord.Forbidden, discord.HTTPException):
-        await respond(
-            interaction,
-            "I could not update your verification roles. Staff need to check my role permissions.",
-        )
+    if not roles_ok:
+        await respond(interaction, roles_message)
         return
 
     await bot.database.execute(
@@ -198,7 +216,18 @@ class VerificationView(discord.ui.View):
             (interaction.guild.id, interaction.user.id),
         )
         if existing:
-            await respond(interaction, "You are already verified.")
+            roles_ok, roles_message = await _sync_verified_access(
+                self.bot,
+                interaction.user,
+                config,
+            )
+            if roles_ok:
+                await respond(
+                    interaction,
+                    "You are already verified. I refreshed your access and removed the verification gate.",
+                )
+            else:
+                await respond(interaction, roles_message)
             return
 
         cooldown = max(5, int(config["cooldown_seconds"] or 30))
