@@ -68,6 +68,54 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         if resilience is not None:
             sections.append(await resilience.status_report(guild))
 
+        if protection_v6 is not None:
+            sections.append(await protection_v6.status_report(guild))
+            sections.append(await protection_v6.highest_risk_report(guild))
+
+        if v7 is not None:
+            chain = await v7.verify_chain(guild.id)
+            sections.append(
+                "**Guardian v7 predictive shield**\n"
+                f"State: {v7.state[guild.id]} • Risk: {v7.score(guild.id)}/100\n"
+                f"Evidence chain: {'VERIFIED' if chain['ok'] else 'FAILED'} ({chain['checked']} records)"
+            )
+
+        if intel is not None:
+            sections.append(await intel.threat_report(guild))
+            recommendations = await intel.recommendations(guild)
+            sections.append(
+                "**Guardian next actions**\n"
+                + "\n".join(f"• {item}" for item in recommendations)
+            )
+
+        return (
+            "\n\n".join(sections)[:4000]
+            if sections
+            else "Guardian live intelligence is not ready yet."
+        )
+
+    async def _answer(self, guild: discord.Guild, prompt: str) -> str:
+        p = prompt.casefold().strip()
+        intel = self._intel()
+        overwatch = self._overwatch()
+        sentinel = self._sentinel()
+        resilience = self._resilience()
+        protection_v6 = self._protection_v6()
+        v7 = self._v7()
+
+        if not p or _contains(p, "help", "what can you do", "what do you know"):
+            return (
+                "**ESNG Intelligence v7 MAX**\n"
+                "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
+                "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
+                "Protection v6 adaptive containment, Guardian v7 predictive state, trust graphs, staff behavior baselines, "
+                "privilege-path analysis, protected assets, canaries, evidence-chain verification, recovery readiness, "
+                "Sentinel anomaly signals, backups, anti-nuke, raids, external apps, webhooks, and integrations.\n"
+                "Try: ESNG guardian v7 • ESNG trust graph • ESNG privilege paths • ESNG incident replay • "
+                "ESNG protection benchmark • ESNG full security report"
+            )
+
+
         if v7 is not None:
             if _contains(
                 p,
@@ -126,53 +174,25 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             if _contains(p, "chaos test", "simulate attack", "test attack scenarios"):
                 return await v7.chaos_report(guild)
 
-        if protection_v6 is not None:
-            sections.append(await protection_v6.status_report(guild))
-            sections.append(await protection_v6.highest_risk_report(guild))
-
-        if v7 is not None:
-            chain = await v7.verify_chain(guild.id)
-            sections.append(
-                "**Guardian v7 predictive shield**\n"
-                f"State: {v7.state[guild.id]} • Risk: {v7.score(guild.id)}/100\n"
-                f"Evidence chain: {'VERIFIED' if chain['ok'] else 'FAILED'} ({chain['checked']} records)"
-            )
-
-        if intel is not None:
-            sections.append(await intel.threat_report(guild))
-            recommendations = await intel.recommendations(guild)
-            sections.append(
-                "**Guardian next actions**\n"
-                + "\n".join(f"• {item}" for item in recommendations)
-            )
-
-        return (
-            "\n\n".join(sections)[:4000]
-            if sections
-            else "Guardian live intelligence is not ready yet."
-        )
-
-    async def _answer(self, guild: discord.Guild, prompt: str) -> str:
-        p = prompt.casefold().strip()
-        intel = self._intel()
-        overwatch = self._overwatch()
-        sentinel = self._sentinel()
-        resilience = self._resilience()
-        protection_v6 = self._protection_v6()
-        v7 = self._v7()
-
-        if not p or _contains(p, "help", "what can you do", "what do you know"):
+        if _contains(
+            p,
+            "runtime health",
+            "guardian lag",
+            "bot lag",
+            "gateway latency",
+        ):
+            runtime = dict(getattr(self.bot, "runtime_health", {}))
+            last_check = runtime.get("last_check")
+            if hasattr(last_check, "isoformat"):
+                last_check = last_check.isoformat()
             return (
-                "**ESNG Intelligence v7 MAX**\n"
-                "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
-                "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
-                "Protection v6 adaptive containment, Guardian v7 predictive state, trust graphs, staff behavior baselines, "
-                "privilege-path analysis, protected assets, canaries, evidence-chain verification, recovery readiness, "
-                "Sentinel anomaly signals, backups, anti-nuke, raids, external apps, webhooks, and integrations.\n"
-                "Try: ESNG guardian v7 • ESNG trust graph • ESNG privilege paths • ESNG incident replay • "
-                "ESNG protection benchmark • ESNG full security report"
+                "**Guardian runtime health**\n"
+                f"Gateway latency: {float(runtime.get('gateway_latency_ms', 0.0) or 0.0):.1f} ms\n"
+                f"Event-loop lag: {float(runtime.get('event_loop_lag_ms', 0.0) or 0.0):.1f} ms\n"
+                f"Database health cache: {'OK' if runtime.get('database_ok', True) else 'FAILED'}\n"
+                f"Guilds: {int(runtime.get('guilds', 0) or 0)} • Members: {int(runtime.get('members', 0) or 0)}\n"
+                f"Last runtime check: {last_check or 'not recorded yet'}"
             )
-
 
         if protection_v6 is not None:
             if _contains(
