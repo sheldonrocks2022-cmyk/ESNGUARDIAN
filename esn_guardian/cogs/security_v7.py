@@ -20,7 +20,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, guild_owner_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, guild_owner_only, log_event, respond, staff_only, defer_response
 
 LOG = logging.getLogger("esn_guardian.security_v7")
 
@@ -1240,7 +1240,7 @@ class SecurityV7Cog(commands.Cog):
     @guild_owner_only()
     async def canary(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         guild = interaction.guild
         role = await guild.create_role(name="Guardian Canary • DO NOT TOUCH", permissions=discord.Permissions.none(), mentionable=False, reason="Guardian v7 canary")
         overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False)}
@@ -1331,7 +1331,7 @@ class SecurityV7Cog(commands.Cog):
     @staff_only()
     async def benchmark_cmd(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         result = await self.benchmark(interaction.guild)
         failed = [name for name, ok in result["checks"] if not ok]
         await respond(interaction, (
@@ -1461,7 +1461,7 @@ class SecurityV7Cog(commands.Cog):
     @guild_only()
     @guild_owner_only()
     async def backup_offhost(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, "Off-host backup result: " + await self.offhost_backup())
 
 
