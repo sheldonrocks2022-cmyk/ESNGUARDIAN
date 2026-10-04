@@ -84,11 +84,18 @@ class OwnerCog(commands.Cog):
             for guild in sorted(self.bot.guilds, key=lambda guild: guild.name.casefold())
         ) or "No servers."
         attachment = discord.File(io.BytesIO(server_list.encode("utf-8")), filename="servers.txt")
-        await interaction.response.send_message(
-            embed=command_embed(f"Servers: {len(self.bot.guilds):,}\nCombined members: {total_members:,}", title="Connected servers"),
-            file=attachment,
-            ephemeral=True,
-        )
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                embed=command_embed(f"Servers: {len(self.bot.guilds):,}\nCombined members: {total_members:,}", title="Connected servers"),
+                file=attachment,
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                embed=command_embed(f"Servers: {len(self.bot.guilds):,}\nCombined members: {total_members:,}", title="Connected servers"),
+                file=attachment,
+                ephemeral=True,
+            )
 
     @app_commands.command(description="Refresh slash commands in one server or every connected server.")
     @owner_only()
