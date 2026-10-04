@@ -54,6 +54,10 @@ class GuardianBot(commands.Bot):
         self._global_commands_cleared = False
         self._backup_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
+        self._interaction_ack_tasks: set[asyncio.Task[None]] = set()
+        # v7 wraps this check later and preserves it as its previous_check.
+        # This gives every slash command a universal Discord-deadline safety net.
+        self.tree.interaction_check = self._universal_interaction_check
         self.runtime_health: dict[str, object] = {
             "event_loop_lag_ms": 0.0,
             "gateway_latency_ms": 0.0,
@@ -62,6 +66,40 @@ class GuardianBot(commands.Bot):
             "guilds": 0,
             "members": 0,
         }
+
+    async def _universal_interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.type is not discord.InteractionType.application_command:
+            return True
+
+        command = getattr(interaction, "command", None)
+        qualified_name = str(getattr(command, "qualified_name", "") or "").casefold()
+
+        # /verify may need its *first* interaction response to be a modal.
+        # Component/modal interactions do not pass through this app-command tree check.
+        if qualified_name == "verify":
+            return True
+
+        async def auto_ack() -> None:
+            await asyncio.sleep(1.25)
+            if interaction.response.is_done():
+                return
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+            except (discord.InteractionResponded, discord.NotFound, discord.HTTPException):
+                return
+            LOG.debug(
+                "Universal interaction auto-acknowledged /%s (%s)",
+                qualified_name or "unknown",
+                interaction.id,
+            )
+
+        task = asyncio.create_task(
+            auto_ack(),
+            name=f"guardian-interaction-ack-{interaction.id}",
+        )
+        self._interaction_ack_tasks.add(task)
+        task.add_done_callback(self._interaction_ack_tasks.discard)
+        return True
 
     async def setup_hook(self) -> None:
         await self.database.connect()
