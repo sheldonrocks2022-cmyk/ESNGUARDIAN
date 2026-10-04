@@ -125,6 +125,16 @@ class SecurityV7Cog(commands.Cog):
                 buckets_json TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(guild_id, actor_id)
             )""",
+            """CREATE TABLE IF NOT EXISTS guardian_v7_staff_commands (
+                guild_id INTEGER NOT NULL, actor_id INTEGER NOT NULL, command_name TEXT NOT NULL,
+                channel_id INTEGER NOT NULL DEFAULT 0, hour INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 0,
+                last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(guild_id, actor_id, command_name, channel_id, hour)
+            )""",
+            """CREATE TABLE IF NOT EXISTS guardian_v7_setting_baselines (
+                guild_id INTEGER PRIMARY KEY, payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""",
             """CREATE TABLE IF NOT EXISTS guardian_v7_evidence (
                 evidence_id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
                 source_event_id INTEGER, actor_id INTEGER, event_kind TEXT NOT NULL, target_id INTEGER,
@@ -515,6 +525,53 @@ class SecurityV7Cog(commands.Cog):
         lines += [f"• {member} ({member.id}) — trust {score}/100" for score, member in scored[:8]]
         return "\n".join(lines)[:4000]
 
+    async def _protected_settings_payload(self, guild_id: int) -> dict[str, Any]:
+        settings = await self.bot.database.setting(guild_id)
+        security = await self.bot.database.fetchone("SELECT * FROM security_config WHERE guild_id=?", (guild_id,))
+        antinuke = await self.bot.database.fetchone("SELECT * FROM anti_nuke_config WHERE guild_id=?", (guild_id,))
+        guardian = await self.bot.database.fetchone("SELECT * FROM guardian_config WHERE guild_id=?", (guild_id,))
+        return {
+            "logs": {field: settings[field] for field in LOG_FIELDS},
+            "security": {
+                key: security[key] if security is not None else None
+                for key in ("automod_enabled", "block_invites", "strict_links")
+            },
+            "antinuke": {
+                "enabled": antinuke["enabled"] if antinuke is not None else None,
+            },
+            "guardian": {
+                key: guardian[key] if guardian is not None else None
+                for key in ("external_app_lock", "bot_approval", "webhook_guard", "integration_guard", "credential_guard", "rollback_enabled")
+            },
+        }
+
+    async def _restore_protected_settings(self, guild_id: int, payload: dict[str, Any]) -> None:
+        for field, value in payload.get("logs", {}).items():
+            if field in LOG_FIELDS:
+                await self.bot.database.update_setting(guild_id, field, value)
+        security = payload.get("security", {})
+        if security:
+            await self.bot.database.execute(
+                "UPDATE security_config SET automod_enabled=?,block_invites=?,strict_links=? WHERE guild_id=?",
+                (security.get("automod_enabled"), security.get("block_invites"), security.get("strict_links"), guild_id),
+            )
+        antinuke = payload.get("antinuke", {})
+        if antinuke:
+            await self.bot.database.execute(
+                "UPDATE anti_nuke_config SET enabled=? WHERE guild_id=?",
+                (antinuke.get("enabled"), guild_id),
+            )
+        guardian = payload.get("guardian", {})
+        if guardian:
+            await self.bot.database.execute(
+                "UPDATE guardian_config SET external_app_lock=?,bot_approval=?,webhook_guard=?,integration_guard=?,credential_guard=?,rollback_enabled=? WHERE guild_id=?",
+                (
+                    guardian.get("external_app_lock"), guardian.get("bot_approval"), guardian.get("webhook_guard"),
+                    guardian.get("integration_guard"), guardian.get("credential_guard"), guardian.get("rollback_enabled"),
+                    guild_id,
+                ),
+            )
+
     async def _asset(self, guild_id: int, kind: str, asset_id: int):
         return await self.bot.database.fetchone(
             "SELECT * FROM guardian_v7_assets WHERE guild_id=? AND asset_type=? AND asset_id=?",
@@ -533,6 +590,56 @@ class SecurityV7Cog(commands.Cog):
                 f"Guardian v7 {'canary' if canary else 'protected asset'} triggered: {kind} {asset_id}; {detail}",
                 target_id=asset_id, score=14 if canary else 10,
             )
+
+    @commands.Cog.listener()
+    async def on_app_command_completion(self, interaction: discord.Interaction, command: app_commands.Command) -> None:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return
+        if not (
+            interaction.user.guild_permissions.manage_guild
+            or interaction.user.guild_permissions.ban_members
+            or interaction.user.guild_permissions.manage_roles
+            or interaction.user.id == interaction.guild.owner_id
+        ):
+            return
+        command_name = command.qualified_name.casefold()
+        channel_id = int(interaction.channel_id or 0)
+        hour = datetime.now(UTC).hour
+        total_row = await self.bot.database.fetchone(
+            "SELECT COALESCE(SUM(count),0) AS count FROM guardian_v7_staff_commands WHERE guild_id=? AND actor_id=?",
+            (interaction.guild.id, interaction.user.id),
+        )
+        exact_row = await self.bot.database.fetchone(
+            "SELECT count FROM guardian_v7_staff_commands WHERE guild_id=? AND actor_id=? AND command_name=? AND channel_id=? AND hour=?",
+            (interaction.guild.id, interaction.user.id, command_name, channel_id, hour),
+        )
+        total = int(total_row["count"] or 0) if total_row else 0
+        exact = int(exact_row["count"] or 0) if exact_row else 0
+        await self.bot.database.execute(
+            "INSERT INTO guardian_v7_staff_commands (guild_id,actor_id,command_name,channel_id,hour,count) "
+            "VALUES (?,?,?,?,?,1) ON CONFLICT(guild_id,actor_id,command_name,channel_id,hour) "
+            "DO UPDATE SET count=count+1,last_seen=CURRENT_TIMESTAMP",
+            (interaction.guild.id, interaction.user.id, command_name, channel_id, hour),
+        )
+        if total >= 20 and exact == 0:
+            await self._evidence(
+                interaction.guild.id,
+                interaction.user.id,
+                "STAFF_COMMAND_ANOMALY",
+                channel_id,
+                {"command": command_name, "hour": hour, "historical_samples": total},
+            )
+            if command_name in CATASTROPHIC:
+                v6 = self.bot.get_cog("ProtectionV6Cog")
+                if v6 is not None:
+                    await v6._signal(
+                        interaction.guild,
+                        interaction.user,
+                        "command_abuse",
+                        f"Guardian v7 staff baseline anomaly: first-seen catastrophic command /{command_name} after {total} baseline samples",
+                        target_id=interaction.user.id,
+                        score=10,
+                    )
 
     @commands.Cog.listener()
     async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel) -> None:
@@ -646,6 +753,30 @@ class SecurityV7Cog(commands.Cog):
                 exists = guild.get_channel(asset_id) is not None if kind == "channel" else guild.get_role(asset_id) is not None if kind == "role" else guild.get_member(asset_id) is not None
                 if not exists:
                     await self._asset_violation(guild, None, kind, asset_id, f"Protected asset missing: {row['label'] or asset_id}", bool(row["canary"]))
+
+            baseline = await self.bot.database.fetchone(
+                "SELECT payload_json FROM guardian_v7_setting_baselines WHERE guild_id=?",
+                (guild.id,),
+            )
+            if baseline is not None:
+                try:
+                    expected = json.loads(str(baseline["payload_json"]))
+                    current = await self._protected_settings_payload(guild.id)
+                except Exception:
+                    expected = current = None
+                if expected is not None and current is not None and expected != current:
+                    await self._evidence(
+                        guild.id, None, "PROTECTED_SETTINGS_TAMPER", None,
+                        {"expected": expected, "observed": current},
+                    )
+                    await self._restore_protected_settings(guild.id, expected)
+                    v6 = self.bot.get_cog("ProtectionV6Cog")
+                    if v6 is not None:
+                        await v6._signal(
+                            guild, None, "guardian_tamper",
+                            "Guardian v7 detected and reverted protected security/log setting drift",
+                            score=12,
+                        )
 
     @watch_loop.before_loop
     async def before_watch_loop(self) -> None:
@@ -1013,6 +1144,31 @@ class SecurityV7Cog(commands.Cog):
             (interaction.guild_id, role.id, role.name, interaction.user.id),
         )
         await respond(interaction, f"{role.mention} is now protected by Guardian v7.")
+
+    @shield.command(name="protect-bot", description="Protect a critical bot so its removal triggers containment.")
+    @guild_only()
+    @guild_owner_only()
+    async def protect_bot(self, interaction: discord.Interaction, bot_member: discord.Member) -> None:
+        if not bot_member.bot:
+            await respond(interaction, "Choose a bot account.")
+            return
+        await self.bot.database.execute(
+            "INSERT OR REPLACE INTO guardian_v7_assets (guild_id,asset_type,asset_id,label,canary,created_by_id) VALUES (?,'bot',?,?,0,?)",
+            (interaction.guild_id, bot_member.id, str(bot_member), interaction.user.id),
+        )
+        await respond(interaction, f"{bot_member.mention} is now a Guardian v7 protected bot.")
+
+    @shield.command(name="protect-settings", description="Seal critical Guardian security and log settings as a protected baseline.")
+    @guild_only()
+    @guild_owner_only()
+    async def protect_settings(self, interaction: discord.Interaction) -> None:
+        payload = await self._protected_settings_payload(interaction.guild_id)
+        await self.bot.database.execute(
+            "INSERT INTO guardian_v7_setting_baselines (guild_id,payload_json) VALUES (?,?) "
+            "ON CONFLICT(guild_id) DO UPDATE SET payload_json=excluded.payload_json,updated_at=CURRENT_TIMESTAMP",
+            (interaction.guild_id, json.dumps(payload, sort_keys=True, separators=(',', ':'))),
+        )
+        await respond(interaction, "Critical Guardian security settings and every log route are now sealed as a v7 protected baseline.")
 
     @shield.command(name="canary", description="Create Guardian honeypot canary assets.")
     @guild_only()
