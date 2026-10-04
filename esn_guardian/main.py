@@ -138,6 +138,23 @@ class GuardianBot(commands.Bot):
         self.tree.copy_global_to(guild=guild)
         return await self.tree.sync(guild=guild)
 
+    async def on_socket_response(self, payload: dict[str, object]) -> None:
+        if payload.get("t") != "INTERACTION_CREATE":
+            return
+        data = payload.get("d")
+        if not isinstance(data, dict):
+            LOG.info("Gateway received INTERACTION_CREATE with unreadable payload")
+            return
+        command_data = data.get("data")
+        command_name = command_data.get("name") if isinstance(command_data, dict) else None
+        LOG.info(
+            "Gateway received INTERACTION_CREATE application_id=%s guild_id=%s command=%s interaction_id=%s",
+            data.get("application_id"),
+            data.get("guild_id"),
+            command_name,
+            data.get("id"),
+        )
+
     async def on_ready(self) -> None:
         LOG.info("Connected as %s (%s) in %s guilds", self.user, self.user.id if self.user else "unknown", len(self.guilds))
         try:
