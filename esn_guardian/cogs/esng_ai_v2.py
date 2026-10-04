@@ -17,7 +17,7 @@ MEMBER_RE = re.compile(
 
 
 class ESNGuardianAI2Cog(ESNGuardianAICog):
-    """ESNG Intelligence v6 MAX: live multi-layer Guardian security reasoning."""
+    """ESNG Intelligence v7 MAX: live multi-layer Guardian security reasoning."""
 
     def _intel(self):
         return self.bot.get_cog("SecurityIntelligenceCog")
@@ -33,6 +33,9 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
 
     def _protection_v6(self):
         return self.bot.get_cog("ProtectionV6Cog")
+
+    def _v7(self):
+        return self.bot.get_cog("SecurityV7Cog")
 
     @staticmethod
     def _member_id(prompt: str) -> int | None:
@@ -51,6 +54,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         sentinel = self._sentinel()
         resilience = self._resilience()
         protection_v6 = self._protection_v6()
+        v7 = self._v7()
         sections: list[str] = []
 
         if overwatch is not None:
@@ -67,6 +71,14 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         if protection_v6 is not None:
             sections.append(await protection_v6.status_report(guild))
             sections.append(await protection_v6.highest_risk_report(guild))
+
+        if v7 is not None:
+            chain = await v7.verify_chain(guild.id)
+            sections.append(
+                "**Guardian v7 predictive shield**\n"
+                f"State: {v7.state[guild.id]} • Risk: {v7.score(guild.id)}/100\n"
+                f"Evidence chain: {'VERIFIED' if chain['ok'] else 'FAILED'} ({chain['checked']} records)"
+            )
 
         if intel is not None:
             sections.append(await intel.threat_report(guild))
@@ -89,17 +101,18 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         sentinel = self._sentinel()
         resilience = self._resilience()
         protection_v6 = self._protection_v6()
+        v7 = self._v7()
 
         if not p or _contains(p, "help", "what can you do", "what do you know"):
             return (
-                "**ESNG Intelligence v6 MAX**\n"
+                "**ESNG Intelligence v7 MAX**\n"
                 "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
                 "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
-                "Protection v6 adaptive risk, attack-chain scoring, permission firewall state, auto-heal checkpoints, "
-                "Sentinel anomaly signals, subject behavior, resilience readiness, recovery drills, backups, anti-nuke, "
-                "raids, external apps, webhooks, integrations, credential protection, and ESN knowledge.\n"
-                "Try: ESNG full security report • ESNG protection v6 • ESNG highest risk member • "
-                "ESNG v6 forensics • ESNG analyze subject 123456789012345678 • ESNG explain case #12"
+                "Protection v6 adaptive containment, Guardian v7 predictive state, trust graphs, staff behavior baselines, "
+                "privilege-path analysis, protected assets, canaries, evidence-chain verification, recovery readiness, "
+                "Sentinel anomaly signals, backups, anti-nuke, raids, external apps, webhooks, and integrations.\n"
+                "Try: ESNG guardian v7 • ESNG trust graph • ESNG privilege paths • ESNG incident replay • "
+                "ESNG protection benchmark • ESNG full security report"
             )
 
 
@@ -533,12 +546,12 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             "new ai",
         ):
             return (
-                "**ESNG Intelligence v6 MAX**\n"
-                "I now combine live configuration, threat history, tamper-evident case verification, policy drift, "
-                "Protection v6 adaptive member risk, automatic attack-chain containment, permission firewall state, "
-                "recovery checkpoints, post-attack forensics, persistent incident sessions, threat trends, Sentinel behavioral correlation, "
-                "subject profiles, Guardian Resilience self-health, runtime latency/event-loop health, SQLite integrity, backup freshness, "
-                "member security history, verification health, and ESN knowledge. "
+                "**ESNG Intelligence v7 MAX**\n"
+                "I now combine live configuration, threat history, Protection v6 adaptive containment, Guardian v7 predictive state, "
+                "staff behavior baselines, trust graphs, privilege-path analysis, protected-asset/canary state, cryptographic evidence-chain integrity, "
+                "signed-release health, recovery checkpoints, post-attack forensics, incident replay, application reputation, "
+                "Sentinel behavioral correlation, Guardian Resilience self-health, runtime latency/event-loop health, SQLite integrity, "
+                "backup freshness, member security history, verification health, and ESN knowledge. "
                 "I explain the evidence behind scores and do not invent live data."
             )
 
