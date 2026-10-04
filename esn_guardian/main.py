@@ -236,17 +236,24 @@ class GuardianBot(commands.Bot):
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.CheckFailure):
-            await interaction.response.send_message(embed=command_embed("This command is unavailable here, or you do not have permission to use it.", title="Access denied"), ephemeral=True)
-            return
-        if isinstance(error, app_commands.CommandOnCooldown):
-            await interaction.response.send_message(embed=command_embed(f"Try again in {error.retry_after:.0f} seconds.", title="Please wait"), ephemeral=True)
-            return
-        LOG.exception("Application command failed", exc_info=error)
-        await self._log_command_invocation(interaction, "failed")
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=command_embed("The command failed safely. Staff can check the system log.", title="Command unavailable"), ephemeral=True)
+            embed = command_embed("This command is unavailable here, or you do not have permission to use it.", title="Access denied")
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            embed = command_embed(f"Try again in {error.retry_after:.0f} seconds.", title="Please wait")
         else:
-            await interaction.response.send_message(embed=command_embed("The command failed safely. Staff can check the system log.", title="Command unavailable"), ephemeral=True)
+            LOG.exception("Application command failed", exc_info=error)
+            await self._log_command_invocation(interaction, "failed")
+            embed = command_embed("The command failed safely. Staff can check the system log.", title="Command unavailable")
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            LOG.warning(
+                "Could not send application-command error response; interaction %s is no longer valid",
+                interaction.id,
+            )
 
 
 def main() -> None:
