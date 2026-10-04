@@ -244,21 +244,23 @@ class AdvancedSecurityCog(commands.Cog):
                             "INSERT OR IGNORE INTO approved_bots (guild_id, bot_id, approved_by_id) VALUES (?, ?, ?)",
                             (guild.id, member.id, guild.owner_id),
                         )
-                for channel in guild.channels:
-                    if not hasattr(channel, "webhooks"):
-                        continue
-                    try:
-                        webhooks = await channel.webhooks()
-                    except (discord.Forbidden, discord.HTTPException):
-                        continue
-                    for webhook in webhooks:
-                        await self.bot.database.execute(
-                            "INSERT OR IGNORE INTO approved_webhooks (guild_id, webhook_id) VALUES (?, ?)",
-                            (guild.id, webhook.id),
-                        )
+
+                # Fetch all guild webhooks once instead of walking every channel.
+                # Network calls are bounded so a slow Discord API route cannot leave
+                # /guardian snapshot stuck on "thinking" indefinitely.
                 try:
-                    integrations = await guild.integrations()
-                except (discord.Forbidden, discord.HTTPException):
+                    webhooks = await asyncio.wait_for(guild.webhooks(), timeout=5.0)
+                except (discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
+                    webhooks = []
+                for webhook in webhooks:
+                    await self.bot.database.execute(
+                        "INSERT OR IGNORE INTO approved_webhooks (guild_id, webhook_id) VALUES (?, ?)",
+                        (guild.id, webhook.id),
+                    )
+
+                try:
+                    integrations = await asyncio.wait_for(guild.integrations(), timeout=5.0)
+                except (discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
                     integrations = []
                 for integration in integrations:
                     application = getattr(integration, "application", None)
@@ -752,7 +754,18 @@ class AdvancedSecurityCog(commands.Cog):
     async def guardian_snapshot(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
         await interaction.response.defer(ephemeral=True)
-        await self.snapshot_guild(interaction.guild, approve_current=True)
+        try:
+            await asyncio.wait_for(
+                self.snapshot_guild(interaction.guild, approve_current=True),
+                timeout=20.0,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            await respond(
+                interaction,
+                "Guardian saved the local recovery snapshot, but Discord took too long while approving current webhooks/integrations. "
+                "The command was stopped safely instead of hanging indefinitely.",
+            )
+            return
         await respond(interaction, "Guardian recovery snapshot saved. Current bots, webhooks, and integrations are now the trusted baseline.")
 
     @guardian.command(name="approve-bot", description="Approve a bot ID before it joins the server.")
