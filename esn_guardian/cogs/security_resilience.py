@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, defer_response
 
 LOG = logging.getLogger("esn_guardian.resilience")
 
@@ -386,7 +386,7 @@ class SecurityResilienceCog(commands.Cog):
     @staff_only()
     async def resilience_status(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.status_report(interaction.guild))
 
     @resilience.command(name="drill", description="Run a non-destructive Guardian security readiness drill.")
@@ -394,7 +394,7 @@ class SecurityResilienceCog(commands.Cog):
     @staff_only()
     async def resilience_drill(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.drill_report(interaction.guild))
 
     @resilience.command(name="recovery-plan", description="Generate a recovery readiness plan from live Guardian state.")
@@ -402,7 +402,7 @@ class SecurityResilienceCog(commands.Cog):
     @staff_only()
     async def resilience_recovery_plan(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.recovery_plan(interaction.guild))
 
 
