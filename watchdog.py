@@ -23,6 +23,11 @@ async def main() -> None:
     status_url = os.getenv("GUARDIAN_STATUS_URL", "").strip()
     webhook = os.getenv("GUARDIAN_ALERT_WEBHOOK", "").strip()
     token = os.getenv("GUARDIAN_DASHBOARD_TOKEN", "").strip()
+    expected_guilds = {
+        int(value.strip())
+        for value in os.getenv("GUARDIAN_EXPECTED_GUILD_IDS", "").split(",")
+        if value.strip().isdigit()
+    }
     if not status_url:
         raise SystemExit("GUARDIAN_STATUS_URL is required for the external Guardian watchdog.")
 
@@ -47,8 +52,17 @@ async def main() -> None:
                         item for item in guilds
                         if str(item.get("state")) in {"CRITICAL", "PANIC"}
                     ]
+                    current_guild_ids = {
+                        int(item.get("guild_id"))
+                        for item in guilds
+                        if str(item.get("guild_id", "")).isdigit()
+                    }
+                    missing_guilds = sorted(expected_guilds - current_guild_ids)
                     if not online:
                         state = "offline"
+                    elif missing_guilds:
+                        state = "degraded"
+                        detail = "Guardian is missing expected server IDs: " + ", ".join(map(str, missing_guilds))
                     elif minimal:
                         state = "degraded"
                         detail = "Guardian entered emergency minimal mode."
