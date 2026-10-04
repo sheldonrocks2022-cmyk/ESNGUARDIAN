@@ -30,13 +30,32 @@ DATABASE_PATH=data/esn_guardian.db
 LOG_LEVEL=INFO
 ```
 
-The older Node conversion is retained only as a legacy/reference build on the `node-hosting` branch. Main development and deployment now target Python.
+The older Node conversion is retained only as a legacy/reference build on the `node-hosting` branch. Main development and deployment now target Python. Protection v6 is loaded by default on the Python runtime.
 
-## Guardian v5 MAX
+## Guardian v6 MAX
 
-Guardian v5 MAX combines:
+Guardian v6 MAX combines:
 
 - Anti-nuke destructive-action tracking, containment, and automatic lockdown
+- Adaptive per-member threat scoring using account age, case history, dangerous roles, verification failures, external-app signals, and raid clustering
+- Compromised-staff detection that correlates destructive actions even when the actor has legitimate staff permissions
+- Emergency privilege stripping for manageable dangerous roles before normal anti-nuke thresholds are reached
+- Multi-step attack-chain scoring across channels, roles, bans, webhooks, integrations, bots, commands, external apps, and tamper events
+- Owner-safe containment: Guardian never attempts to ban the server owner; it instead locks manageable attack surfaces, removes unapproved integrations/webhooks, preserves evidence, and raises a critical incident
+- Permission firewall with remembered role-permission baselines and automatic rollback of unauthorized high-risk permission grants
+- Automatic server healing for modified channels/roles plus existing deleted channel/role recovery
+- Multiple rolling recovery checkpoints with owner-triggered recovery passes
+- Webhook fingerprinting for approved webhook identity/change detection
+- Bot-installation firewall that blocks bots not present in the approved baseline
+- Raid fingerprinting using join timing, account age clusters, and username-pattern clusters
+- Adaptive verification: suspicious members can be forced through a human check or held for staff review
+- Composite scam/phishing detection for gift/verification/QR/link indicators in server messages, plus safety warnings for suspicious messages sent directly to Guardian
+- Sensitive Guardian-command abuse shield with burst blocking
+- Priority security-action queue so critical containment runs before non-critical v6 work
+- Automatic PANIC mode when attack-chain scores cross critical thresholds
+- Post-attack forensic incident records with actor, signal, target, timing, and event summaries
+- Self-protection watchdog for lost Guardian permissions, deleted configured log channels, and disabled core protection layers
+- Fail-safe in-memory protection when persistence temporarily fails
 - Fast raid detection, young-account burst detection, quarantine, and bounded kick workers
 - Zero-tolerance external-app detection where Discord exposes interaction metadata
 - Blocked-application persistence, bot blocking, webhook guard, and integration guard
@@ -50,7 +69,7 @@ Guardian v5 MAX combines:
 - Moderation with role-hierarchy safeguards and bounded mass-role concurrency
 - Rate-bounded Guardian logging so heavy incidents do not flood the event loop
 - Scheduled database backups every 3 hours plus startup/shutdown and resilience-triggered backups
-- ESNG Intelligence v5 MAX using live Guardian security, runtime, database, backup, Sentinel, Overwatch, and Resilience state
+- ESNG Intelligence v6 MAX using live Guardian security, runtime, database, backup, Sentinel, Overwatch, and Resilience state
 
 ## Main command families
 
@@ -62,6 +81,7 @@ Security:
 - `/overwatch`
 - `/resilience`
 - `/sentinel`
+- `/protection`
 
 Moderation:
 
@@ -93,12 +113,15 @@ Bot-owner operations:
 - `/broadcast`, `/maintenance`
 - `/blacklist`, `/unblacklist`
 
-## ESNG Intelligence v5 MAX
+## ESNG Intelligence v6 MAX
 
 Messages beginning with `ESNG` wake the Guardian intelligence system.
 
 Examples:
 
+- `ESNG protection v6`
+- `ESNG highest risk member`
+- `ESNG v6 forensics`
 - `ESNG full security report`
 - `ESNG runtime health`
 - `ESNG threat report`
