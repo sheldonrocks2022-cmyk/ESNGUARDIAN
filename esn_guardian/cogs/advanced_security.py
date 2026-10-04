@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, guild_owner_only, respond, staff_only
+from esn_guardian.cogs.common import guild_only, guild_owner_only, respond, staff_only, defer_response
 
 USE_EXTERNAL_APPS_BIT = 1 << 50
 DESTRUCTIVE_WINDOW = timedelta(seconds=10)
@@ -753,7 +753,7 @@ class AdvancedSecurityCog(commands.Cog):
     @guild_owner_only()
     async def guardian_snapshot(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         try:
             await asyncio.wait_for(
                 self.snapshot_guild(interaction.guild, approve_current=True),
@@ -800,7 +800,7 @@ class AdvancedSecurityCog(commands.Cog):
     @guild_owner_only()
     async def guardian_panic(self, interaction: discord.Interaction, enabled: bool = True) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await self.ensure_guild(interaction.guild_id)
         security = self.bot.get_cog("SecurityCog")
         if enabled:
