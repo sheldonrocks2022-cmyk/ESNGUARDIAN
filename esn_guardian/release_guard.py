@@ -45,11 +45,14 @@ def verify_release() -> tuple[bool, list[str]]:
             problems.append(f"Checksum mismatch: {relative}")
 
     key = os.getenv("GUARDIAN_RELEASE_HMAC_KEY", "").encode("utf-8")
-    if key and SIGNATURE.exists():
-        expected_sig = SIGNATURE.read_text(encoding="utf-8").strip()
-        actual_sig = hmac.new(key, payload, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected_sig, actual_sig):
-            problems.append("Release signature verification failed")
+    if key:
+        if not SIGNATURE.exists():
+            problems.append("Release signature is required but guardian_manifest.sig is missing")
+        else:
+            expected_sig = SIGNATURE.read_text(encoding="utf-8").strip()
+            actual_sig = hmac.new(key, payload, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected_sig, actual_sig):
+                problems.append("Release signature verification failed")
 
     return not problems, problems
 
