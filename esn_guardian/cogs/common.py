@@ -152,6 +152,11 @@ async def audit_log_actor(guild: discord.Guild, action: discord.AuditLogAction, 
 
 
 async def log_event(bot: "GuardianBot", guild: discord.Guild, setting_field: str, title: str, *, description: str, color: discord.Color = discord.Color.blurple()) -> None:
+    if bool(getattr(bot, "guardian_minimal_mode", False)) and setting_field not in {
+        "security_log_channel_id",
+        "system_log_channel_id",
+    }:
+        return
     settings = await bot.database.setting(guild.id)
     channel_id = settings[setting_field]
     if not channel_id:
