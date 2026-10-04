@@ -820,34 +820,69 @@ class AdvancedSecurityCog(commands.Cog):
         await respond(interaction, "PANIC released. Core protections remain enabled.")
 
     @guardian.command(name="audit", description="Run Guardian's full security scoreboard and exposure audit.")
-    @guild_only()
-    @staff_only()
     async def guardian_audit(self, interaction: discord.Interaction) -> None:
-        assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        # Acknowledge this command before *any* checks, database work, or Discord API
+        # calls. This avoids Discord's short initial interaction-response deadline.
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Access denied", description="This command can only be used in a server."),
+                ephemeral=True,
+            )
+            return
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message(
+                embed=discord.Embed(title="Access denied", description="You need Manage Server to run this audit."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            embed=discord.Embed(
+                title="ESN Guardian",
+                description="Running Guardian security audit…",
+                color=discord.Color.blurple(),
+            ),
+            ephemeral=True,
+        )
+
         guild = interaction.guild
         bot_member = guild.me
         required = (
             "view_audit_log", "manage_messages", "moderate_members", "kick_members",
             "ban_members", "manage_roles", "manage_channels", "manage_webhooks",
         )
-        missing = [name for name in required if bot_member is None or not getattr(bot_member.guild_permissions, name, False)]
-        dangerous_roles = [role for role in guild.roles if not role.managed and self._high_risk_role(role) and role != guild.default_role]
-        approved_rows = await self.bot.database.fetchall("SELECT bot_id FROM approved_bots WHERE guild_id = ?", (guild.id,))
-        approved_bots = {int(row["bot_id"]) for row in approved_rows}
-        unknown_bots = [member for member in guild.members if member.bot and (self.bot.user is None or member.id != self.bot.user.id) and member.id not in approved_bots]
-        async def _webhook_count(channel: discord.abc.GuildChannel) -> int:
-            if not hasattr(channel, "webhooks"):
-                return 0
-            try:
-                hooks = await asyncio.wait_for(channel.webhooks(), timeout=3.0)
-                return len(hooks)
-            except (discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
-                return 0
+        missing = [
+            name for name in required
+            if bot_member is None or not getattr(bot_member.guild_permissions, name, False)
+        ]
+        dangerous_roles = [
+            role for role in guild.roles
+            if not role.managed and self._high_risk_role(role) and role != guild.default_role
+        ]
 
-        webhook_counts = await asyncio.gather(*(_webhook_count(channel) for channel in guild.channels))
-        webhook_count = sum(webhook_counts)
-        external_app_roles = [role for role in guild.roles if role.permissions.value & USE_EXTERNAL_APPS_BIT]
+        approved_rows = await self.bot.database.fetchall(
+            "SELECT bot_id FROM approved_bots WHERE guild_id = ?",
+            (guild.id,),
+        )
+        approved_bots = {int(row["bot_id"]) for row in approved_rows}
+        unknown_bots = [
+            member for member in guild.members
+            if member.bot
+            and (self.bot.user is None or member.id != self.bot.user.id)
+            and member.id not in approved_bots
+        ]
+
+        webhook_count: int | None
+        try:
+            hooks = await asyncio.wait_for(guild.webhooks(), timeout=3.0)
+            webhook_count = len(hooks)
+        except (discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
+            webhook_count = None
+
+        external_app_roles = [
+            role for role in guild.roles
+            if role.permissions.value & USE_EXTERNAL_APPS_BIT
+        ]
         config = await self._guardian_config(guild.id)
         deductions = min(
             100,
@@ -858,19 +893,27 @@ class AdvancedSecurityCog(commands.Cog):
             + (10 if config is None or not config["webhook_guard"] else 0),
         )
         score = max(0, 100 - deductions)
-        await respond(
-            interaction,
+
+        content = (
             "Guardian Security Scoreboard\n"
             f"Score: {score}/100\n"
             f"Missing Guardian permissions: {', '.join(name.replace('_', ' ') for name in missing) if missing else 'none'}\n"
             f"High-risk roles: {len(dangerous_roles)}\n"
             f"Unapproved bots: {', '.join(str(member) for member in unknown_bots[:10]) if unknown_bots else 'none'}\n"
             f"Roles still allowing external apps: {len(external_app_roles)}\n"
-            f"Current webhooks: {webhook_count}\n"
+            f"Current webhooks: {webhook_count if webhook_count is not None else 'unavailable'}\n"
             f"Rollback: {'ON' if config and config['rollback_enabled'] else 'OFF'}\n"
             f"Webhook guard: {'ON' if config and config['webhook_guard'] else 'OFF'}\n"
             f"Integration guard: {'ON' if config and config['integration_guard'] else 'OFF'}\n"
-            f"Credential leak guard: {'ON' if config and config['credential_guard'] else 'OFF'}",
+            f"Credential leak guard: {'ON' if config and config['credential_guard'] else 'OFF'}"
+        )
+        await interaction.edit_original_response(
+            embed=discord.Embed(
+                title="ESN Guardian",
+                description=content[:4096],
+                color=discord.Color.blurple(),
+                timestamp=datetime.now(UTC),
+            )
         )
 
     @guardian.command(name="status", description="Show advanced Guardian protection status.")
