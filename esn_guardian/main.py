@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from datetime import UTC, datetime
 
@@ -295,18 +296,66 @@ class GuardianBot(commands.Bot):
             )
 
 
+def startup_retry_delay(error: discord.HTTPException | None, attempt: int) -> float:
+    """Return a conservative startup retry delay without hammering Discord."""
+    retry_after = 0.0
+    if error is not None:
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            try:
+                retry_after = float(headers.get("Retry-After", 0) or 0)
+            except (TypeError, ValueError):
+                retry_after = 0.0
+
+    exponential = min(900.0, 60.0 * (2 ** min(max(attempt, 0), 4)))
+    return max(60.0, retry_after, exponential)
+
+
 def main() -> None:
     settings = Settings.load()
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    bot = GuardianBot(settings)
-    try:
-        bot.run(settings.token, log_handler=None)
-    except discord.LoginFailure:
-        LOG.critical("Discord rejected DISCORD_TOKEN.")
-    except (OSError, asyncio.TimeoutError):
-        LOG.exception("Fatal network or startup failure.")
-    except Exception:
-        LOG.exception("Fatal unexpected startup failure.")
+
+    attempt = 0
+    while True:
+        bot = GuardianBot(settings)
+        try:
+            bot.run(settings.token, log_handler=None)
+        except discord.LoginFailure:
+            LOG.critical("Discord rejected DISCORD_TOKEN. Guardian will not retry an invalid token.")
+            return
+        except discord.HTTPException as error:
+            if getattr(error, "status", None) != 429:
+                LOG.exception("Discord HTTP startup failure.")
+                return
+
+            delay = startup_retry_delay(error, attempt)
+            attempt += 1
+            LOG.warning(
+                "Discord globally rate-limited Guardian during startup (HTTP 429). "
+                "Guardian is staying alive and will retry in %.0f seconds. "
+                "Do NOT restart the CogitHost server while this cooldown is active.",
+                delay,
+            )
+            time.sleep(delay)
+            continue
+        except (OSError, asyncio.TimeoutError):
+            delay = min(300.0, 30.0 * (2 ** min(attempt, 3)))
+            attempt += 1
+            LOG.exception(
+                "Temporary network/startup failure. Guardian is staying alive and will retry in %.0f seconds.",
+                delay,
+            )
+            time.sleep(delay)
+            continue
+        except KeyboardInterrupt:
+            LOG.info("Guardian shutdown requested.")
+            return
+        except Exception:
+            LOG.exception("Fatal unexpected startup failure.")
+            return
+        else:
+            return
 
 
 if __name__ == "__main__":
