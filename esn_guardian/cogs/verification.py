@@ -429,14 +429,18 @@ class VerificationCog(commands.Cog):
             (interaction.guild_id,),
         )
         assert config is not None
+        max_layer = self.bot.get_cog("SecurityMaxCog")
         await respond(
             interaction,
             (
+                "**Guardian Verification v2 MAX**\n"
                 f"Enabled: {'yes' if config['enabled'] else 'no'}\n"
                 f"Channel: <#{config['channel_id']}>\n"
                 f"Verified role: <@&{config['verified_role_id']}>\n"
                 f"Minimum account age: {config['min_account_age_days']} days\n"
                 f"Human check: {'enabled' if config['captcha_enabled'] else 'disabled'}\n"
+                f"Adaptive join-risk layer: {'ON' if max_layer is not None else 'OFF'}\n"
+                f"Quarantine escalation: {'ON' if max_layer is not None else 'OFF'}\n"
                 f"Retry cooldown: {config['cooldown_seconds']} seconds"
             ),
         )
