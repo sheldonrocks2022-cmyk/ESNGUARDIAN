@@ -234,6 +234,7 @@ class SecurityMaxCog(commands.Cog):
         self.slow_nuke_loop.start()
         self.watchdog_loop.start()
         self.offhost_backup_loop.start()
+        self.daily_report_loop.start()
 
     def cog_unload(self) -> None:
         for loop in (
@@ -241,6 +242,7 @@ class SecurityMaxCog(commands.Cog):
             self.slow_nuke_loop,
             self.watchdog_loop,
             self.offhost_backup_loop,
+            self.daily_report_loop,
         ):
             loop.cancel()
         if self.session is not None:
@@ -462,6 +464,21 @@ class SecurityMaxCog(commands.Cog):
         async def apply(channel: discord.abc.GuildChannel, role: discord.Role) -> bool:
             async with semaphore:
                 return await self._safe_overwrite(channel, role, deny)
+
+        # Always make the unverified role able to see only the verification channel,
+        # including when that channel already existed before Guardian MAX setup.
+        await self._safe_overwrite(
+            verification_channel,
+            unverified,
+            discord.PermissionOverwrite(
+                view_channel=True,
+                read_message_history=True,
+                send_messages=False,
+                add_reactions=False,
+                attach_files=False,
+                use_external_apps=False,
+            ),
+        )
 
         jobs = []
         for channel in guild.channels:
@@ -842,6 +859,27 @@ class SecurityMaxCog(commands.Cog):
     @offhost_backup_loop.before_loop
     async def before_offhost_backup_loop(self) -> None:
         await self.bot.wait_until_ready()
+
+    @tasks.loop(hours=24)
+    async def daily_report_loop(self) -> None:
+        for guild in list(self.bot.guilds):
+            try:
+                report = await self.analyst_report(guild)
+                await log_event(
+                    self.bot,
+                    guild,
+                    "security_log_channel_id",
+                    "Guardian MAX Daily Security Report",
+                    description=report[:4000],
+                    color=discord.Color.blue(),
+                )
+            except Exception:
+                LOG.exception("Guardian MAX daily report failed for guild %s", guild.id)
+
+    @daily_report_loop.before_loop
+    async def before_daily_report_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(300)
 
     async def self_test_report(self, guild: discord.Guild) -> str:
         checks: list[tuple[str, bool]] = []
