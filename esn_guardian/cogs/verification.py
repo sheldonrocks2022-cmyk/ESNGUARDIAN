@@ -229,7 +229,40 @@ class VerificationView(discord.ui.View):
             )
             return
 
-        if config["captcha_enabled"]:
+        force_challenge = False
+        protection = self.bot.get_cog("ProtectionV6Cog")
+        if protection is not None and hasattr(protection, "verification_decision"):
+            try:
+                decision = await protection.verification_decision(interaction.user)
+            except Exception:
+                decision = None
+            if decision is not None:
+                force_challenge = bool(decision.get("require_challenge"))
+                if decision.get("manual_review"):
+                    security = self.bot.get_cog("SecurityCog")
+                    if security is not None and hasattr(security, "_quarantine"):
+                        try:
+                            await security._quarantine(
+                                interaction.user,
+                                f"Protection v6 verification risk score {decision.get('score', 0)}",
+                            )
+                        except Exception:
+                            pass
+                    await self.bot.database.create_case(
+                        interaction.guild.id,
+                        interaction.user.id,
+                        self.bot.user.id if self.bot.user else None,
+                        "VERIFY_RISK_REVIEW",
+                        f"Protection v6 held verification for staff review; adaptive risk score={decision.get('score', 0)}",
+                        interaction.channel_id,
+                    )
+                    await respond(
+                        interaction,
+                        "Guardian's adaptive verification protection flagged this account for staff review.",
+                    )
+                    return
+
+        if config["captcha_enabled"] or force_challenge:
             code = f"{random.SystemRandom().randrange(10000, 100000)}"
             await interaction.response.send_modal(
                 VerificationChallengeModal(self.bot, config, code)
