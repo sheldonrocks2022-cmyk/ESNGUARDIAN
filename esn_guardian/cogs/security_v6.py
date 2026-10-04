@@ -762,15 +762,14 @@ class ProtectionV6Cog(commands.Cog):
         if len(window) <= COMMAND_LIMIT:
             return True
 
-        if not interaction.response.is_done():
-            try:
-                await interaction.response.send_message(
-                    "Guardian Protection v6 temporarily blocked this sensitive command burst. "
-                    "Wait a moment and review the security log.",
-                    ephemeral=True,
-                )
-            except discord.HTTPException:
-                pass
+        try:
+            await respond(
+                interaction,
+                "Guardian Protection v6 temporarily blocked this sensitive command burst. "
+                "Wait a moment and review the security log.",
+            )
+        except discord.HTTPException:
+            pass
 
         await self._signal(
             interaction.guild,
