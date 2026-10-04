@@ -824,6 +824,7 @@ class AdvancedSecurityCog(commands.Cog):
     @staff_only()
     async def guardian_audit(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         bot_member = guild.me
         required = (
@@ -835,14 +836,17 @@ class AdvancedSecurityCog(commands.Cog):
         approved_rows = await self.bot.database.fetchall("SELECT bot_id FROM approved_bots WHERE guild_id = ?", (guild.id,))
         approved_bots = {int(row["bot_id"]) for row in approved_rows}
         unknown_bots = [member for member in guild.members if member.bot and (self.bot.user is None or member.id != self.bot.user.id) and member.id not in approved_bots]
-        webhook_count = 0
-        for channel in guild.channels:
+        async def _webhook_count(channel: discord.abc.GuildChannel) -> int:
             if not hasattr(channel, "webhooks"):
-                continue
+                return 0
             try:
-                webhook_count += len(await channel.webhooks())
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+                hooks = await asyncio.wait_for(channel.webhooks(), timeout=3.0)
+                return len(hooks)
+            except (discord.Forbidden, discord.HTTPException, TimeoutError, asyncio.TimeoutError):
+                return 0
+
+        webhook_counts = await asyncio.gather(*(_webhook_count(channel) for channel in guild.channels))
+        webhook_count = sum(webhook_counts)
         external_app_roles = [role for role in guild.roles if role.permissions.value & USE_EXTERNAL_APPS_BIT]
         config = await self._guardian_config(guild.id)
         deductions = min(
