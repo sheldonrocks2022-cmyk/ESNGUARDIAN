@@ -116,6 +116,8 @@ class SecurityCog(commands.Cog):
         self._raid_blocked_count: dict[int, int] = defaultdict(int)
         self._raid_trigger_count: dict[int, int] = defaultdict(int)
         self._audit_access_warned_at: dict[int, datetime] = {}
+        self._case_notice_last: dict[tuple[int, str, int], datetime] = {}
+        self._antinuke_warning_last: dict[tuple[int, int], datetime] = {}
         self._initialized_guilds: set[int] = set()
         self._message_policy_cache: dict[
             int,
@@ -418,9 +420,38 @@ class SecurityCog(commands.Cog):
             return False
 
     async def _security_case(self, guild: discord.Guild, target: discord.abc.User | None, action: str, reason: str, channel_id: int | None = None) -> int:
-        case_id = await self.bot.database.create_case(guild.id, target.id if target else None, self.bot.user.id if self.bot.user else None, action, reason, channel_id)
-        await log_event(self.bot, guild, "security_log_channel_id", f"Security: {action} | Case #{case_id}", description=f"Target: {target.mention if target else 'N/A'}\nReason: {reason}", color=discord.Color.red())
-        if guild.owner is not None:
+        case_id = await self.bot.database.create_case(
+            guild.id,
+            target.id if target else None,
+            self.bot.user.id if self.bot.user else None,
+            action,
+            reason,
+            channel_id,
+        )
+
+        # Keep every case in the database, but prevent event storms from flooding
+        # staff logs or the server owner's DMs.
+        target_id = target.id if target else 0
+        notice_key = (guild.id, action, target_id)
+        now = datetime.now(UTC)
+        noisy = action.startswith(("ANTINUKE_", "V6_", "GUARDIAN_TAMPER", "AUTO_ROLLBACK_"))
+        cooldown = timedelta(seconds=45 if noisy else 8)
+        previous = self._case_notice_last.get(notice_key)
+        send_notice = previous is None or now - previous >= cooldown
+        if send_notice:
+            self._case_notice_last[notice_key] = now
+            await log_event(
+                self.bot,
+                guild,
+                "security_log_channel_id",
+                f"Security: {action} | Case #{case_id}",
+                description=f"Target: {target.mention if target else 'N/A'}\nReason: {reason}",
+                color=discord.Color.red(),
+            )
+
+        # Preliminary anti-nuke warnings belong in staff logs, not repeated owner DMs.
+        owner_dm_allowed = action not in {"ANTINUKE_ALERT", "ANTINUKE_UNATTRIBUTED"}
+        if send_notice and owner_dm_allowed and guild.owner is not None:
             target_text = f"{target} ({target.id})" if target else "N/A"
             try:
                 await guild.owner.send(
@@ -534,8 +565,18 @@ class SecurityCog(commands.Cog):
         config = await self.bot.database.fetchone("SELECT * FROM anti_nuke_config WHERE guild_id = ?", (guild.id,))
         if config is None or not config["enabled"]:
             return
+
+        suppression_active = bool(
+            hasattr(self.bot, "security_events_suppressed")
+            and self.bot.security_events_suppressed(guild.id)
+        )
         if executor is None:
             executor = await self._audit_executor(guild, audit_action, target_id)
+
+        if suppression_active and hasattr(self.bot, "should_suppress_security_event"):
+            if self.bot.should_suppress_security_event(guild.id, executor):
+                return
+
         if executor is not None and await self._is_trusted_executor(guild, executor):
             return
         if executor is None and not allow_unattributed:
@@ -550,12 +591,16 @@ class SecurityCog(commands.Cog):
 
         actor_text = str(executor) if executor is not None else "unattributed actor"
         if len(events) < config["action_limit"]:
-            await self._security_case(
-                guild,
-                executor,
-                "ANTINUKE_ALERT" if executor is not None else "ANTINUKE_UNATTRIBUTED",
-                f"{action_name} by {actor_text} ({len(events)}/{config['action_limit']} actions)",
-            )
+            warning_key = (guild.id, actor_id)
+            last_warning = self._antinuke_warning_last.get(warning_key)
+            if last_warning is None or now - last_warning >= timedelta(seconds=60):
+                self._antinuke_warning_last[warning_key] = now
+                await self._security_case(
+                    guild,
+                    executor,
+                    "ANTINUKE_ALERT" if executor is not None else "ANTINUKE_UNATTRIBUTED",
+                    f"{action_name} by {actor_text} ({len(events)}/{config['action_limit']} actions)",
+                )
             return
 
         events.clear()
@@ -1189,6 +1234,12 @@ class SecurityCog(commands.Cog):
             return await self._lockdown_locked(guild, reason)
 
     async def _lockdown_locked(self, guild: discord.Guild, reason: str) -> bool:
+        if hasattr(self.bot, "suppress_security_events"):
+            self.bot.suppress_security_events(
+                guild.id,
+                seconds=90,
+                reason="Guardian internal lockdown permission changes",
+            )
         settings = await self.bot.database.setting(guild.id)
         if settings["lockdown_active"]:
             return False
@@ -1244,6 +1295,12 @@ class SecurityCog(commands.Cog):
             return await self._unlockdown_locked(guild, reason)
 
     async def _unlockdown_locked(self, guild: discord.Guild, reason: str) -> int:
+        if hasattr(self.bot, "suppress_security_events"):
+            self.bot.suppress_security_events(
+                guild.id,
+                seconds=90,
+                reason="Guardian internal unlock permission changes",
+            )
         saved_rows = await self.bot.database.fetchall(
             "SELECT channel_id, send_messages FROM lockdown_overwrites WHERE guild_id = ?",
             (guild.id,),
