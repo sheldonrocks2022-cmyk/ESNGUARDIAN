@@ -467,8 +467,17 @@ class ProtectionV6Cog(commands.Cog):
         if not enabled:
             return {"actor": actor_score, "guild": guild_score}
 
+        contain_threshold = ACTOR_CONTAIN_SCORE
+        panic_threshold = AUTO_PANIC_SCORE
+        v7 = self.bot.get_cog("SecurityV7Cog")
+        if v7 is not None and hasattr(v7, "thresholds"):
+            try:
+                contain_threshold, panic_threshold = v7.thresholds(guild.id)
+            except Exception:
+                pass
+
         if actor is not None and actor_id not in {guild.owner_id, self.bot.user.id if self.bot.user else 0}:
-            if actor_score >= ACTOR_CONTAIN_SCORE and kind in CRITICAL_KINDS:
+            if actor_score >= contain_threshold and kind in CRITICAL_KINDS:
                 await self._enqueue(
                     1,
                     self._contain_actor,
@@ -478,8 +487,8 @@ class ProtectionV6Cog(commands.Cog):
                 )
 
         if auto_panic and (
-            guild_score >= AUTO_PANIC_SCORE
-            or actor_score >= AUTO_PANIC_SCORE
+            guild_score >= panic_threshold
+            or actor_score >= panic_threshold
             or kind == "guardian_tamper"
         ):
             await self._enqueue(
