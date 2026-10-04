@@ -837,26 +837,13 @@ class AdvancedSecurityCog(commands.Cog):
         # Acknowledge this command before *any* checks, database work, or Discord API
         # calls. This avoids Discord's short initial interaction-response deadline.
         if interaction.guild is None:
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Access denied", description="This command can only be used in a server."),
-                ephemeral=True,
-            )
+            await respond(interaction, "This command can only be used in a server.")
             return
         if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message(
-                embed=discord.Embed(title="Access denied", description="You need Manage Server to run this audit."),
-                ephemeral=True,
-            )
+            await respond(interaction, "You need Manage Server to run this audit.")
             return
 
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                title="ESN Guardian",
-                description="Running Guardian security audit…",
-                color=discord.Color.blurple(),
-            ),
-            ephemeral=True,
-        )
+        await defer_response(interaction)
 
         guild = interaction.guild
         bot_member = guild.me
