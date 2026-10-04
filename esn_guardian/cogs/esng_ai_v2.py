@@ -102,10 +102,11 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         resilience = self._resilience()
         protection_v6 = self._protection_v6()
         v7 = self._v7()
+        maxsec = self.bot.get_cog("SecurityMaxCog")
 
         if not p or _contains(p, "help", "what can you do", "what do you know"):
             return (
-                "**ESNG Intelligence v7 MAX**\n"
+                "**ESNG Intelligence Guardian MAX**\n"
                 "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
                 "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
                 "Protection v6 adaptive containment, Guardian v7 predictive state, trust graphs, staff behavior baselines, "
@@ -115,6 +116,42 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                 "ESNG protection benchmark • ESNG full security report"
             )
 
+
+        if maxsec is not None:
+            if _contains(
+                p,
+                "guardian max",
+                "max security",
+                "security center",
+                "guardian security center",
+                "max status",
+            ):
+                return await maxsec.analyst_report(guild)
+
+            if _contains(
+                p,
+                "self test",
+                "self-test",
+                "guardian health check",
+                "max self test",
+                "full protection test",
+            ):
+                return await maxsec.self_test_report(guild)
+
+            member_id = self._member_id(prompt)
+            if member_id is not None and _contains(
+                p,
+                "why quarantined",
+                "why was",
+                "security analyst",
+                "analyze member",
+                "analyse member",
+                "explain member",
+                "member security",
+            ):
+                member = guild.get_member(member_id)
+                if member is not None:
+                    return await maxsec.analyst_report(guild, member)
 
         if v7 is not None:
             if _contains(
