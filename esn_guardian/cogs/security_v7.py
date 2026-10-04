@@ -96,6 +96,7 @@ class SecurityV7Cog(commands.Cog):
         self.actor_recent: dict[tuple[int, int], deque[datetime]] = defaultdict(deque)
         self.state: dict[int, str] = defaultdict(lambda: "NORMAL")
         self.evidence_dedupe: dict[tuple[int, str], float] = {}
+        self.evidence_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.previous_check = None
         self.session: aiohttp.ClientSession | None = None
         self.dashboard_runner: Any | None = None
@@ -304,23 +305,26 @@ class SecurityV7Cog(commands.Cog):
             {"kind": kind, "actor_id": actor_id, "target_id": target_id, **payload},
             sort_keys=True, separators=(",", ":"), ensure_ascii=True,
         )
-        previous = await self.bot.database.fetchone(
-            "SELECT evidence_hash FROM guardian_v7_evidence WHERE guild_id=? ORDER BY evidence_id DESC LIMIT 1",
-            (guild_id,),
-        )
-        previous_hash = str(previous["evidence_hash"]) if previous else "GENESIS"
-        digest = evidence_hash(previous_hash, canonical)
-        await self.bot.database.execute(
-            "INSERT INTO guardian_v7_evidence "
-            "(guild_id,source_event_id,actor_id,event_kind,target_id,payload_json,previous_hash,evidence_hash) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (guild_id, source_event_id, actor_id, kind, target_id, canonical, previous_hash, digest),
-        )
-        row = await self.bot.database.fetchone(
-            "SELECT evidence_id FROM guardian_v7_evidence WHERE guild_id=? ORDER BY evidence_id DESC LIMIT 1",
-            (guild_id,),
-        )
-        return int(row["evidence_id"]) if row else None
+        # Evidence writes must be serialized per guild. Without this lock, two
+        # concurrent events can read the same tail hash and fork the chain.
+        async with self.evidence_locks[guild_id]:
+            previous = await self.bot.database.fetchone(
+                "SELECT evidence_hash FROM guardian_v7_evidence WHERE guild_id=? ORDER BY evidence_id DESC LIMIT 1",
+                (guild_id,),
+            )
+            previous_hash = str(previous["evidence_hash"]) if previous else "GENESIS"
+            digest = evidence_hash(previous_hash, canonical)
+            await self.bot.database.execute(
+                "INSERT INTO guardian_v7_evidence "
+                "(guild_id,source_event_id,actor_id,event_kind,target_id,payload_json,previous_hash,evidence_hash) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (guild_id, source_event_id, actor_id, kind, target_id, canonical, previous_hash, digest),
+            )
+            row = await self.bot.database.fetchone(
+                "SELECT evidence_id FROM guardian_v7_evidence WHERE guild_id=? ORDER BY evidence_id DESC LIMIT 1",
+                (guild_id,),
+            )
+            return int(row["evidence_id"]) if row else None
 
     async def verify_chain(self, guild_id: int) -> dict[str, Any]:
         rows = await self.bot.database.fetchall(
@@ -339,6 +343,83 @@ class SecurityV7Cog(commands.Cog):
             previous = expected
             checked += 1
         return {"ok": True, "checked": checked, "reason": "Evidence chain verified."}
+
+    async def repair_chain(self, guild_id: int, repaired_by_id: int | None = None) -> dict[str, Any]:
+        """Re-chain existing stored evidence after an acknowledged integrity failure."""
+        async with self.evidence_locks[guild_id]:
+            rows = await self.bot.database.fetchall(
+                "SELECT evidence_id,payload_json,previous_hash,evidence_hash "
+                "FROM guardian_v7_evidence WHERE guild_id=? ORDER BY evidence_id ASC",
+                (guild_id,),
+            )
+            if not rows:
+                return {"ok": True, "repaired": 0, "reason": "Evidence chain was empty."}
+
+            # Determine the current failure before modifying anything so the repair
+            # record explains exactly why this maintenance action happened.
+            previous = "GENESIS"
+            failure_reason = "unknown chain mismatch"
+            for row in rows:
+                if str(row["previous_hash"]) != previous:
+                    failure_reason = f"Previous-hash mismatch at evidence {row['evidence_id']}."
+                    break
+                expected = evidence_hash(previous, str(row["payload_json"]))
+                if not hmac.compare_digest(expected, str(row["evidence_hash"])):
+                    failure_reason = f"Hash mismatch at evidence {row['evidence_id']}."
+                    break
+                previous = expected
+            else:
+                return {"ok": True, "repaired": 0, "reason": "Evidence chain was already valid."}
+
+            original_tail = str(rows[-1]["evidence_hash"])
+            previous = "GENESIS"
+            repaired = 0
+            for row in rows:
+                payload_json = str(row["payload_json"])
+                digest = evidence_hash(previous, payload_json)
+                await self.bot.database.execute(
+                    "UPDATE guardian_v7_evidence SET previous_hash=?,evidence_hash=? WHERE evidence_id=? AND guild_id=?",
+                    (previous, digest, int(row["evidence_id"]), guild_id),
+                )
+                previous = digest
+                repaired += 1
+
+            repair_payload = json.dumps(
+                {
+                    "kind": "EVIDENCE_CHAIN_REPAIR",
+                    "actor_id": repaired_by_id,
+                    "target_id": None,
+                    "reason": failure_reason,
+                    "records_rechained": repaired,
+                    "original_tail_hash": original_tail,
+                    "repaired_at": datetime.now(UTC).isoformat(),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            repair_digest = evidence_hash(previous, repair_payload)
+            await self.bot.database.execute(
+                "INSERT INTO guardian_v7_evidence "
+                "(guild_id,source_event_id,actor_id,event_kind,target_id,payload_json,previous_hash,evidence_hash) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    guild_id,
+                    None,
+                    repaired_by_id,
+                    "EVIDENCE_CHAIN_REPAIR",
+                    None,
+                    repair_payload,
+                    previous,
+                    repair_digest,
+                ),
+            )
+            return {
+                "ok": True,
+                "repaired": repaired,
+                "reason": failure_reason,
+                "original_tail_hash": original_tail,
+            }
 
     async def _learn_behavior(self, guild: discord.Guild, event: dict[str, Any]) -> None:
         actor_id = event["actor_id"]
