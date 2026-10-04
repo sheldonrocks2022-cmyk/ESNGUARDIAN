@@ -282,13 +282,12 @@ class SecurityV7Cog(commands.Cog):
             "(approval_code,guild_id,command_name,requester_id,expires_at) VALUES (?,?,?,?,?)",
             (code, interaction.guild.id, command_name, interaction.user.id, expires.isoformat()),
         )
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                f"Guardian v7 requires a second trusted person to approve /{command_name}. "
-                f"Approval code: {code}. A different recovery-team member or the server owner must run "
-                f"/shield approve code:{code} within 3 minutes, then you can rerun the command.",
-                ephemeral=True,
-            )
+        await respond(
+            interaction,
+            f"Guardian v7 requires a second trusted person to approve /{command_name}. "
+            f"Approval code: {code}. A different recovery-team member or the server owner must run "
+            f"/shield approve code:{code} within 3 minutes, then you can rerun the command.",
+        )
         await self._evidence(interaction.guild.id, interaction.user.id, "TWO_PERSON_APPROVAL", None, {"command": command_name, "code": code})
         return False
 
