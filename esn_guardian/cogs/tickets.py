@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, respond, staff_only
+from esn_guardian.cogs.common import guild_only, respond, staff_only, defer_response
 
 
 class TicketsCog(commands.Cog):
@@ -42,7 +42,7 @@ class TicketsCog(commands.Cog):
     @app_commands.command(description="Open a private support ticket. One active ticket per member.")
     @guild_only()
     async def ticket(self, interaction: discord.Interaction, subject: app_commands.Range[str, 1, 200]) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         guild = interaction.guild
         async with self.locks[guild.id]:
             await self.bot.database.ensure_guild(guild.id)
@@ -87,7 +87,7 @@ class TicketsCog(commands.Cog):
     @app_commands.command(name="ticket-close", description="Close this ticket and retain its private message history.")
     @guild_only()
     async def close_ticket(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         guild = interaction.guild
         async with self.locks[guild.id]:
             row = await self.bot.database.fetchone("SELECT * FROM tickets WHERE guild_id = ? AND channel_id = ?", (guild.id, interaction.channel_id))
