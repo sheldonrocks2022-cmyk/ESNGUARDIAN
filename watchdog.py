@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import aiohttp
 
@@ -28,12 +28,16 @@ async def main() -> None:
         for value in os.getenv("GUARDIAN_EXPECTED_GUILD_IDS", "").split(",")
         if value.strip().isdigit()
     }
+    restart_endpoint = os.getenv("GUARDIAN_RESTART_ENDPOINT", "").strip()
+    restart_token = os.getenv("GUARDIAN_RESTART_TOKEN", "").strip()
+    restart_method = os.getenv("GUARDIAN_RESTART_METHOD", "POST").strip().upper() or "POST"
     if not status_url:
         raise SystemExit("GUARDIAN_STATUS_URL is required for the external Guardian watchdog.")
 
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     last_state: str | None = None
     failures = 0
+    last_restart_attempt: datetime | None = None
 
     timeout = aiohttp.ClientTimeout(total=12)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -92,6 +96,31 @@ async def main() -> None:
                     message = f"ESN Guardian watchdog: Guardian appears OFFLINE. {detail} {stamp}"
                 await post_alert(session, webhook, message)
                 last_state = state
+
+            if state == "offline" and failures >= 3 and restart_endpoint:
+                now = datetime.now(UTC)
+                if last_restart_attempt is None or now - last_restart_attempt >= timedelta(minutes=15):
+                    last_restart_attempt = now
+                    restart_headers = {"Authorization": f"Bearer {restart_token}"} if restart_token else {}
+                    try:
+                        async with session.request(
+                            restart_method,
+                            restart_endpoint,
+                            headers=restart_headers,
+                            json={"reason": "ESN Guardian external watchdog offline recovery"},
+                        ) as response:
+                            result = (
+                                f"restart request accepted (HTTP {response.status})"
+                                if response.status < 400
+                                else f"restart request failed (HTTP {response.status})"
+                            )
+                    except Exception as error:
+                        result = f"restart request failed: {type(error).__name__}: {error}"
+                    await post_alert(
+                        session,
+                        webhook,
+                        f"ESN Guardian watchdog automatic recovery: {result}. {now.isoformat()}",
+                    )
 
             await asyncio.sleep(60)
 
