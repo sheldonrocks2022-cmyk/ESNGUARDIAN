@@ -332,6 +332,12 @@ class ProtectionV6Cog(commands.Cog):
 
     async def _config(self, guild_id: int):
         try:
+            row = await self.bot.database.fetchone(
+                "SELECT * FROM guardian_v6_config WHERE guild_id = ?",
+                (guild_id,),
+            )
+            if row is not None:
+                return row
             await self.bot.database.ensure_guild(guild_id)
             await self.bot.database.execute(
                 "INSERT OR IGNORE INTO guardian_config (guild_id) VALUES (?)",
@@ -738,12 +744,12 @@ class ProtectionV6Cog(commands.Cog):
         if interaction.guild is None or interaction.command is None:
             return True
 
-        config = await self._config(interaction.guild.id)
-        if config is not None and not config["command_shield"]:
-            return True
-
         qualified = interaction.command.qualified_name.casefold()
         if not any(qualified == prefix or qualified.startswith(prefix) for prefix in SENSITIVE_COMMAND_PREFIXES):
+            return True
+
+        config = await self._config(interaction.guild.id)
+        if config is not None and not config["command_shield"]:
             return True
 
         key = (interaction.guild.id, interaction.user.id)
