@@ -568,6 +568,11 @@ class AdvancedSecurityCog(commands.Cog):
         if not critical_change:
             return
         actor = await self._audit_executor(after.guild, discord.AuditLogAction.channel_update, after.id)
+        if (
+            hasattr(self.bot, "should_suppress_security_event")
+            and self.bot.should_suppress_security_event(after.guild.id, actor)
+        ):
+            return
         await self._record_destructive(after.guild, actor, "channel modification")
         if await self._trusted_change_actor(after.guild, actor):
             return
