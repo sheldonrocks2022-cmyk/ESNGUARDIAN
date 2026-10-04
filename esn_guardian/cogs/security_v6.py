@@ -1588,6 +1588,11 @@ class ProtectionV6Cog(commands.Cog):
             discord.AuditLogAction.channel_update,
             after.id,
         )
+        if (
+            hasattr(self.bot, "should_suppress_security_event")
+            and self.bot.should_suppress_security_event(after.guild.id, actor)
+        ):
+            return
         trusted = await self._trusted_actor(after.guild, actor)
         actor_score = self._actor_chain_score(after.guild.id, actor.id if actor else None)
         if changed_permissions:
