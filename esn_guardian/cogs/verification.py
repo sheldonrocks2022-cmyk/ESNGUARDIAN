@@ -15,6 +15,7 @@ from esn_guardian.cogs.common import (
     safe_public_role,
     set_protected_footer,
     staff_only,
+    defer_response,
 )
 
 
@@ -323,7 +324,7 @@ class VerificationCog(commands.Cog):
             )
             return
 
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         embed = set_protected_footer(
             discord.Embed(
                 title="ESN Guardian Verification",
