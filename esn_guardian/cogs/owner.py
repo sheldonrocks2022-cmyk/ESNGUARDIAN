@@ -124,7 +124,14 @@ class OwnerCog(commands.Cog):
 
     @app_commands.command(description="Ban a user from every server served by the bot.")
     @owner_only()
-    async def globalban(self, interaction: discord.Interaction, user_id: str, reason: str) -> None:
+    async def globalban(
+        self,
+        interaction: discord.Interaction,
+        user_id: str,
+        reason: str,
+        confidence: app_commands.Range[int, 1, 100] = 100,
+        evidence_case_id: int | None = None,
+    ) -> None:
         try:
             target_id = int(user_id)
         except ValueError:
@@ -163,6 +170,9 @@ class OwnerCog(commands.Cog):
                         {
                             "reason": reason[:500],
                             "outcome": outcome,
+                            "confidence": int(confidence),
+                            "evidence_case_id": evidence_case_id,
+                            "source_server_id": interaction.guild_id,
                             "source": "bot_owner_globalban",
                         },
                     )
@@ -172,7 +182,12 @@ class OwnerCog(commands.Cog):
             target_id,
             f"You have been globally banned by ESN Guardian.\nReason: {reason}",
         )
-        await respond(interaction, f"Global ban saved for `{target_id}`. Banned in {banned} server(s); failed in {failed}.")
+        evidence_text = f" • evidence case #{evidence_case_id}" if evidence_case_id is not None else ""
+        await respond(
+            interaction,
+            f"Global ban saved for `{target_id}`. Confidence: {int(confidence)}%{evidence_text}. "
+            f"Banned in {banned} server(s); failed in {failed}.",
+        )
 
     @app_commands.command(description="Remove a user from the global-ban list.")
     @owner_only()
