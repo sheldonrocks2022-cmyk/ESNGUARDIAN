@@ -175,6 +175,21 @@ class SecurityV7Cog(commands.Cog):
         )
         for statement in statements:
             await self.bot.database.execute(statement)
+
+        # Forward-compatible v7 migrations for servers that ran an earlier v7 build.
+        config_columns = await self.bot.database.fetchall("PRAGMA table_info(guardian_v7_config)")
+        existing = {str(row["name"]) for row in config_columns}
+        for column, sql_type in (
+            ("custom_elevated", "INTEGER"),
+            ("custom_high", "INTEGER"),
+            ("custom_critical", "INTEGER"),
+            ("custom_panic", "INTEGER"),
+        ):
+            if column not in existing:
+                await self.bot.database.execute(
+                    f"ALTER TABLE guardian_v7_config ADD COLUMN {column} {sql_type}"
+                )
+
         self.previous_check = self.bot.tree.interaction_check
         self.bot.tree.interaction_check = self._interaction_check
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
