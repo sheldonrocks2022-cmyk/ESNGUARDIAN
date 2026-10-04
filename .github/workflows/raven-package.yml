@@ -7,6 +7,9 @@ on:
     paths:
       - "esn_guardian/**"
       - "main.py"
+      - "bot.py"
+      - "watchdog.py"
+      - "tools/build_manifest.py"
       - "requirements.txt"
       - ".env.example"
       - "README.md"
@@ -24,9 +27,10 @@ jobs:
           rm -rf ESN-GUARDIAN-PYTHON ESN-GUARDIAN-PYTHON.zip
           mkdir -p ESN-GUARDIAN-PYTHON
           cp -r esn_guardian ESN-GUARDIAN-PYTHON/esn_guardian
-          cp main.py bot.py requirements.txt .env.example README.md .gitignore ESN-GUARDIAN-PYTHON/
+          cp main.py bot.py watchdog.py requirements.txt .env.example README.md .gitignore ESN-GUARDIAN-PYTHON/
           find ESN-GUARDIAN-PYTHON -type d -name '__pycache__' -prune -exec rm -rf {} +
           find ESN-GUARDIAN-PYTHON -type f -name '*.pyc' -delete
+          GUARDIAN_RELEASE_HMAC_KEY="${{ secrets.GUARDIAN_RELEASE_HMAC_KEY }}" python tools/build_manifest.py ESN-GUARDIAN-PYTHON
           cd ESN-GUARDIAN-PYTHON
           zip -qr ../ESN-GUARDIAN-PYTHON.zip .
       - name: Upload Python Guardian ZIP
