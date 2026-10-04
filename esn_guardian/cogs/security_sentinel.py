@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, defer_response
 from esn_guardian.cogs.security_intelligence import case_weight
 
 LOG = logging.getLogger("esn_guardian.sentinel")
@@ -484,7 +484,7 @@ class SecuritySentinelCog(commands.Cog):
     @staff_only()
     async def sentinel_status(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await self._scan_guild(interaction.guild)
         await respond(interaction, await self.live_report(interaction.guild))
 
