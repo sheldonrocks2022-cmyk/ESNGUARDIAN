@@ -91,6 +91,18 @@ class GuardianBot(commands.Bot):
         current = self._security_suppression.get(guild_id)
         return current[1] if current is not None else None
 
+    def should_suppress_security_event(
+        self,
+        guild_id: int,
+        actor: discord.abc.User | None = None,
+    ) -> bool:
+        """Ignore Guardian's own audit echoes while still allowing attributed outside actors through."""
+        if not self.security_events_suppressed(guild_id):
+            return False
+        if actor is None:
+            return True
+        return self.user is not None and actor.id == self.user.id
+
     async def _universal_interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.type is not discord.InteractionType.application_command:
             return True
