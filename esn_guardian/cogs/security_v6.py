@@ -332,6 +332,11 @@ class ProtectionV6Cog(commands.Cog):
 
     async def _config(self, guild_id: int):
         try:
+            await self.bot.database.ensure_guild(guild_id)
+            await self.bot.database.execute(
+                "INSERT OR IGNORE INTO guardian_config (guild_id) VALUES (?)",
+                (guild_id,),
+            )
             await self.bot.database.execute(
                 "INSERT OR IGNORE INTO guardian_v6_config (guild_id) VALUES (?)",
                 (guild_id,),
@@ -1465,10 +1470,52 @@ class ProtectionV6Cog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if message.guild is None or not isinstance(message.author, discord.Member) or message.author.bot:
-            return
         attachments = tuple(attachment.filename for attachment in message.attachments)
         score = scam_text_score(message.content, attachments)
+
+        if message.guild is None:
+            if message.author.bot or score < 7:
+                return
+            try:
+                await message.channel.send(
+                    "ESN Guardian detected scam/phishing indicators in that message. "
+                    "Do not open unknown links, scan unexpected QR codes, or enter credentials from unsolicited messages.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            except discord.HTTPException:
+                pass
+            return
+
+        if not isinstance(message.author, discord.Member):
+            return
+
+        metadata = getattr(message, "interaction_metadata", None)
+        if metadata is not None:
+            try:
+                is_external = bool(metadata.is_user_integration())
+            except (AttributeError, TypeError):
+                is_external = False
+            if is_external:
+                invoker = getattr(metadata, "user", None)
+                actor = message.guild.get_member(invoker.id) if invoker is not None else None
+                app_id = getattr(message, "application_id", None)
+                await self._signal(
+                    message.guild,
+                    actor or invoker,
+                    "external_app",
+                    f"External user-installed application activity detected; application_id={app_id or 'unknown'}",
+                    target_id=app_id,
+                )
+                if invoker is not None and invoker.id == message.guild.owner_id:
+                    await self._enqueue(
+                        0,
+                        self._owner_safe_containment,
+                        message.guild,
+                        f"Server owner account invoked external application {app_id or 'unknown'}",
+                    )
+
+        if message.author.bot:
+            return
         if score < 7:
             return
         try:
