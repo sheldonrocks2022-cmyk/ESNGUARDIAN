@@ -14,7 +14,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, guild_owner_only, log_event, respond, staff_only
+from esn_guardian.cogs.common import guild_only, guild_owner_only, log_event, respond, staff_only, defer_response
 
 LOG = logging.getLogger("esn_guardian.security_v6")
 
@@ -2018,7 +2018,7 @@ class ProtectionV6Cog(commands.Cog):
     @staff_only()
     async def protection_status(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.status_report(interaction.guild))
 
     @protection.command(name="risk", description="Show Guardian's adaptive risk score for a member.")
@@ -2049,7 +2049,7 @@ class ProtectionV6Cog(commands.Cog):
     @staff_only()
     async def protection_risk_board(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.highest_risk_report(interaction.guild))
 
     @protection.command(name="checkpoint", description="Create a trusted recovery checkpoint.")
@@ -2057,7 +2057,7 @@ class ProtectionV6Cog(commands.Cog):
     @guild_owner_only()
     async def protection_checkpoint(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         checkpoint_id = await self.checkpoint(interaction.guild, "manual-owner")
         await respond(
             interaction,
@@ -2069,7 +2069,7 @@ class ProtectionV6Cog(commands.Cog):
     @guild_owner_only()
     async def protection_restore(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await self._restore_missing_from_checkpoint(interaction.guild)
         checkpoint = await self._latest_checkpoint(interaction.guild.id)
         await respond(
@@ -2084,7 +2084,7 @@ class ProtectionV6Cog(commands.Cog):
     @staff_only()
     async def protection_forensics(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.forensics_report(interaction.guild))
 
     @protection.command(name="release", description="Release v6 panic lockdown while keeping protection enabled.")
@@ -2092,7 +2092,7 @@ class ProtectionV6Cog(commands.Cog):
     @guild_owner_only()
     async def protection_release(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         try:
             await self.bot.database.execute(
                 "UPDATE guardian_config SET panic_mode=0 WHERE guild_id=?",
