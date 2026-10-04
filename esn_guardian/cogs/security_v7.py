@@ -212,6 +212,9 @@ class SecurityV7Cog(commands.Cog):
             asyncio.create_task(self.dashboard_runner.cleanup())
 
     async def _config(self, guild_id: int):
+        row = await self.bot.database.fetchone("SELECT * FROM guardian_v7_config WHERE guild_id=?", (guild_id,))
+        if row is not None:
+            return row
         await self.bot.database.execute("INSERT OR IGNORE INTO guardian_v7_config (guild_id) VALUES (?)", (guild_id,))
         return await self.bot.database.fetchone("SELECT * FROM guardian_v7_config WHERE guild_id=?", (guild_id,))
 
@@ -242,14 +245,16 @@ class SecurityV7Cog(commands.Cog):
                 return False
         if interaction.guild is None or interaction.command is None:
             return True
-        config = await self._config(interaction.guild.id)
         command_name = interaction.command.qualified_name.casefold()
         dynamic_catastrophic = command_name in CATASTROPHIC
         if command_name == "guardian panic" and getattr(interaction.namespace, "enabled", True) is False:
             dynamic_catastrophic = True
         if command_name == "security automod" and getattr(interaction.namespace, "enabled", True) is False:
             dynamic_catastrophic = True
-        if not config["two_person"] or not dynamic_catastrophic:
+        if not dynamic_catastrophic:
+            return True
+        config = await self._config(interaction.guild.id)
+        if not config["two_person"]:
             return True
         now = datetime.now(UTC)
         rows = await self.bot.database.fetchall(
