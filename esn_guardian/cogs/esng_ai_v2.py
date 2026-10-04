@@ -68,6 +68,64 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         if resilience is not None:
             sections.append(await resilience.status_report(guild))
 
+        if v7 is not None:
+            if _contains(
+                p,
+                "guardian v7",
+                "v7 status",
+                "predictive shield",
+                "predictive protection",
+                "security state",
+                "current security state",
+            ):
+                config = await v7._config(guild.id)
+                chain = await v7.verify_chain(guild.id)
+                return (
+                    "**Guardian Protection v7 MAX**\n"
+                    f"State: {v7.state[guild.id]}\n"
+                    f"Predictive risk: {v7.score(guild.id)}/100\n"
+                    f"Policy: {config['profile']}\n"
+                    f"Evidence chain: {'VERIFIED' if chain['ok'] else 'FAILED'} ({chain['checked']} records)\n"
+                    f"Emergency minimal mode: {'ACTIVE' if getattr(self.bot, 'guardian_minimal_mode', False) else 'standby'}"
+                )
+
+            if _contains(p, "trust graph", "who do we trust", "trust score", "weakest trust"):
+                return await v7.trust_graph(guild)
+
+            if _contains(
+                p,
+                "privilege path",
+                "privilege paths",
+                "privilege escalation path",
+                "who can become admin",
+            ):
+                paths = await v7.privilege_paths(guild)
+                if not paths:
+                    return "Guardian v7 found no direct Manage Roles to dangerous-role escalation paths."
+                return (
+                    "**Guardian v7 privilege paths**\n"
+                    + "\n".join(
+                        f"• {item['member']} ({item['member_id']}) -> {item['target_role']} • Guardian revoke: {'yes' if item['guardian_can_revoke'] else 'NO'}"
+                        for item in paths[:20]
+                    )
+                )[:4000]
+
+            if _contains(p, "incident replay", "replay attack", "replay incident", "attack timeline"):
+                return await v7.replay(guild.id)
+
+            if _contains(p, "benchmark", "security benchmark", "protection benchmark", "grade our protection"):
+                result = await v7.benchmark(guild)
+                failed = [name for name, ok in result["checks"] if not ok]
+                return (
+                    "**Guardian v7 benchmark**\n"
+                    f"Score: {result['score']}/100 • Grade {result['grade']}\n"
+                    f"Privilege paths: {len(result['paths'])}\n"
+                    f"Failed checks: {', '.join(failed) if failed else 'none'}"
+                )
+
+            if _contains(p, "chaos test", "simulate attack", "test attack scenarios"):
+                return await v7.chaos_report(guild)
+
         if protection_v6 is not None:
             sections.append(await protection_v6.status_report(guild))
             sections.append(await protection_v6.highest_risk_report(guild))
