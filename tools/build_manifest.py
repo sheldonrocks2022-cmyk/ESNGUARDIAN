@@ -22,15 +22,16 @@ def main() -> None:
     signature_path = root / "guardian_manifest.sig"
 
     files: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix()
-        if relative in {"guardian_manifest.json", "guardian_manifest.sig"}:
-            continue
-        if relative.startswith("data/"):
-            continue
-        files[relative] = sha256(path)
+    runtime_files = [
+        root / "bot.py",
+        root / "main.py",
+        root / "watchdog.py",
+        root / "requirements.txt",
+    ]
+    runtime_files.extend(sorted((root / "esn_guardian").rglob("*.py")))
+    for path in runtime_files:
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = sha256(path)
 
     payload = json.dumps(
         {
