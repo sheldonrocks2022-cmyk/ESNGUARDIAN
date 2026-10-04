@@ -206,14 +206,26 @@ class AdvancedSecurityCog(commands.Cog):
                     "allow": allow.value,
                     "deny": deny.value,
                 })
-            channels.append({
+            item = {
                 "id": channel.id,
                 "name": channel.name,
                 "type": str(channel.type),
                 "position": channel.position,
                 "category_id": channel.category_id,
                 "overwrites": overwrites,
-            })
+            }
+            if isinstance(channel, discord.TextChannel):
+                item.update({
+                    "topic": channel.topic,
+                    "slowmode_delay": channel.slowmode_delay,
+                    "nsfw": channel.nsfw,
+                })
+            elif isinstance(channel, discord.VoiceChannel):
+                item.update({
+                    "bitrate": channel.bitrate,
+                    "user_limit": channel.user_limit,
+                })
+            channels.append(item)
         return {"guild_id": guild.id, "roles": roles, "channels": channels}
 
     async def snapshot_guild(self, guild: discord.Guild, *, approve_current: bool = False) -> None:
