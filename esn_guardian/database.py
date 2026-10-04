@@ -20,6 +20,8 @@ class Database:
         self.last_backup_path: Path | None = None
         self._write_lock = asyncio.Lock()
         self._backup_lock = asyncio.Lock()
+        self._blacklisted_guild_ids: set[int] = set()
+        self._state_cache: dict[str, bool] = {}
 
     async def connect(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,8 +37,16 @@ class Database:
         await self.connection.execute("PRAGMA temp_store = MEMORY")
         await self.connection.execute("PRAGMA cache_size = -32768")
         await self._migrate()
+        await self._refresh_access_cache()
         await self.connection.execute("PRAGMA optimize")
         await self.backup("startup")
+
+    async def _refresh_access_cache(self) -> None:
+        connection = self._require_connection()
+        blacklist_rows = await (await connection.execute("SELECT guild_id FROM guild_blacklist")).fetchall()
+        state_rows = await (await connection.execute("SELECT state_key, value FROM bot_state")).fetchall()
+        self._blacklisted_guild_ids = {int(row["guild_id"]) for row in blacklist_rows}
+        self._state_cache = {str(row["state_key"]): str(row["value"]) == "1" for row in state_rows}
 
     async def close(self) -> None:
         if self.connection is not None:
@@ -98,6 +108,22 @@ class Database:
         if not self._sqlite_file_ok(self.path):
             raise RuntimeError("Guardian restored a database backup, but the restored file failed SQLite integrity checking.")
 
+    def _backup_to_file(self, backup_path: Path) -> None:
+        source: sqlite3.Connection | None = None
+        target: sqlite3.Connection | None = None
+        try:
+            source = sqlite3.connect(str(self.path), timeout=10)
+            target = sqlite3.connect(str(backup_path), timeout=10)
+            source.backup(target)
+            row = target.execute("PRAGMA quick_check").fetchone()
+            if not row or row[0] != "ok":
+                raise RuntimeError(f"Backup integrity check failed for {backup_path.name}")
+        finally:
+            if target is not None:
+                target.close()
+            if source is not None:
+                source.close()
+
     async def backup(self, reason: str = "scheduled", *, keep: int = 32) -> Path | None:
         if self.connection is None:
             return None
@@ -106,11 +132,7 @@ class Database:
             clean_reason = self._clean_backup_reason(reason)
             backup_path = self.backup_dir / f"{self.path.stem}-{self._backup_timestamp()}-{clean_reason}.db"
 
-            async with aiosqlite.connect(backup_path) as target:
-                await self.connection.backup(target)
-                row = await (await target.execute("PRAGMA quick_check")).fetchone()
-                if not row or row[0] != "ok":
-                    raise RuntimeError(f"Backup integrity check failed for {backup_path.name}")
+            await asyncio.to_thread(self._backup_to_file, backup_path)
 
             backups = sorted(
                 self.backup_dir.glob(f"{self.path.stem}-*.db"),
@@ -349,10 +371,22 @@ class Database:
             await connection.executemany(query, prepared)
             await connection.commit()
 
+    def _quick_check_file(self) -> bool:
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(str(self.path), timeout=2)
+            connection.execute("PRAGMA query_only = ON")
+            connection.execute("PRAGMA busy_timeout = 2000")
+            row = connection.execute("PRAGMA quick_check").fetchone()
+            return bool(row and row[0] == "ok")
+        except sqlite3.DatabaseError:
+            return False
+        finally:
+            if connection is not None:
+                connection.close()
+
     async def quick_check(self) -> bool:
-        connection = self._require_connection()
-        row = await (await connection.execute("PRAGMA quick_check")).fetchone()
-        return bool(row and row[0] == "ok")
+        return await asyncio.to_thread(self._quick_check_file)
 
     async def checkpoint(self) -> None:
         connection = self._require_connection()
@@ -433,16 +467,25 @@ class Database:
         return len(prepared)
 
     async def is_guild_blacklisted(self, guild_id: int) -> bool:
-        row = await self.fetchone("SELECT 1 FROM guild_blacklist WHERE guild_id = ?", (guild_id,))
-        return row is not None
+        return guild_id in self._blacklisted_guild_ids
+
+    async def blacklist_guild(self, guild_id: int, reason: str) -> None:
+        await self.execute(
+            "INSERT OR REPLACE INTO guild_blacklist (guild_id, reason) VALUES (?, ?)",
+            (guild_id, reason),
+        )
+        self._blacklisted_guild_ids.add(guild_id)
+
+    async def unblacklist_guild(self, guild_id: int) -> None:
+        await self.execute("DELETE FROM guild_blacklist WHERE guild_id = ?", (guild_id,))
+        self._blacklisted_guild_ids.discard(guild_id)
 
     async def global_ban_reason(self, user_id: int) -> str | None:
         row = await self.fetchone("SELECT reason FROM global_bans WHERE user_id = ?", (user_id,))
         return str(row["reason"]) if row is not None else None
 
     async def state_enabled(self, state_key: str) -> bool:
-        row = await self.fetchone("SELECT value FROM bot_state WHERE state_key = ?", (state_key,))
-        return row is not None and row["value"] == "1"
+        return bool(self._state_cache.get(state_key, False))
 
     async def set_state_enabled(self, state_key: str, enabled: bool) -> None:
         await self.execute(
@@ -450,6 +493,7 @@ class Database:
             "ON CONFLICT(state_key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
             (state_key, "1" if enabled else "0"),
         )
+        self._state_cache[state_key] = enabled
 
     async def subscribe_to_status(self, user_id: int, topic: str) -> None:
         await self.execute(
