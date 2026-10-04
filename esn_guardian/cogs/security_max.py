@@ -954,7 +954,7 @@ class SecurityMaxCog(commands.Cog):
             f"Predictive state: {state} • risk {predictive}/100\n"
             f"High Sentinel signals (60m): {int(signals['count']) if signals else 0}\n"
             f"Currently quarantined: {int(quarantined['count']) if quarantined else 0}\n"
-            f"Recent case mix: {', '.join(f'{row['action']}×{row['count']}' for row in rows) if rows else 'none'}\n"
+            f"Recent case mix: {', '.join(str(row['action']) + '×' + str(row['count']) for row in rows) if rows else 'none'}\n"
             "Assessment: Guardian enforcement remains deterministic; this analyst correlates evidence and explains the current posture."
         )
 
