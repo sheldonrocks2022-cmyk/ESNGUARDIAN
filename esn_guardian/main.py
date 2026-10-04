@@ -23,6 +23,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.security_sentinel",
     "esn_guardian.cogs.security_resilience",
     "esn_guardian.cogs.security_v6",
+    "esn_guardian.cogs.security_v7",
     "esn_guardian.cogs.verification",
     "esn_guardian.cogs.community",
     "esn_guardian.cogs.esng_ai_v2",
