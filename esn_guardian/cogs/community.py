@@ -442,6 +442,12 @@ class CommunityCog(commands.Cog):
     @app_commands.choices(category=[app_commands.Choice(name=name.title(), value=name) for name in LOG_FIELDS])
     async def logs(self, interaction: discord.Interaction, category: app_commands.Choice[str], channel: discord.TextChannel) -> None:
         await self.bot.database.update_setting(interaction.guild_id, LOG_FIELDS[category.value], channel.id)
+        if self.bot.get_cog("SecurityV7Cog") is not None:
+            await self.bot.database.execute(
+                "INSERT OR REPLACE INTO guardian_v7_assets "
+                "(guild_id,asset_type,asset_id,label,canary,created_by_id) VALUES (?,'channel',?,?,0,?)",
+                (interaction.guild_id, channel.id, f"Guardian {category.value} log", interaction.user.id),
+            )
         try:
             await channel.send(
                 embed=set_protected_footer(discord.Embed(title=f"{category.name} logging configured", description="ESN Guardian can write to this log channel.", color=discord.Color.green())),
@@ -461,6 +467,12 @@ class CommunityCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         for field in LOG_FIELDS.values():
             await self.bot.database.update_setting(interaction.guild_id, field, channel.id)
+        if self.bot.get_cog("SecurityV7Cog") is not None:
+            await self.bot.database.execute(
+                "INSERT OR REPLACE INTO guardian_v7_assets "
+                "(guild_id,asset_type,asset_id,label,canary,created_by_id) VALUES (?,'channel',?,?,0,?)",
+                (interaction.guild_id, channel.id, "Guardian all-logs channel", interaction.user.id),
+            )
         try:
             await channel.send(
                 embed=set_protected_footer(
