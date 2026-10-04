@@ -416,6 +416,14 @@ class SecurityMaxCog(commands.Cog):
             return False
 
     async def setup_maximum(self, guild: discord.Guild) -> dict[str, int | str]:
+        # setup-max intentionally performs many role/channel writes. Mark them as
+        # Guardian-owned before Discord emits the corresponding audit/gateway events.
+        if hasattr(self.bot, "suppress_security_events"):
+            self.bot.suppress_security_events(
+                guild.id,
+                seconds=180,
+                reason="Guardian MAX setup-max internal role/channel configuration",
+            )
         await self.bot.database.ensure_guild(guild.id)
         quarantine = await self._ensure_role(guild, "Guardian Quarantine")
         unverified = await self._ensure_role(guild, "Guardian Unverified")
