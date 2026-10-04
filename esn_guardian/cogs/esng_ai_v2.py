@@ -17,7 +17,7 @@ MEMBER_RE = re.compile(
 
 
 class ESNGuardianAI2Cog(ESNGuardianAICog):
-    """ESNG Intelligence v5 MAX: live multi-layer Guardian security reasoning."""
+    """ESNG Intelligence v6 MAX: live multi-layer Guardian security reasoning."""
 
     def _intel(self):
         return self.bot.get_cog("SecurityIntelligenceCog")
@@ -30,6 +30,9 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
 
     def _resilience(self):
         return self.bot.get_cog("SecurityResilienceCog")
+
+    def _protection_v6(self):
+        return self.bot.get_cog("ProtectionV6Cog")
 
     @staticmethod
     def _member_id(prompt: str) -> int | None:
@@ -47,6 +50,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         overwatch = self._overwatch()
         sentinel = self._sentinel()
         resilience = self._resilience()
+        protection_v6 = self._protection_v6()
         sections: list[str] = []
 
         if overwatch is not None:
@@ -59,6 +63,10 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
 
         if resilience is not None:
             sections.append(await resilience.status_report(guild))
+
+        if protection_v6 is not None:
+            sections.append(await protection_v6.status_report(guild))
+            sections.append(await protection_v6.highest_risk_report(guild))
 
         if intel is not None:
             sections.append(await intel.threat_report(guild))
@@ -80,18 +88,80 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         overwatch = self._overwatch()
         sentinel = self._sentinel()
         resilience = self._resilience()
+        protection_v6 = self._protection_v6()
 
         if not p or _contains(p, "help", "what can you do", "what do you know"):
             return (
-                "**ESNG Intelligence v5 MAX**\n"
+                "**ESNG Intelligence v6 MAX**\n"
                 "I can reason across Guardian's live security state instead of treating each event in isolation.\n"
                 "I can combine threat reports, defense posture, integrity verification, policy drift, incident sessions, "
-                "Sentinel anomaly signals, subject behavior, multi-step attack chains, resilience readiness, recovery drills, member history, backups, anti-nuke, "
+                "Protection v6 adaptive risk, attack-chain scoring, permission firewall state, auto-heal checkpoints, "
+                "Sentinel anomaly signals, subject behavior, resilience readiness, recovery drills, backups, anti-nuke, "
                 "raids, external apps, webhooks, integrations, credential protection, and ESN knowledge.\n"
-                "Try: ESNG full security report • ESNG sentinel status • ESNG explain signal #3 • "
-                "ESNG analyze subject 123456789012345678 • ESNG are events correlated • ESNG explain case #12"
+                "Try: ESNG full security report • ESNG protection v6 • ESNG highest risk member • "
+                "ESNG v6 forensics • ESNG analyze subject 123456789012345678 • ESNG explain case #12"
             )
 
+
+        if protection_v6 is not None:
+            if _contains(
+                p,
+                "protection v6",
+                "v6 status",
+                "adaptive protection",
+                "permission firewall",
+                "auto heal",
+                "auto-heal",
+                "command shield",
+                "automatic panic",
+                "panic status",
+            ):
+                return await protection_v6.status_report(guild)
+
+            if _contains(
+                p,
+                "highest risk",
+                "highest risk member",
+                "risk board",
+                "who is dangerous",
+                "most dangerous member",
+                "top risk",
+            ):
+                return await protection_v6.highest_risk_report(guild)
+
+            if _contains(
+                p,
+                "v6 forensics",
+                "incident forensics",
+                "attack report",
+                "post attack report",
+                "post-attack report",
+                "what happened in the attack",
+            ):
+                return await protection_v6.forensics_report(guild)
+
+            member_id = self._member_id(prompt)
+            if member_id is not None and _contains(
+                p,
+                "adaptive risk",
+                "v6 risk",
+                "risk score",
+                "member risk",
+                "user risk",
+            ):
+                member = guild.get_member(member_id)
+                if member is not None:
+                    data = await protection_v6.member_risk(guild, member)
+                    return (
+                        f"**Protection v6 adaptive risk — {member_id}**\n"
+                        f"Score: {data['score']}/100 ({data['level']})\n"
+                        f"Account age: {data['account_age_days']} days\n"
+                        f"Weighted case risk: {data['weighted_cases']}\n"
+                        f"Dangerous roles: {data['dangerous_roles']}\n"
+                        f"Verification failures: {data['failed_verifications']}\n"
+                        f"External-app signals: {data['external_app_events']}\n"
+                        f"Raid-cluster contribution: {data['raid_cluster_score']}"
+                    )
 
         if resilience is not None:
             if _contains(
@@ -463,11 +533,12 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             "new ai",
         ):
             return (
-                "**ESNG Intelligence v5 MAX**\n"
+                "**ESNG Intelligence v6 MAX**\n"
                 "I now combine live configuration, threat history, tamper-evident case verification, policy drift, "
-                "persistent incident sessions, threat trends, Sentinel behavioral correlation, subject profiles, Guardian Resilience self-health, "
-                "runtime latency/event-loop health, SQLite integrity, backup freshness, multi-step attack-chain context, "
-                "member security history, protection health, verification health, and ESN knowledge. "
+                "Protection v6 adaptive member risk, automatic attack-chain containment, permission firewall state, "
+                "recovery checkpoints, post-attack forensics, persistent incident sessions, threat trends, Sentinel behavioral correlation, "
+                "subject profiles, Guardian Resilience self-health, runtime latency/event-loop health, SQLite integrity, backup freshness, "
+                "member security history, verification health, and ESN knowledge. "
                 "I explain the evidence behind scores and do not invent live data."
             )
 
