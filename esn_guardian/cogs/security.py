@@ -11,7 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target
+from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target, defer_response
 
 URL_RE = re.compile(r"(?:https?://|discord(?:app)?\.com/invite/|discord\.gg/)[^\s]+", re.IGNORECASE)
 SUSPICIOUS_DOMAIN_TOKENS = (
@@ -1332,7 +1332,7 @@ class SecurityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def lockdown(self, interaction: discord.Interaction, reason: str = "Manual lockdown") -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         changed = await self._lockdown(interaction.guild, reason)
         await respond(interaction, "Lockdown enabled." if changed else "Lockdown is already active.")
 
@@ -1340,7 +1340,7 @@ class SecurityCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def unlockdown(self, interaction: discord.Interaction, reason: str = "Manual lockdown release") -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         changed = await self._unlockdown(interaction.guild, reason)
         await respond(interaction, f"Restored {changed} channels.")
 
