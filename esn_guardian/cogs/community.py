@@ -41,7 +41,7 @@ LOG_FIELDS = {
 BEDROCK_RAKNET_MAGIC = bytes.fromhex("00ffff00fefefefefdfdfdfd12345678")
 LOG = logging.getLogger("esn_guardian.cogs.community")
 HELP_GUIDES = {
-    "setup": "**ESN Guardian Setup**\n1. Give Guardian View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Manage Webhooks, Read Message History, and View Audit Log.\n2. Put Guardian above every role it must protect.\n3. Run `/security harden` to enable the secure baseline, external-app lock, recovery snapshot, bot approval, webhook/integration guards, credential protection, and rollback.\n4. Set log routes with `/logs`.\n5. Configure verification and tickets if your server uses them.\n6. Run `/guardian audit` and keep the security score clean.\n\nUse `/help section:<category>` for the command catalogue.",
+    "setup": "**ESN Guardian Setup**\n1. Give Guardian View Channels, Send Messages, Manage Messages, Moderate Members, Kick Members, Ban Members, Manage Roles, Manage Channels, Manage Webhooks, Read Message History, and View Audit Log.\n2. Put Guardian above every role it must protect.\n3. Run `/security harden` to enable the secure baseline, external-app lock, recovery snapshot, bot approval, webhook/integration guards, credential protection, and rollback.\n4. Set every log route at once with `/logs-all`, or set individual routes with `/logs`.\n5. Configure verification and tickets if your server uses them.\n6. Run `/guardian audit` and keep the security score clean.\n\nUse `/help section:<category>` for the command catalogue.",
     "moderation": "**Moderation Commands**\n`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`\n`/clear`, `/slowmode`, `/nickname`, `/role`, `/massrole`\n`/case`, `/history`,  `/lockdown`, `/unlockdown`\n\nStaff permission is required. Every moderation action creates a case ID and can be sent to the moderation log channel.",
     "security": "**Security Commands**\nCore: `/security harden`, `/security status`, `/security scan`, `/security cases`\nAutoMod: `/security automod`, `/security thresholds`, `/security links`, `/security allow-domain`, `/security remove-domain`, `/security add-word`, `/security remove-word`, `/security words`, `/security domains`, `/security check-link`, `/security reset-automod`\nRaid: `/security raid`, `/security raid-status`, `/security quarantine`, `/security release`, `/security member`\nAnti-nuke: `/antinuke setup`, `/antinuke enable`, `/antinuke disable`, `/antinuke status`, `/antinuke trust`, `/antinuke untrust`\nAdvanced: `/guardian audit`, `/guardian status`, `/guardian snapshot`, `/guardian approve-bot`, `/guardian unapprove-bot`, `/guardian panic`\n\nUse `/security harden` first, then `/guardian audit`.",
     "verification": "**Verification Commands**\n`/verification setup` posts the persistent VERIFY button and stores its message.\n`/verification enable` and `/verification disable` control access.\n`/verification status` shows roles and account-age settings.\n`/verification reset` clears verification records for one member or the whole server.\n`/verify` lets a member run the same checks without using the button.\n\nPut the verified role below the bot's highest role; configure the unverified role with restricted channel permissions.",
@@ -98,7 +98,7 @@ class ControlPanel(discord.ui.View):
                     return
                 await respond(interaction, "Use `/lockdown` to confirm the incident reason and lock channels.")
             elif action in {"security", "automod", "verification", "logs", "settings", "ads", "statistics", "rules", "support", "help"}:
-                text = {"security": "Security controls:  `/lockdown`, `/unlockdown`.", "automod": "AutoMod is actively monitoring flood, mention, duplicate, caps, links, and configured blocked words.", "verification": "Configure with `/verification setup`, then `/verification enable`.", "logs": "Set each route with `/logs category:<name> channel:<channel>`.", "settings": "Use `/config` to inspect current server settings.", "ads": "Advertising controls have been retired. Staff can use `/smpannounce`.", "statistics": f"Serving {len(self.bot.guilds)} servers.", "rules": "Ask your server staff for the current rules.", "support": "Support: https://discord.gg/huFsDxkZ2g", "help": "Use `/help` for setup instructions and the full command guide."}[action]
+                text = {"security": "Security controls:  `/lockdown`, `/unlockdown`.", "automod": "AutoMod is actively monitoring flood, mention, duplicate, caps, links, and configured blocked words.", "verification": "Configure with `/verification setup`, then `/verification enable`.", "logs": "Use `/logs-all channel:<channel>` to send every Guardian log type to one channel, or `/logs category:<name> channel:<channel>` for separate routes.", "settings": "Use `/config` to inspect current server settings.", "ads": "Advertising controls have been retired. Staff can use `/smpannounce`.", "statistics": f"Serving {len(self.bot.guilds)} servers.", "rules": "Ask your server staff for the current rules.", "support": "Support: https://discord.gg/huFsDxkZ2g", "help": "Use `/help` for setup instructions and the full command guide."}[action]
                 await respond(interaction, text)
         return callback
 
@@ -452,6 +452,40 @@ class CommunityCog(commands.Cog):
             return
         await respond(interaction, f"{category.name} logs will go to {channel.mention}. Test entry posted.")
 
+
+
+    @app_commands.command(name="logs-all", description="Send every Guardian log type to one channel at once.")
+    @guild_only()
+    @staff_only()
+    async def logs_all(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        await interaction.response.defer(ephemeral=True)
+        for field in LOG_FIELDS.values():
+            await self.bot.database.update_setting(interaction.guild_id, field, channel.id)
+        try:
+            await channel.send(
+                embed=set_protected_footer(
+                    discord.Embed(
+                        title="All ESN Guardian logging configured",
+                        description=(
+                            "Every Guardian log route now points to this channel: "
+                            + ", ".join(name.title() for name in LOG_FIELDS)
+                            + "."
+                        ),
+                        color=discord.Color.green(),
+                    )
+                ),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            await respond(
+                interaction,
+                "All log routes were saved, but I could not post a test entry. Check my View Channel and Send Messages permissions.",
+            )
+            return
+        await respond(
+            interaction,
+            f"All {len(LOG_FIELDS)} Guardian log types now go to {channel.mention}.",
+        )
 
 
     @app_commands.command(description="Submit a suggestion for staff and the community.")
