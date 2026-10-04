@@ -1512,7 +1512,7 @@ class SecurityCog(commands.Cog):
         )
         await respond(
             interaction,
-            "**Guardian Raid Engine v3**\n"
+            "**Guardian Raid Engine v4 MAX**\n"
             f"Enabled: {'yes' if config['enabled'] else 'no'}\n"
             f"Containment: {'ACTIVE' if active else 'inactive'}\n"
             f"Active until: {until.isoformat() if active and until else 'n/a'}\n"
@@ -1656,7 +1656,16 @@ class SecurityCog(commands.Cog):
         config = await self.bot.database.fetchone("SELECT * FROM anti_nuke_config WHERE guild_id = ?", (interaction.guild_id,))
         trusted = await self.bot.database.fetchone("SELECT COUNT(*) AS count FROM anti_nuke_trusted_users WHERE guild_id = ?", (interaction.guild_id,))
         assert config is not None and trusted is not None
-        await respond(interaction, f"Enabled: {'yes' if config['enabled'] else 'no'}\nThreshold: {config['action_limit']} destructive actions in {config['window_seconds']} seconds\nTrusted users: {trusted['count']}\nRequires: View Audit Log, Ban Members, Manage Channels")
+        max_layer = self.bot.get_cog("SecurityMaxCog")
+        await respond(
+            interaction,
+            f"**Guardian Anti-Nuke v2 MAX**\n"
+            f"Enabled: {'yes' if config['enabled'] else 'no'}\n"
+            f"Fast threshold: {config['action_limit']} destructive actions in {config['window_seconds']} seconds\n"
+            f"Slow-chain defense: {'ON' if max_layer is not None else 'OFF'}\n"
+            f"Trusted users: {trusted['count']}\n"
+            "Requires: View Audit Log, Ban Members, Manage Channels",
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
