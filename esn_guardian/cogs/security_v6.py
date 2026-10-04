@@ -1644,6 +1644,22 @@ class ProtectionV6Cog(commands.Cog):
             discord.AuditLogAction.role_update,
             after.id,
         )
+
+        # A single Discord role move shifts the positions of many neighboring
+        # roles, but only the directly moved role receives an audit-log entry.
+        # Ignore unattributed position-only collateral updates so auto-heal does
+        # not fight Discord's own reorder and create an endless loop.
+        position_only = (
+            before.name == after.name
+            and before.permissions == after.permissions
+            and before.colour == after.colour
+            and before.hoist == after.hoist
+            and before.mentionable == after.mentionable
+            and before.position != after.position
+        )
+        if position_only and actor is None:
+            return
+
         trusted = await self._trusted_actor(after.guild, actor)
         actor_score = self._actor_chain_score(after.guild.id, actor.id if actor else None)
         if trusted and actor_score < ACTOR_CONTAIN_SCORE:
