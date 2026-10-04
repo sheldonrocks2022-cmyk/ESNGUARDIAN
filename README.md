@@ -35,7 +35,7 @@ It adds:
 - Raid Engine v4 identity-cluster detection using account age, default-avatar signals, username similarity, and coordinated join bursts
 - Anti-Nuke v2 slow-chain detection across five-minute audit-log windows, designed to catch attacks that deliberately stay below the fast anti-nuke threshold
 - Sentinel v2 duplicate-safe signal processing and correlation
-- Guardian AI Security Analyst server/member explanations through `/guardianmax analyst` and ESNG
+- Guardian AI Security Analyst server/member explanations through `/guardianmax analyst` and ESNG, plus a daily security-log report
 - Automatic six-hour encrypted off-host replication when the existing v7 backup endpoint/key are configured
 - Local MAX heartbeat JSON plus optional external heartbeat push
 - Full `/guardianmax self-test`
@@ -241,7 +241,12 @@ GUARDIAN_ALERT_WEBHOOK=
 GUARDIAN_EXPECTED_GUILD_IDS=
 GUARDIAN_WATCHDOG_HEARTBEAT_URL=
 GUARDIAN_WATCHDOG_HEARTBEAT_TOKEN=
+GUARDIAN_RESTART_ENDPOINT=
+GUARDIAN_RESTART_TOKEN=
+GUARDIAN_RESTART_METHOD=POST
 ```
+
+The standalone watchdog can optionally call a host/provider restart endpoint after repeated offline checks. Keep those restart credentials only on the independent watchdog host.
 
 Encrypted off-host backups:
 
