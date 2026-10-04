@@ -53,12 +53,31 @@ def guild_owner_only() -> app_commands.check:
     return app_commands.check(predicate)
 
 
+async def defer_response(
+    interaction: discord.Interaction,
+    *,
+    ephemeral: bool = True,
+    thinking: bool = True,
+) -> bool:
+    """Acknowledge an interaction safely even if the universal timer won the race."""
+    if interaction.response.is_done():
+        return False
+    try:
+        await interaction.response.defer(ephemeral=ephemeral, thinking=thinking)
+    except (discord.InteractionResponded, discord.NotFound, discord.HTTPException):
+        return False
+    return True
+
+
 async def respond(interaction: discord.Interaction, content: str, *, ephemeral: bool = True) -> None:
     embed = command_embed(content)
-    if interaction.response.is_done():
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+    except discord.InteractionResponded:
         await interaction.followup.send(embed=embed, ephemeral=ephemeral)
-    else:
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 
 async def notify_user(user: discord.abc.User, content: str) -> bool:
