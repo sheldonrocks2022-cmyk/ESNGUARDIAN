@@ -17,7 +17,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only
+from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, defer_response
 from esn_guardian.cogs.verification import VerificationView
 
 LOG = logging.getLogger("esn_guardian.security_max")
@@ -143,19 +143,19 @@ class SecurityCenterView(discord.ui.View):
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         embed = await self.cog.center_embed(interaction.guild)
         await interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="Self-Test", style=discord.ButtonStyle.secondary)
     async def self_test(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.cog.self_test_report(interaction.guild))
 
     @discord.ui.button(label="Backup Now", style=discord.ButtonStyle.success)
     async def backup(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         backup = await self.cog.bot.database.backup("guardianmax-manual")
         offhost = "not configured"
         v7 = self.cog.bot.get_cog("SecurityV7Cog")
@@ -1080,7 +1080,7 @@ class SecurityMaxCog(commands.Cog):
     @guild_owner_only()
     async def setup_max(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         result = await self.setup_maximum(interaction.guild)
         await respond(
             interaction,
@@ -1099,7 +1099,7 @@ class SecurityMaxCog(commands.Cog):
     @staff_only()
     async def self_test(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.self_test_report(interaction.guild))
 
     @guardianmax.command(name="center", description="Open the Guardian MAX Security Center.")
@@ -1107,7 +1107,7 @@ class SecurityMaxCog(commands.Cog):
     @staff_only()
     async def center(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await interaction.followup.send(
             embed=await self.center_embed(interaction.guild),
             view=SecurityCenterView(self, interaction.guild.id),
@@ -1124,7 +1124,7 @@ class SecurityMaxCog(commands.Cog):
         reason: str = "Manual Guardian MAX security review",
         minutes: app_commands.Range[int, 5, 10080] = 60,
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         if member.id in {interaction.user.id, interaction.guild.owner_id}:
             await respond(interaction, "Guardian MAX will not quarantine the server owner or the executing moderator.")
             return
@@ -1140,7 +1140,7 @@ class SecurityMaxCog(commands.Cog):
         member: discord.Member,
         reason: str = "Security review completed",
     ) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         ok = await self.release_member(member, reason)
         await respond(interaction, f"{'Released' if ok else 'Could not release'} {member.mention}.")
 
@@ -1153,14 +1153,14 @@ class SecurityMaxCog(commands.Cog):
         member: discord.Member | None = None,
     ) -> None:
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         await respond(interaction, await self.analyst_report(interaction.guild, member))
 
     @guardianmax.command(name="backup", description="Create a verified local backup and replicate off-host when configured.")
     @guild_only()
     @guild_owner_only()
     async def backup(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         backup = await self.bot.database.backup("guardianmax-manual")
         offhost = "not configured"
         v7 = self.bot.get_cog("SecurityV7Cog")
