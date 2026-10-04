@@ -12,6 +12,7 @@ from discord.ext import commands
 from esn_guardian.cogs.common import command_embed, log_event
 from esn_guardian.config import Settings
 from esn_guardian.database import Database
+from esn_guardian.release_guard import mark_healthy
 
 LOG = logging.getLogger("esn_guardian")
 EXTENSIONS = (
@@ -139,6 +140,10 @@ class GuardianBot(commands.Bot):
 
     async def on_ready(self) -> None:
         LOG.info("Connected as %s (%s) in %s guilds", self.user, self.user.id if self.user else "unknown", len(self.guilds))
+        try:
+            await asyncio.to_thread(mark_healthy)
+        except Exception:
+            LOG.exception("Could not record Guardian release as last-known-good")
         for guild in self.guilds:
             await self.database.ensure_guild(guild.id)
         if not self._guild_commands_synced:
