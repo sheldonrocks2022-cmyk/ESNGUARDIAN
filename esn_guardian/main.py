@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from contextlib import suppress
 from datetime import UTC, datetime
 
@@ -312,15 +311,14 @@ def startup_retry_delay(error: discord.HTTPException | None, attempt: int) -> fl
     return max(60.0, retry_after, exponential)
 
 
-def main() -> None:
-    settings = Settings.load()
-    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
+async def _run_guardian(settings: Settings) -> None:
+    """Own the Discord login lifecycle so startup failures cannot escape to CogitHost."""
     attempt = 0
+
     while True:
         bot = GuardianBot(settings)
         try:
-            bot.run(settings.token, log_handler=None)
+            await bot.start(settings.token, reconnect=True)
         except discord.LoginFailure:
             LOG.critical("Discord rejected DISCORD_TOKEN. Guardian will not retry an invalid token.")
             return
@@ -333,29 +331,51 @@ def main() -> None:
             attempt += 1
             LOG.warning(
                 "Discord globally rate-limited Guardian during startup (HTTP 429). "
-                "Guardian is staying alive and will retry in %.0f seconds. "
-                "Do NOT restart the CogitHost server while this cooldown is active.",
+                "Guardian process remains alive and will retry in %.0f seconds. "
+                "Do NOT restart CogitHost while this cooldown is active.",
                 delay,
             )
-            time.sleep(delay)
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
             continue
         except (OSError, asyncio.TimeoutError):
             delay = min(300.0, 30.0 * (2 ** min(attempt, 3)))
             attempt += 1
             LOG.exception(
-                "Temporary network/startup failure. Guardian is staying alive and will retry in %.0f seconds.",
+                "Temporary network/startup failure. Guardian process remains alive and will retry in %.0f seconds.",
                 delay,
             )
-            time.sleep(delay)
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
             continue
-        except KeyboardInterrupt:
-            LOG.info("Guardian shutdown requested.")
-            return
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            LOG.exception("Fatal unexpected startup failure.")
+            LOG.exception("Fatal unexpected Guardian runtime failure.")
             return
-        else:
-            return
+        finally:
+            try:
+                if not bot.is_closed():
+                    await bot.close()
+            except Exception:
+                LOG.exception("Guardian cleanup after startup/runtime failure encountered an error")
+
+        # A clean return from bot.start means Discord closed the connection without an
+        # exception. Treat that as a shutdown, not a crash-loop.
+        return
+
+
+def main() -> None:
+    settings = Settings.load()
+    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    try:
+        asyncio.run(_run_guardian(settings))
+    except KeyboardInterrupt:
+        LOG.info("Guardian shutdown requested.")
 
 
 if __name__ == "__main__":
