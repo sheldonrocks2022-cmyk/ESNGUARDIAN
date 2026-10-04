@@ -14,7 +14,12 @@ from esn_guardian.cogs.security_intelligence import case_weight
 
 LOG = logging.getLogger("esn_guardian.sentinel")
 
-IGNORED_ACTION_PREFIXES = ("SENTINEL_",)
+IGNORED_ACTION_PREFIXES = (
+    "SENTINEL_",
+    "GUARDIAN_TAMPER_REVERTED",
+    "V6_AUTO_HEAL_",
+    "AUTO_ROLLBACK_",
+)
 
 
 def classify_action(action: str) -> str:
