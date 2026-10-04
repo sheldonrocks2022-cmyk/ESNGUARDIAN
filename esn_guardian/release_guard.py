@@ -99,7 +99,14 @@ def prepare_startup() -> bool:
 def mark_healthy() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     temp_zip = LAST_GOOD.with_suffix(".tmp.zip")
-    include = [ROOT / "bot.py", ROOT / "main.py", ROOT / "requirements.txt"]
+    include = [
+        ROOT / "bot.py",
+        ROOT / "main.py",
+        ROOT / "watchdog.py",
+        ROOT / "requirements.txt",
+        MANIFEST,
+        SIGNATURE,
+    ]
     include.extend((ROOT / "esn_guardian").rglob("*.py"))
     with zipfile.ZipFile(temp_zip, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in include:
