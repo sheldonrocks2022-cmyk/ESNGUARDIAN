@@ -7,7 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import discord_action, guild_only, log_event, notify_user, respond, staff_only, require_target, require_role, can_target
+from esn_guardian.cogs.common import discord_action, guild_only, log_event, notify_user, respond, staff_only, require_target, require_role, can_target, defer_response
 
 
 class ModerationCog(commands.Cog):
@@ -113,7 +113,7 @@ class ModerationCog(commands.Cog):
         if not isinstance(interaction.channel, discord.TextChannel):
             await respond(interaction, "This command requires a text channel.")
             return
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         deleted = await interaction.channel.purge(limit=amount)
         case_id = await self._case(interaction, None, "CLEAR", f"Deleted {len(deleted)} messages")
         await self._log_case(interaction, case_id, None, "CLEAR", f"Deleted {len(deleted)} messages in {interaction.channel.mention}")
@@ -182,7 +182,7 @@ class ModerationCog(commands.Cog):
         if not await require_role(interaction, role):
             return
         assert interaction.guild is not None
-        await interaction.response.defer(ephemeral=True)
+        await defer_response(interaction)
         semaphore = asyncio.Semaphore(3)
 
         async def update_member(member: discord.Member) -> bool:
