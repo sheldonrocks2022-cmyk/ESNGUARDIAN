@@ -208,6 +208,12 @@ class SecuritySentinelCog(commands.Cog):
             return None
 
         case_id = int(row["case_id"])
+        existing_signal = await self.bot.database.fetchone(
+            "SELECT 1 FROM guardian_sentinel_signals WHERE guild_id=? AND case_id=?",
+            (guild.id, case_id),
+        )
+        if existing_signal is not None:
+            return None
         target_id = int(row["target_id"]) if row["target_id"] is not None else None
         moderator_id = int(row["moderator_id"]) if row["moderator_id"] is not None else None
         bot_id = self.bot.user.id if self.bot.user else None
@@ -351,7 +357,7 @@ class SecuritySentinelCog(commands.Cog):
 
         if not rows:
             return (
-                "**Guardian Sentinel**\n"
+                "**Guardian Sentinel v2 MAX**\n"
                 "No Sentinel signals were recorded in the last 30 minutes.\n"
                 "Deterministic Guardian protections remain active independently of Sentinel."
             )
@@ -363,7 +369,7 @@ class SecuritySentinelCog(commands.Cog):
         high = [row for row in rows if int(row["score"]) >= 60]
 
         return (
-            "**Guardian Sentinel live intelligence**\n"
+            "**Guardian Sentinel v2 MAX live intelligence**\n"
             f"30-minute signals: {len(rows)}\n"
             f"Highest anomaly score: {highest}/100 ({severity})\n"
             f"High/critical signals: {len(high)}\n"
