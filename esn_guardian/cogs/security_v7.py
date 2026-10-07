@@ -101,6 +101,8 @@ class SecurityV7Cog(commands.Cog):
         self.session: aiohttp.ClientSession | None = None
         self.dashboard_runner: Any | None = None
         self.behavior_alerts: dict[tuple[int, int], datetime] = {}
+        # A missing asset should not generate a new case and threat score every minute.
+        self.missing_asset_alerted: dict[tuple[int, str, int], float] = {}
 
     async def cog_load(self) -> None:
         statements = (
@@ -690,6 +692,15 @@ class SecurityV7Cog(commands.Cog):
                 f"Guardian v7 {'canary' if canary else 'protected asset'} triggered: {kind} {asset_id}; {detail}",
                 target_id=asset_id, score=14 if canary else 10,
             )
+        # The separate ULTRA honeypot only consumes attributed v7
+        # canary mutations. It never interprets unknown actors as guilty.
+        if canary and actor is not None:
+            ultra = self.bot.get_cog("SecurityUltraCog")
+            if ultra is not None:
+                try:
+                    await ultra._canary_signal(guild, actor, kind, asset_id, detail)
+                except Exception:
+                    LOG.exception("Could not forward audit-backed v7 canary mutation")
 
     @commands.Cog.listener()
     async def on_app_command_completion(self, interaction: discord.Interaction, command: app_commands.Command) -> None:
@@ -851,8 +862,24 @@ class SecurityV7Cog(commands.Cog):
             for row in rows:
                 kind, asset_id = str(row["asset_type"]), int(row["asset_id"])
                 exists = guild.get_channel(asset_id) is not None if kind == "channel" else guild.get_role(asset_id) is not None if kind == "role" else guild.get_member(asset_id) is not None
-                if not exists:
-                    await self._asset_violation(guild, None, kind, asset_id, f"Protected asset missing: {row['label'] or asset_id}", bool(row["canary"]))
+                missing_key = (guild.id, kind, asset_id)
+                if exists:
+                    self.missing_asset_alerted.pop(missing_key, None)
+                else:
+                    now = time.monotonic()
+                    if now - self.missing_asset_alerted.get(missing_key, float("-inf")) >= 3600:
+                        self.missing_asset_alerted[missing_key] = now
+                        await self._asset_violation(
+                            guild, None, kind, asset_id,
+                            f"Protected asset missing: {row['label'] or asset_id}",
+                            bool(row["canary"]),
+                        )
+            if len(self.missing_asset_alerted) > 4000:
+                now = time.monotonic()
+                self.missing_asset_alerted = {
+                    key: when for key, when in self.missing_asset_alerted.items()
+                    if now - when < 7200
+                }
 
             baseline = await self.bot.database.fetchone(
                 "SELECT payload_json FROM guardian_v7_setting_baselines WHERE guild_id=?",
