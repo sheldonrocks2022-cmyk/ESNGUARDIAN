@@ -8,16 +8,20 @@ bait, or automatically punish people for ambiguous honeypot interactions.
 
 First-time setup (server owner only):
 
-1. Use /ultra honeypot to create or rearm the private Guardian Vault tripwire.
-2. Use /ultra honeypot-status to confirm the decoy channel and inert role.
-3. Use /ultra center for a clickable dashboard and /ultra drill for dry-run checks.
+1. Use /ultra honeypot to create or rearm the private Guardian Vault and its three satellite canaries.
+2. Use /ultra honeypot-status to check the original decoy and satellite health.
+3. Use /ultra center for the dashboard and /ultra drill for non-destructive checks.
 4. Keep Guardian's role above staff roles it is expected to protect.
+5. Optional: /ultra containment-toggle enabled:true activates quarantine *only* after two different decoy assets are independently tampered with and the same actor is attributed through Discord audit logs. Containment is OFF by default.
+
+The ULTRA honeypot has 2 inert roles and 3 private decoy channels (including the original Vault). Deleted configured canaries are repaired automatically at a bounded 15-minute interval; /ultra honeypot repairs them manually. All assets are empty, with no real credentials or dangerous permissions. Discord's audit log attribution requires **View Audit Log**.
 
 New ULTRA commands:
 - /ultra center — interactive threat radar, permission scanner, incident viewer.
 - /ultra honeypot — private decoy channel, non-privileged role, persistent
   decoy button, and v7 canary protection on changes/deletions.
 - /ultra honeypot-status / honeypot-toggle — manage tripwire monitoring.
+- /ultra containment-toggle — explicit owner choice for opt-in quarantine on correlated, audit-attributed multi-asset tampering.
 - /ultra staff-lock — server-owner-approved role freeze, persisted snapshots.
 - /ultra undo — explicit owner-only RESTORE of *only* saved staff roles.
 - /ultra audit — permission and Guardian role-hierarchy scanner.
@@ -30,8 +34,14 @@ New ULTRA commands:
 - /ultra appeal / appeal-review — owner-reviewed cases, never automatic unbans.
 
 Security design:
-- Honeypot alerts are advisory, deduplicated and evidence-backed; no auto-bans
-  based on clicking or posting in the decoy. Existing v7 Canary watches edits.
+- Honeypot alerts are evidence-backed and deduplicated; a click, message, or
+  single mutation never triggers auto-quarantine or auto-ban.
+- Audit-attributed mutations of two different ULTRA canaries inside 10 minutes
+  can trigger MAX quarantine *only with owner opt-in*. Trusted/recovery
+  accounts, bots, and the guild owner are excluded, and Guardian must be
+  capable of safely containing the role hierarchy.
+- The original v7 Canary protects channel/role edits and deletions. Missing
+  v7 assets are rate-limited to avoid generating hundreds of repeated cases.
 - Never store real Discord tokens or secrets as lure material.
 - Never remove the server owner's permissions or lock bot accounts.
 - A staff lock strips only safely manageable dangerous roles; the stored
