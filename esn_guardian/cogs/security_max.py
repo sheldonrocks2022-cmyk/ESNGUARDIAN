@@ -1009,17 +1009,49 @@ class SecurityMaxCog(commands.Cog):
         recent.append((now, member.id, name, age_days, default_avatar))
         return score, cluster + 1, similar
 
-    async def _activate_raid_v4(self, guild: discord.Guild, reason: str) -> None:
+    async def _activate_raid_v4(
+        self, guild: discord.Guild, reason: str, *, suspect_name: str
+    ) -> None:
         security = self.bot.get_cog("SecurityCog")
-        if security is not None:
-            try:
-                security.raid_mode_until[guild.id] = datetime.now(UTC) + timedelta(minutes=5)
+        if security is None:
+            LOG.error("Guardian MAX raid signal had no SecurityCog in guild %s", guild.id)
+            return
+
+        # Share the core raid lock. Without this check every similar join
+        # triggers another lockdown, another incident, and redundant API calls.
+        try:
+            async with security.raid_locks[guild.id]:
+                if security.is_raid_mode_active(guild.id):
+                    return
+                now = datetime.now(UTC)
+                until = now + timedelta(minutes=5)
+                security.raid_mode_until[guild.id] = until
                 security._raid_trigger_count[guild.id] += 1
-                security._schedule_raid_persist(guild.id, security.raid_mode_until[guild.id], force=True)
-                asyncio.create_task(security._lockdown(guild, f"Guardian Raid Engine v4: {reason}"))
-            except Exception:
-                LOG.exception("Guardian MAX could not activate underlying raid containment")
-        await self._case(guild, None, "RAID_V4_CLUSTER", reason)
+                security._schedule_raid_persist(guild.id, until, force=True)
+
+                # Contain the identified join cluster, not unrelated members
+                # who happened to join during the same short time window.
+                prefix = normalize_name(suspect_name)[:5]
+                suspected_ids = [
+                    member_id
+                    for joined, member_id, name, _age, _avatar in self.recent_joins[guild.id]
+                    if now - joined <= timedelta(seconds=20)
+                    and (
+                        username_similarity(name, suspect_name) >= 0.72
+                        or (prefix and normalize_name(name)[:5] == prefix)
+                    )
+                ][-100:]
+
+            queued = security._queue_recent_raid_joiners(guild, suspected_ids, reason)
+            asyncio.create_task(
+                security._lockdown(guild, f"Guardian Raid Engine v4: {reason}")
+            )
+            await self._case(
+                guild, None, "RAID_V4_CLUSTER",
+                f"{reason}; suspected removals queued: {queued}",
+            )
+        except Exception:
+            LOG.exception("Guardian MAX could not activate underlying raid containment")
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
@@ -1043,6 +1075,7 @@ class SecurityMaxCog(commands.Cog):
             await self._activate_raid_v4(
                 member.guild,
                 f"Coordinated identity cluster detected: cluster={cluster}, similar_names={similar}, latest_risk={score}/100",
+                suspect_name=member.name,
             )
 
         if bool(config["quarantine_max"]) and score >= 70:
