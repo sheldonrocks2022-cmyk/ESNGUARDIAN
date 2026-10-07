@@ -1,5 +1,47 @@
 # ESN Guardian
 
+## Guardian v8 ULTRA — Active Honeypot & Owner Safety
+
+v8 is an additive Python-only layer over existing v7/MAX protections. It does not
+change existing raid thresholds, disable safeguards, use real credentials as
+bait, or automatically punish people for ambiguous honeypot interactions.
+
+First-time setup (server owner only):
+
+1. Use /ultra honeypot to create or rearm the private Guardian Vault tripwire.
+2. Use /ultra honeypot-status to confirm the decoy channel and inert role.
+3. Use /ultra center for a clickable dashboard and /ultra drill for dry-run checks.
+4. Keep Guardian's role above staff roles it is expected to protect.
+
+New ULTRA commands:
+- /ultra center — interactive threat radar, permission scanner, incident viewer.
+- /ultra honeypot — private decoy channel, non-privileged role, persistent
+  decoy button, and v7 canary protection on changes/deletions.
+- /ultra honeypot-status / honeypot-toggle — manage tripwire monitoring.
+- /ultra staff-lock — server-owner-approved role freeze, persisted snapshots.
+- /ultra undo — explicit owner-only RESTORE of *only* saved staff roles.
+- /ultra audit — permission and Guardian role-hierarchy scanner.
+- /ultra radar — 24h honeypot/MAX event trends and raid containment state.
+- /ultra behavior — Sentinel and staff-action history.
+- /ultra incidents — concise incident timeline with existing case IDs.
+- /ultra raid-preview — read-only raid policy and burst analysis.
+- /ultra recovery — backup, watchdog and independent-failover readiness.
+- /ultra drill — non-destructive simulated detector checks.
+- /ultra appeal / appeal-review — owner-reviewed cases, never automatic unbans.
+
+Security design:
+- Honeypot alerts are advisory, deduplicated and evidence-backed; no auto-bans
+  based on clicking or posting in the decoy. Existing v7 Canary watches edits.
+- Never store real Discord tokens or secrets as lure material.
+- Never remove the server owner's permissions or lock bot accounts.
+- A staff lock strips only safely manageable dangerous roles; the stored
+  original permissions must match before an owner can explicitly restore them.
+  Role restoration is never automatic, even when a review deadline is reached.
+- ULTRA only reports independent failover *readiness*. Automatic failover
+  requires a separately hosted and tested standby (not configured by this cog).
+- Existing /guardianmax setup-max, /shield, /sentinel, /resilience,
+  /overwatch and /logs-all remain the operational engines.
+
 ESN Guardian is ES Network's Python Discord security, moderation, verification, recovery, logging, and incident-response platform.
 
 ## Primary runtime
