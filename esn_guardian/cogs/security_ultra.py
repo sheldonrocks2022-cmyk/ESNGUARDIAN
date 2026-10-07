@@ -387,7 +387,8 @@ class SecurityUltraCog(commands.Cog):
             ):
                 return False
             v7 = self.bot.get_cog("SecurityV7Cog")
-            if v7 is not None and await v7._is_recovery(guild, member):
+            if v7 is None or await v7._is_recovery(guild, member):
+                # Do not auto-contain if the recovery exemption cannot be checked.
                 return False
             trusted = await self.bot.database.fetchone(
                 "SELECT 1 FROM anti_nuke_trusted_users "
@@ -607,21 +608,55 @@ class SecurityUltraCog(commands.Cog):
         if message.guild is None or message.author.bot:
             return
         channel_id, _, enabled = await self._honeypot(message.guild.id)
-        if enabled and channel_id == message.channel.id:
-            await self._tripwire(message.guild, message.author.id, "VAULT_MESSAGE", 45)
+        if not enabled:
+            return
+        if channel_id == message.channel.id:
+            await self._tripwire(
+                message.guild, message.author.id, "VAULT_MESSAGE", 45,
+                target_id=channel_id,
+            )
+        elif message.channel.name in {
+            name for _, kind, name in DECOY_MESH if kind == "channel"
+        }:
+            # Most chat messages avoid an additional SQLite query.
+            row = await self.bot.database.fetchone(
+                "SELECT 1 FROM ultra_decoys WHERE guild_id=? "
+                "AND asset_type='channel' AND asset_id=?",
+                (message.guild.id, message.channel.id),
+            )
+            if row is not None:
+                await self._tripwire(
+                    message.guild, message.author.id, "DECOY_CHANNEL_MESSAGE", 45,
+                    target_id=message.channel.id,
+                )
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
         if before.id == before.guild.owner_id or after.bot:
             return
-        _, role_id, enabled = await self._honeypot(after.guild.id)
-        if enabled and role_id and role_id not in {r.id for r in before.roles}:
-            if role_id in {r.id for r in after.roles}:
-                await self._tripwire(after.guild, after.id, "DECOY_ROLE_ASSIGNED", 85)
-
         # No DB lookup for nickname/avatar/ordinary role events.
         if before.roles == after.roles:
             return
+        _, role_id, enabled = await self._honeypot(after.guild.id)
+        gained = {r.id for r in after.roles} - {r.id for r in before.roles}
+        if enabled and gained:
+            if role_id in gained:
+                await self._tripwire(
+                    after.guild, after.id, "DECOY_ROLE_ASSIGNED", 85,
+                    target_id=role_id,
+                )
+            else:
+                rows = await self.bot.database.fetchall(
+                    "SELECT asset_id FROM ultra_decoys "
+                    "WHERE guild_id=? AND asset_type='role'",
+                    (after.guild.id,),
+                )
+                decoys = {int(row["asset_id"]) for row in rows}
+                for assigned in gained & decoys:
+                    await self._tripwire(
+                        after.guild, after.id, "DECOY_ROLE_ASSIGNED", 85,
+                        target_id=assigned,
+                    )
         me = after.guild.me
         if me is None:
             return
