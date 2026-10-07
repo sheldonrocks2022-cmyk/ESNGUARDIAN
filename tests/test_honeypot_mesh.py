@@ -94,7 +94,11 @@ async def test_correlated_mutations_quarantine_once_with_two_targets():
         {"auto_contain": 1},
     ]
     max_cog = NS(quarantine_member=AsyncMock(return_value=True))
-    bot.get_cog = lambda name: max_cog if name == "SecurityMaxCog" else None
+    v7 = NS(_is_recovery=AsyncMock(return_value=False))
+    bot.get_cog = lambda name: (
+        max_cog if name == "SecurityMaxCog"
+        else v7 if name == "SecurityV7Cog" else None
+    )
     member = NS(id=88, bot=False, roles=[])
     guild = NS(id=10, owner_id=1, me=NS(top_role=MagicMock()),
                get_member=lambda user_id: member)
@@ -155,4 +159,28 @@ async def test_staff_restore_assigns_each_saved_role_exactly_once():
     assert "1 role(s)" in result
     member.add_roles.assert_awaited_once_with(
         role, reason="Guardian ULTRA owner-approved role recovery"
+    )
+
+
+@pytest.mark.asyncio
+async def test_satellite_messages_only_inspect_registered_channels():
+    bot = bot_mock()
+    cog = SecurityUltraCog(bot)
+    cog._honeypots[9] = (20, 30, True)
+    cog._tripwire = AsyncMock(return_value=True)
+    guild = NS(id=9, owner_id=1)
+    normal = NS(id=999, name="general")
+    message = NS(guild=guild, author=NS(id=23, bot=False), channel=normal)
+    await cog.on_message(message)
+    bot.database.fetchone.assert_not_awaited()
+    cog._tripwire.assert_not_awaited()
+
+    # A name match alone is not proof that it belongs to the canary mesh.
+    message.channel = NS(id=90, name="guardian-audit-canary")
+    await cog.on_message(message)
+    cog._tripwire.assert_not_awaited()
+    bot.database.fetchone.return_value = {"ok": 1}
+    await cog.on_message(message)
+    cog._tripwire.assert_awaited_once_with(
+        guild, 23, "DECOY_CHANNEL_MESSAGE", 45, target_id=90
     )
