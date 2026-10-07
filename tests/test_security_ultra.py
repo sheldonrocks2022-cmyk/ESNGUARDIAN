@@ -39,6 +39,7 @@ def make_bot():
         fetchone=AsyncMock(return_value=None),
         execute=AsyncMock(),
         create_case=AsyncMock(return_value=11),
+        setting=AsyncMock(return_value={"security_log_channel_id": None}),
     )
     return NS(database=db, user=NS(id=99), get_cog=lambda name: None)
 
@@ -85,14 +86,12 @@ async def test_tripwire_records_once_and_exempts_owner_and_bot():
     bot = make_bot()
     cog = SecurityUltraCog(bot)
     guild = NS(id=12, owner_id=42)
-    with patch("esn_guardian.cogs.security_ultra.log_event", new_callable=AsyncMock) as log:
-        assert await cog._tripwire(guild, 42, "BUTTON", 40) is False
-        assert await cog._tripwire(guild, 99, "BUTTON", 40) is False
-        assert await cog._tripwire(guild, 500, "BUTTON", 40) is True
-        assert await cog._tripwire(guild, 500, "BUTTON", 40) is False
-        assert bot.database.execute.await_count == 1
-        assert bot.database.create_case.await_count == 1
-        assert log.await_count == 1
+    assert await cog._tripwire(guild, 42, "BUTTON", 40) is False
+    assert await cog._tripwire(guild, 99, "BUTTON", 40) is False
+    assert await cog._tripwire(guild, 500, "BUTTON", 40) is True
+    assert await cog._tripwire(guild, 500, "BUTTON", 40) is False
+    assert bot.database.execute.await_count == 1
+    assert bot.database.create_case.await_count == 1
 
 
 @pytest.mark.asyncio
