@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import re
 from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target, defer_response
+
+LOG = logging.getLogger("esn_guardian.security")
 
 URL_RE = re.compile(r"(?:https?://|discord(?:app)?\.com/invite/|discord\.gg/)[^\s]+", re.IGNORECASE)
 SUSPICIOUS_DOMAIN_TOKENS = (
