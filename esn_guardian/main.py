@@ -27,6 +27,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.security_v7",
     "esn_guardian.cogs.verification",
     "esn_guardian.cogs.security_max",
+    "esn_guardian.cogs.security_ultra",
     "esn_guardian.cogs.community",
     "esn_guardian.cogs.esng_ai_v2",
     "esn_guardian.cogs.tickets",
