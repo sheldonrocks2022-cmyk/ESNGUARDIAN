@@ -363,23 +363,24 @@ class SecurityUltraCog(commands.Cog):
             if role_id in {r.id for r in after.roles}:
                 await self._tripwire(after.guild, after.id, "DECOY_ROLE_ASSIGNED", 85)
 
-        lock = await self.bot.database.fetchone(
-            "SELECT role_ids FROM ultra_staff_locks WHERE guild_id=? AND member_id=?",
-            (after.guild.id, after.id),
-        )
-        if lock is None:
+        # No DB lookup for nickname/avatar/ordinary role events.
+        if before.roles == after.roles:
             return
         me = after.guild.me
         if me is None:
             return
-        # Enforce an existing owner-approved staff lock if someone re-grants
-        # privileged roles; do not lock a member based on an unverified signal.
         regranted = [
             r for r in after.roles if r not in before.roles
             and not r.managed and not r.is_default()
             and r < me.top_role and dangerous_role(r)
         ]
-        if regranted:
+        if not regranted:
+            return
+        lock = await self.bot.database.fetchone(
+            "SELECT role_ids FROM ultra_staff_locks WHERE guild_id=? AND member_id=?",
+            (after.guild.id, after.id),
+        )
+        if lock is not None:
             try:
                 await after.remove_roles(
                     *regranted, reason="Guardian ULTRA owner-approved staff lock",
@@ -440,12 +441,15 @@ class SecurityUltraCog(commands.Cog):
             return "No privileged staff roles were found."
         if len(removable) != len(all_dangerous):
             return "Cannot safely lock: managed or higher-ranked privileged roles are present."
-        role_ids = [role.id for role in removable]
+        role_snapshots = [
+            {"id": role.id, "permissions": role.permissions.value}
+            for role in removable
+        ]
         # Persist restoration data BEFORE modifying Discord permissions.
         await self.bot.database.execute(
             "INSERT INTO ultra_staff_locks "
             "(guild_id,member_id,role_ids,reason,review_after) VALUES(?,?,?,?,?)",
-            (guild.id, member.id, json.dumps(role_ids), reason[:500],
+            (guild.id, member.id, json.dumps(role_snapshots), reason[:500],
              int(datetime.now(UTC).timestamp()) + 1800),
         )
         try:
@@ -478,14 +482,22 @@ class SecurityUltraCog(commands.Cog):
         me = guild.me
         if me is None:
             return "Cannot check Guardian role hierarchy."
-        role_ids = json.loads(str(row["role_ids"]))
+        try:
+            role_snapshots = json.loads(str(row["role_ids"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return "Saved role record is invalid; use manual recovery."
         roles = []
-        for role_id in role_ids:
-            role = guild.get_role(int(role_id))
-            # Never restore an escalated/changed role, since it could now have
-            # permissions that were not approved when it was locked.
-            if role is None or role.is_default() or role.managed or role >= me.top_role:
+        for snapshot in role_snapshots:
+            # Legacy entries are intentionally not auto-restored without an
+            # original permission snapshot.
+            if not isinstance(snapshot, dict):
+                return "Legacy role record needs manual permission review."
+            role = guild.get_role(int(snapshot["id"]))
+            if (role is None or role.is_default() or role.managed
+                    or role >= me.top_role
+                    or role.permissions.value != int(snapshot["permissions"])):
                 return "Role changed, vanished, or outranks Guardian. Manual review required."
+            roles.append(role)
             roles.append(role)
         try:
             if hasattr(self.bot, "suppress_security_events"):
