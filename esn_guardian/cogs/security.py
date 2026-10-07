@@ -346,6 +346,15 @@ class SecurityCog(commands.Cog):
             key = (member.guild.id, member.id)
             try:
                 await self._kick_for_raid(member, reason)
+            except Exception:
+                # An unexpected failure must not permanently kill one of the
+                # fixed-concurrency containment workers during a live raid.
+                LOG.exception(
+                    "Raid kick worker failed for guild=%s member=%s",
+                    member.guild.id,
+                    member.id,
+                )
+                self._note_raid_failure(member, "unexpected removal error")
             finally:
                 self._raid_queued.discard(key)
                 self._raid_kick_queue.task_done()
@@ -361,7 +370,12 @@ class SecurityCog(commands.Cog):
             self._raid_kick_queue.put_nowait((member, reason))
         except asyncio.QueueFull:
             self._raid_queued.discard(key)
-            asyncio.create_task(self._kick_for_raid(member, reason))
+            # Never bypass the worker limit with one task per joining account.
+            # An attacker could otherwise exhaust memory during a large raid.
+            # The server-wide lockdown is already active; report degraded
+            # removals rather than creating an unbounded task storm.
+            self._note_raid_failure(member, "raid removal queue at capacity")
+            return False
         return True
 
     def _queue_recent_raid_joiners(
