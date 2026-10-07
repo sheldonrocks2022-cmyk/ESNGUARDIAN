@@ -36,6 +36,12 @@ SENSITIVE_PERMISSIONS = (
 TRIPWIRE_COOLDOWN_SECONDS = 90
 ULTRA_NAME = "Guardian Vault • Honeypot"
 UNLOCK_CONFIRMATION = "RESTORE"
+# These assets never hold passwords, credentials or actual elevated privileges.
+DECOY_MESH = (
+    ("audit", "channel", "guardian-audit-canary"),
+    ("recovery", "channel", "guardian-recovery-canary"),
+    ("breakglass", "role", "Guardian Emergency • Decoy"),
+)
 
 
 def dangerous_role(role: discord.Role) -> bool:
@@ -152,7 +158,6 @@ class SecurityUltraCog(commands.Cog):
     ultra = app_commands.Group(
         name="ultra",
         description="Guardian v8 ULTRA honeypot, staff safety, recovery and incident center.",
-        default_permissions=discord.Permissions(manage_guild=True),
         guild_only=True,
     )
 
@@ -181,6 +186,14 @@ class SecurityUltraCog(commands.Cog):
             )""",
             """CREATE INDEX IF NOT EXISTS idx_ultra_tripwires
             ON ultra_tripwires (guild_id, id DESC)""",
+            """CREATE TABLE IF NOT EXISTS ultra_decoys (
+                guild_id INTEGER NOT NULL,
+                slot TEXT NOT NULL,
+                asset_type TEXT NOT NULL,
+                asset_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(guild_id, slot)
+            )""",
             """CREATE TABLE IF NOT EXISTS ultra_staff_locks (
                 guild_id INTEGER NOT NULL,
                 member_id INTEGER NOT NULL,
@@ -205,12 +218,23 @@ class SecurityUltraCog(commands.Cog):
         )
         for statement in statements:
             await self.bot.database.execute(statement)
-        # Re-registration makes the decoy button survive restarts.
+        # Forward migrations keep existing locks and honeypot setup intact.
+        for table, column, declaration in (
+            ("ultra_honeypots", "auto_contain", "INTEGER NOT NULL DEFAULT 0"),
+            ("ultra_tripwires", "target_id", "INTEGER"),
+        ):
+            columns = await self.bot.database.fetchall(f"PRAGMA table_info({table})")
+            if column not in {str(row["name"]) for row in columns}:
+                await self.bot.database.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                )
         self.bot.add_view(VaultButton(self))
         self.lock_review_loop.start()
+        self.honeypot_health_loop.start()
 
     def cog_unload(self) -> None:
         self.lock_review_loop.cancel()
+        self.honeypot_health_loop.cancel()
 
     async def _honeypot(self, guild_id: int) -> tuple[int | None, int | None, bool]:
         if guild_id in self._honeypots:
@@ -283,7 +307,9 @@ class SecurityUltraCog(commands.Cog):
                         "UPDATE ultra_honeypots SET enabled=1 WHERE guild_id=?", (guild.id,)
                     )
                     self._honeypots[guild.id] = (channel.id, role.id, True)
-                return f"Existing honeypot rearmed: {channel.mention}. Nothing duplicated."
+                return await self._install_decoy_mesh(
+                    guild, created_by_id, channel, role, already_exists=True
+                )
 
             if guild.me is None:
                 raise ValueError("Guardian role was not available in the server.")
@@ -344,7 +370,116 @@ class SecurityUltraCog(commands.Cog):
                 "There are no passwords, tokens, or credentials here.",
                 view=VaultButton(self), allowed_mentions=discord.AllowedMentions.none(),
             )
-            return f"Honeypot armed: {channel.mention} and {role.name}. Alerts are advisory."
+            # Retire stale asset identifiers when a deleted canary is replaced.
+            for kind, old, new in (
+                ("channel", channel_id, channel.id),
+                ("role", role_id, role.id),
+            ):
+                if old and old != new:
+                    await self.bot.database.execute(
+                        "DELETE FROM guardian_v7_assets WHERE guild_id=? "
+                        "AND asset_type=? AND asset_id=? AND canary=1",
+                        (guild.id, kind, old),
+                    )
+            return await self._install_decoy_mesh(
+                guild, created_by_id, channel, role, already_exists=False
+            )
+
+
+    async def _install_decoy_mesh(
+        self, guild: discord.Guild, created_by_id: int,
+        vault: discord.abc.GuildChannel, vault_role: discord.Role,
+        *, already_exists: bool,
+    ) -> str:
+        """Repair only missing canaries, keep a fixed maximum, grant no privilege."""
+        if guild.me is None or not guild.me.guild_permissions.manage_channels or not guild.me.guild_permissions.manage_roles:
+            raise ValueError("Guardian needs Manage Channels and Manage Roles for canary repair.")
+        for kind, asset in (("channel", vault), ("role", vault_role)):
+            await self.bot.database.execute(
+                "INSERT OR IGNORE INTO guardian_v7_assets "
+                "(guild_id,asset_type,asset_id,label,canary,created_by_id) "
+                "VALUES (?,?,?,?,1,?)",
+                (guild.id, kind, asset.id, asset.name, created_by_id),
+            )
+
+        rows = await self.bot.database.fetchall(
+            "SELECT slot,asset_type,asset_id FROM ultra_decoys WHERE guild_id=?",
+            (guild.id,),
+        )
+        installed = {str(row["slot"]): row for row in rows}
+        restored = 0
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, read_message_history=True
+            ),
+        }
+        owner = guild.get_member(guild.owner_id)
+        if owner is not None:
+            overwrites[owner] = discord.PermissionOverwrite(view_channel=True)
+
+        for slot, kind, name in DECOY_MESH:
+            old = installed.get(slot)
+            old_id = int(old["asset_id"]) if old is not None else 0
+            asset = (guild.get_role(old_id) if kind == "role" else guild.get_channel(old_id)) if old_id else None
+            if asset is None:
+                if hasattr(self.bot, "suppress_security_events"):
+                    self.bot.suppress_security_events(
+                        guild.id, seconds=90, reason="ULTRA canary repair"
+                    )
+                if kind == "role":
+                    asset = await guild.create_role(
+                        name=name, permissions=discord.Permissions.none(),
+                        hoist=False, mentionable=False, reason="Guardian inert ULTRA canary"
+                    )
+                else:
+                    asset = await guild.create_text_channel(
+                        name, overwrites=overwrites,
+                        topic="Empty monitored Guardian decoy. No secrets or credentials.",
+                        reason="Guardian ULTRA canary"
+                    )
+                restored += 1
+                if old_id:
+                    await self.bot.database.execute(
+                        "DELETE FROM guardian_v7_assets "
+                        "WHERE guild_id=? AND asset_type=? AND asset_id=? AND canary=1",
+                        (guild.id, kind, old_id),
+                    )
+            await self.bot.database.execute(
+                "INSERT INTO ultra_decoys (guild_id,slot,asset_type,asset_id) "
+                "VALUES (?,?,?,?) ON CONFLICT(guild_id,slot) DO UPDATE "
+                "SET asset_type=excluded.asset_type,asset_id=excluded.asset_id",
+                (guild.id, slot, kind, asset.id),
+            )
+            await self.bot.database.execute(
+                "INSERT OR IGNORE INTO guardian_v7_assets "
+                "(guild_id,asset_type,asset_id,label,canary,created_by_id) "
+                "VALUES (?,?,?,?,1,?)",
+                (guild.id, kind, asset.id, asset.name, created_by_id),
+            )
+        state = "rearmed" if already_exists else "armed"
+        return (
+            f"Guardian honeypot {state}: {vault.mention}, inert vault role, "
+            f"and {len(DECOY_MESH)} additional decoys. "
+            f"New/repaired satellites: {restored}. "
+            "No fake credentials, automatic bans or changes to member permissions."
+        )
+
+    @tasks.loop(minutes=15)
+    async def honeypot_health_loop(self) -> None:
+        """Self-heal only configured and enabled assets at bounded intervals."""
+        for guild in list(self.bot.guilds):
+            channel_id, role_id, enabled = await self._honeypot(guild.id)
+            if not enabled or not channel_id or not role_id:
+                continue
+            try:
+                await self._setup_honeypot(guild, guild.owner_id)
+            except (discord.HTTPException, discord.Forbidden, ValueError):
+                LOG.warning("ULTRA canary repair failed in guild %s", guild.id)
+
+    @honeypot_health_loop.before_loop
+    async def before_honeypot_health_loop(self) -> None:
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -497,7 +632,6 @@ class SecurityUltraCog(commands.Cog):
                     or role >= me.top_role
                     or role.permissions.value != int(snapshot["permissions"])):
                 return "Role changed, vanished, or outranks Guardian. Manual review required."
-            roles.append(role)
             roles.append(role)
         try:
             if hasattr(self.bot, "suppress_security_events"):
