@@ -72,6 +72,37 @@ class GlobalAppeals(commands.Cog):
                                   f"Review: `!appealreview {row['id']} approve|deny reason`",
                                   allowed_mentions=discord.AllowedMentions.none())
 
+    @commands.command(name="globalbanlist", aliases=["bannedusers"])
+    @commands.dm_only()
+    @commands.cooldown(1, 10, commands.BucketType.user)
+    async def globalbanlist(self, ctx, page: int = 1):
+        """Bot-owner-only private list of globally banned accounts and Discord IDs."""
+        if not self.is_owner(ctx.author.id):
+            return
+        page = max(1, page)
+        count = await self.bot.database.fetchone("SELECT COUNT(*) AS total FROM global_bans")
+        total = int(count["total"])
+        rows = await self.bot.database.fetchall(
+            "SELECT user_id, reason FROM global_bans ORDER BY user_id LIMIT 15 OFFSET ?",
+            ((page - 1) * 15,))
+        if not rows:
+            return await ctx.reply(f"No global bans on page {page}. Total: {total}.", mention_author=False)
+        lines = []
+        for row in rows:
+            uid = int(row["user_id"])
+            user = self.bot.get_user(uid)
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(uid)
+                except discord.HTTPException:
+                    pass
+            name = discord.utils.escape_markdown(str(user)) if user else "Unknown account"
+            reason = discord.utils.escape_mentions(str(row["reason"]))[:110]
+            lines.append(f"**{name}** — ID: \`{uid}\`\\nReason: {reason}")
+        await ctx.reply(f"**Guardian Global Ban Registry** — page {page} / {max(1, (total + 14) // 15)} "
+                        f"({total} users)\\n\\n" + "\\n\\n".join(lines),
+                        mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+
     @commands.command(name="appealreview")
     @commands.dm_only()
     async def appealreview(self, ctx, appeal_id: int, decision: str, *, note: str = ""):
