@@ -54,6 +54,34 @@ class OmegaControl(commands.Cog):
         await ctx.reply("Saved advisory OMEGA policy for this server. Existing security thresholds are unchanged.",
                         mention_author=False)
 
+    @omega.command(name="alerts")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def alerts(self, ctx, enabled: str = ""):
+        """Per-server preference for future OMEGA advisory notifications."""
+        if not enabled:
+            state = self.settings(ctx.guild.id).get("alerts", True)
+            return await ctx.reply(f"OMEGA advisory alerts preference: {'on' if state else 'off'}", mention_author=False)
+        if enabled.lower() not in ("on", "off"):
+            return await ctx.reply("Use !omega alerts on or !omega alerts off.", mention_author=False)
+        self.config.setdefault(str(ctx.guild.id), {})["alerts"] = enabled.lower() == "on"
+        self.save()
+        await ctx.reply("Saved advisory alert preference. Existing Guardian alerts are unchanged.", mention_author=False)
+
+    @omega.command(name="report")
+    @commands.has_guild_permissions(manage_guild=True)
+    async def report(self, ctx):
+        """Private guild-scoped readiness summary; never reveal other guilds."""
+        health = getattr(self.bot, "runtime_health", {})
+        me = ctx.guild.me
+        audit_ok = bool(me and me.guild_permissions.view_audit_log)
+        db_ok = bool(health.get("database_ok", False))
+        policy = self.settings(ctx.guild.id).get("policy", "balanced")
+        await ctx.reply(f"**OMEGA Readiness — {ctx.guild.name}**\\n"
+                        f"Database: {'OK' if db_ok else 'CHECK'}\\n"
+                        f"Audit log access: {'YES' if audit_ok else 'NO'}\\n"
+                        f"Advisory policy: {policy}\\n"
+                        "Read-only report. Existing Guardian engines remain active.", mention_author=False)
+
     @omega.command(name="scan")
     @commands.has_guild_permissions(manage_guild=True)
     async def scan(self, ctx):
