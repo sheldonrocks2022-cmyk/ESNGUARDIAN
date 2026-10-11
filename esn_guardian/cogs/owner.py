@@ -195,6 +195,35 @@ class OwnerCog(commands.Cog):
             f"Banned in {banned} server(s); failed in {failed}.",
         )
 
+    @app_commands.command(description="Preview global ban coverage without banning anyone.")
+    @owner_only()
+    async def globalbanpreview(self, interaction: discord.Interaction, user_id: str) -> None:
+        try:
+            target_id = int(user_id)
+            if target_id <= 0:
+                raise ValueError()
+        except ValueError:
+            await respond(interaction, "Provide a valid numeric Discord user ID.")
+            return
+        reachable = sum(1 for guild in self.bot.guilds if guild.me is not None and guild.me.guild_permissions.ban_members)
+        await respond(interaction, f"**Global ban preview** for \`{target_id}\`\\n"
+                      f"Connected servers: {len(self.bot.guilds)}\\n"
+                      f"Servers with Ban Members permission: {reachable}\\n"
+                      "Role hierarchy, rate limits and API failures may still prevent enforcement. No bans performed.")
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Synchronize the existing global-ban list when Guardian joins a new guild."""
+        if await self.bot.database.is_guild_blacklisted(guild.id):
+            return
+        for user_id, reason in list(self._global_bans.items()):
+            try:
+                await guild.ban(discord.Object(id=user_id),
+                                reason=f"ESN Guardian existing global ban: {reason[:300]}",
+                                delete_message_seconds=0)
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+
     @app_commands.command(description="Remove a user from the global-ban list.")
     @owner_only()
     async def globalunban(self, interaction: discord.Interaction, user_id: str) -> None:
