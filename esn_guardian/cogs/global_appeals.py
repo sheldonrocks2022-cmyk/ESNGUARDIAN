@@ -98,9 +98,9 @@ class GlobalAppeals(commands.Cog):
                     pass
             name = discord.utils.escape_markdown(str(user)) if user else "Unknown account"
             reason = discord.utils.escape_mentions(str(row["reason"]))[:110]
-            lines.append(f"**{name}** — ID: \`{uid}\`\\nReason: {reason}")
+            lines.append(f"**{name}** — ID: `{uid}`\nReason: {reason}")
         await ctx.reply(f"**Guardian Global Ban Registry** — page {page} / {max(1, (total + 14) // 15)} "
-                        f"({total} users)\\n\\n" + "\\n\\n".join(lines),
+                        f"({total} users)\n\n" + "\n\n".join(lines),
                         mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.command(name="appealreview")
