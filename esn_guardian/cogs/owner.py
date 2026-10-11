@@ -9,20 +9,15 @@ from discord.ext import commands
 from esn_guardian.cogs.common import command_embed, notify_user, respond, defer_response
 
 
-OWNER_IDS = {
-    1515077206886453469,
-    1392224478175690752,
-    1434663490160955407,
-}
-
-
 def owner_only() -> app_commands.check:
+    """Only the configured BOT_OWNER_ID may run privileged owner commands.
+
+    Fail closed when the owner is not configured. Discord server ownership,
+    administrator permissions and legacy hardcoded IDs never grant access.
+    """
     async def predicate(interaction: discord.Interaction) -> bool:
         configured_owner = getattr(getattr(interaction.client, "settings", None), "owner_id", None)
-        allowed = set(OWNER_IDS)
-        if configured_owner is not None:
-            allowed.add(int(configured_owner))
-        return interaction.user.id in allowed
+        return configured_owner is not None and interaction.user.id == int(configured_owner)
     return app_commands.check(predicate)
 
 
@@ -144,8 +139,12 @@ class OwnerCog(commands.Cog):
         except ValueError:
             await respond(interaction, "Provide a numeric user ID.")
             return
-        if target_id in OWNER_IDS:
-            await respond(interaction, "A configured bot owner cannot be globally banned.")
+        configured_owner = getattr(self.bot.settings, "owner_id", None)
+        protected_ids = {int(configured_owner)} if configured_owner is not None else set()
+        if self.bot.user is not None:
+            protected_ids.add(self.bot.user.id)
+        if target_id in protected_ids:
+            await respond(interaction, "Guardian cannot globally ban its configured owner or itself.")
             return
 
         await defer_response(interaction)
@@ -195,6 +194,35 @@ class OwnerCog(commands.Cog):
             f"Global ban saved for `{target_id}`. Confidence: {int(confidence)}%{evidence_text}. "
             f"Banned in {banned} server(s); failed in {failed}.",
         )
+
+    @app_commands.command(description="Preview global ban coverage without banning anyone.")
+    @owner_only()
+    async def globalbanpreview(self, interaction: discord.Interaction, user_id: str) -> None:
+        try:
+            target_id = int(user_id)
+            if target_id <= 0:
+                raise ValueError()
+        except ValueError:
+            await respond(interaction, "Provide a valid numeric Discord user ID.")
+            return
+        reachable = sum(1 for guild in self.bot.guilds if guild.me is not None and guild.me.guild_permissions.ban_members)
+        await respond(interaction, f"**Global ban preview** for \`{target_id}\`\\n"
+                      f"Connected servers: {len(self.bot.guilds)}\\n"
+                      f"Servers with Ban Members permission: {reachable}\\n"
+                      "Role hierarchy, rate limits and API failures may still prevent enforcement. No bans performed.")
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Synchronize the existing global-ban list when Guardian joins a new guild."""
+        if await self.bot.database.is_guild_blacklisted(guild.id):
+            return
+        for user_id, reason in list(self._global_bans.items()):
+            try:
+                await guild.ban(discord.Object(id=user_id),
+                                reason=f"ESN Guardian existing global ban: {reason[:300]}",
+                                delete_message_seconds=0)
+            except (discord.Forbidden, discord.HTTPException):
+                continue
 
     @app_commands.command(description="Remove a user from the global-ban list.")
     @owner_only()

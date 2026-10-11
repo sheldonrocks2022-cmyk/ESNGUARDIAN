@@ -1,0 +1,22 @@
+name: OMEGA validation
+on:
+  push:
+    branches: [feature/premium-multiserver-v1]
+  pull_request:
+    paths:
+      - 'esn_guardian/**'
+      - '.github/workflows/omega-validation.yml'
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Compile Python sources
+        run: python -m compileall -q esn_guardian
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Verify extension imports
+        run: python -c "import esn_guardian.cogs.public_commands, esn_guardian.cogs.omega_control"
