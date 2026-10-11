@@ -43,7 +43,7 @@ class GuardianBot(commands.Bot):
         intents.message_content = True
         intents.moderation = True
         super().__init__(
-            command_prefix=commands.when_mentioned_or("!ESNG ", "!ESNG", "!"),
+            command_prefix="!",
             intents=intents,
             help_command=None,
             allowed_mentions=discord.AllowedMentions.none(),
