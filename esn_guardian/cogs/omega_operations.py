@@ -29,8 +29,8 @@ class OmegaOperations(commands.Cog):
         failures = sum(1 for g in guilds if not g.me or
                        not (g.me.guild_permissions.view_audit_log and g.me.guild_permissions.ban_members))
         await ctx.reply(
-            f"**OMEGA Fleet Command**\\nConnected servers: {len(guilds)}\\n"
-            f"Servers missing audit or ban permissions: {failures}\\n"
+            f"**OMEGA Fleet Command**\nConnected servers: {len(guilds)}\n"
+            f"Servers missing audit or ban permissions: {failures}\n"
             "Use !fleet list for individual permission checks. No settings changed.",
             mention_author=False)
 
@@ -44,7 +44,7 @@ class OmegaOperations(commands.Cog):
             audit = bool(perms and perms.view_audit_log)
             ban = bool(perms and perms.ban_members)
             lines.append(f"{guild.name[:80]} | {guild.id} | audit={audit} ban={ban}")
-        data = ("OMEGA Fleet Permission Report\\n" + "\\n".join(lines or ["No servers."])).encode()
+        data = ("OMEGA Fleet Permission Report\n" + "\n".join(lines or ["No servers."])).encode()
         await ctx.reply(file=discord.File(io.BytesIO(data), filename="omega-fleet.txt"),
                         mention_author=False)
 
@@ -100,10 +100,10 @@ class OmegaOperations(commands.Cog):
         cogs = ("SecurityV7Cog", "SecurityUltraCog", "SecuritySentinelCog")
         loaded = [name for name in cogs if self.bot.get_cog(name) is not None]
         await ctx.reply(
-            "**OMEGA Defense Readiness (read-only)**\\n"
-            f"Audit log access: {bool(p and p.view_audit_log)}\\n"
-            f"Ban permission: {bool(p and p.ban_members)}\\n"
-            f"Security cogs found: {', '.join(loaded) if loaded else 'None matched'}\\n"
+            "**OMEGA Defense Readiness (read-only)**\n"
+            f"Audit log access: {bool(p and p.view_audit_log)}\n"
+            f"Ban permission: {bool(p and p.ban_members)}\n"
+            f"Security cogs found: {', '.join(loaded) if loaded else 'None matched'}\n"
             "This report does not enable new enforcement or certify attack resistance.",
             mention_author=False)
 
