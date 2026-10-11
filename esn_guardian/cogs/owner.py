@@ -9,20 +9,15 @@ from discord.ext import commands
 from esn_guardian.cogs.common import command_embed, notify_user, respond, defer_response
 
 
-OWNER_IDS = {
-    1515077206886453469,
-    1392224478175690752,
-    1434663490160955407,
-}
-
-
 def owner_only() -> app_commands.check:
+    """Only the configured BOT_OWNER_ID may run privileged owner commands.
+
+    Fail closed when the owner is not configured. Discord server ownership,
+    administrator permissions and legacy hardcoded IDs never grant access.
+    """
     async def predicate(interaction: discord.Interaction) -> bool:
         configured_owner = getattr(getattr(interaction.client, "settings", None), "owner_id", None)
-        allowed = set(OWNER_IDS)
-        if configured_owner is not None:
-            allowed.add(int(configured_owner))
-        return interaction.user.id in allowed
+        return configured_owner is not None and interaction.user.id == int(configured_owner)
     return app_commands.check(predicate)
 
 
@@ -144,8 +139,12 @@ class OwnerCog(commands.Cog):
         except ValueError:
             await respond(interaction, "Provide a numeric user ID.")
             return
-        if target_id in OWNER_IDS:
-            await respond(interaction, "A configured bot owner cannot be globally banned.")
+        configured_owner = getattr(self.bot.settings, "owner_id", None)
+        protected_ids = {int(configured_owner)} if configured_owner is not None else set()
+        if self.bot.user is not None:
+            protected_ids.add(self.bot.user.id)
+        if target_id in protected_ids:
+            await respond(interaction, "Guardian cannot globally ban its configured owner or itself.")
             return
 
         await defer_response(interaction)
