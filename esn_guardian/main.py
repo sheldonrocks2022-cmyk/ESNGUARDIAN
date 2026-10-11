@@ -32,6 +32,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.esng_ai_v2",
     "esn_guardian.cogs.tickets",
     "esn_guardian.cogs.owner",
+    "esn_guardian.cogs.public_commands",
 )
 
 
@@ -42,7 +43,7 @@ class GuardianBot(commands.Bot):
         intents.message_content = True
         intents.moderation = True
         super().__init__(
-            command_prefix="!",
+            command_prefix=commands.when_mentioned_or("!ESNG ", "!ESNG", "!"),
             intents=intents,
             help_command=None,
             allowed_mentions=discord.AllowedMentions.none(),
