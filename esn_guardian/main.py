@@ -34,6 +34,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.owner",
     "esn_guardian.cogs.public_commands",
     "esn_guardian.cogs.omega_control",
+    "esn_guardian.cogs.global_appeals",
 )
 
 
