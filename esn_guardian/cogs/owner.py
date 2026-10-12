@@ -185,8 +185,8 @@ class OwnerCog(commands.Cog):
                 )
                 notice = command_embed(
                     (
-                        f"**User:** <@{target_id}> (\`{target_id}\`)\n"
-                        f"**Server:** {discord.utils.escape_markdown(guild.name)} (\`{guild.id}\`)\n"
+                        f"**User:** <@{target_id}> (`{target_id}`)\n"
+                        f"**Server:** {discord.utils.escape_markdown(guild.name)} (`{guild.id}`)\n"
                         f"**Reason:** {discord.utils.escape_mentions(reason)[:1500]}\n"
                         f"**Confidence:** {int(confidence)}%\n"
                         f"**Enforcement:** {status_text}"
@@ -223,7 +223,7 @@ class OwnerCog(commands.Cog):
             "**You have been globally banned by ESN Guardian.**\n"
             f"**Reason:** {discord.utils.escape_mentions(reason)[:1500]}\n"
             f"**Confidence:** {int(confidence)}%\n\n"
-            "**Appeal:** DM this bot with \`!appeal <your explanation>\` using a 20–1500 character explanation. "
+            "**Appeal:** DM this bot with `!appeal <your explanation>` using a 20–1500 character explanation. "
             "Your appeal is private and is reviewed by the Guardian bot owner."
         )
         user_notified = await self._notify_user_by_id(target_id, user_dm)
@@ -231,7 +231,7 @@ class OwnerCog(commands.Cog):
         await respond(
             interaction,
             (
-                f"Global ban saved for \`{target_id}\`. Confidence: {int(confidence)}%{evidence_text}.\n"
+                f"Global ban saved for `{target_id}`. Confidence: {int(confidence)}%{evidence_text}.\n"
                 f"Enforcement: {banned} successful • {failed} failed.\n"
                 f"Server-owner notices: {owner_notified} delivered • {owner_notify_failed} failed.\n"
                 f"Banned-user notice: {'delivered' if user_notified else 'failed (DM unavailable or Discord API error)'}."
@@ -249,7 +249,7 @@ class OwnerCog(commands.Cog):
             await respond(interaction, "Provide a valid numeric Discord user ID.")
             return
         reachable = sum(1 for guild in self.bot.guilds if guild.me is not None and guild.me.guild_permissions.ban_members)
-        await respond(interaction, f"**Global ban preview** for \`{target_id}\`\\n"
+        await respond(interaction, f"**Global ban preview** for `{target_id}`\\n"
                       f"Connected servers: {len(self.bot.guilds)}\\n"
                       f"Servers with Ban Members permission: {reachable}\\n"
                       "Role hierarchy, rate limits and API failures may still prevent enforcement. No bans performed.")
