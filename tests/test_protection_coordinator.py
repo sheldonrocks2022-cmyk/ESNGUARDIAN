@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from esn_guardian.cogs.protection_coordinator import SEVERITY
 
 
