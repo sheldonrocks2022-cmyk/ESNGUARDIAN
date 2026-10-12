@@ -38,7 +38,7 @@ jobs:
       - name: Ruff
         run: ruff check --output-format=github esn_guardian/cogs/protection_coordinator.py tests/test_protection_coordinator.py
       - name: Bandit
-        run: bandit -q -r esn_guardian -x tests
+        run: bandit -q -r esn_guardian -x tests -lll
       - name: Dependency audit
         run: pip-audit -r requirements.txt
       - name: Tests
