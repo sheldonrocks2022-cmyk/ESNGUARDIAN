@@ -450,6 +450,13 @@ class ProtectionV6Cog(commands.Cog):
     ) -> dict[str, int]:
         now = datetime.now(UTC)
         actor_id = actor.id if actor is not None else None
+
+        # Guardian must never score its own recovery/security writes as hostile activity.
+        # Without this guard, an auto-heal can feed back into the detector, causing
+        # repeated state escalation and recovery/logging loops.
+        if self.bot.user is not None and actor_id == self.bot.user.id:
+            return {"actor": 0, "guild": self._actor_chain_score(guild.id, None)}
+
         self.events[guild.id].append((now, actor_id, kind, detail[:500], target_id))
         self._prune_events(guild.id, now)
 
@@ -1560,6 +1567,13 @@ class ProtectionV6Cog(commands.Cog):
             discord.AuditLogAction.channel_delete,
             channel.id,
         )
+        if (
+            hasattr(self.bot, "should_suppress_security_event")
+            and self.bot.should_suppress_security_event(channel.guild.id, actor)
+        ):
+            return
+        if await self._trusted_actor(channel.guild, actor):
+            return
         await self._signal(
             channel.guild,
             actor,
