@@ -379,7 +379,7 @@ class CommunityCog(commands.Cog):
         for table, label in (("security_config", "AutoMod"), ("anti_nuke_config", "Anti-nuke"),
                              ("raid_config", "Raid"), ("verification_config", "Verification"),
                              ("ticket_config", "Tickets")):
-            row = await self.bot.database.fetchone(f"SELECT * FROM {table} WHERE guild_id = ?", (interaction.guild_id,))
+            row = await self.bot.database.fetchone("SELECT * FROM " + table + " WHERE guild_id = ?", (interaction.guild_id,))
             sections.append(f"\n{label}")
             sections.extend(f"{key.replace('_', ' ').title()}: {value if value is not None else 'Not set'}"
                             for key, value in dict(row or {}).items() if key != "guild_id")
