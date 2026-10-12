@@ -434,7 +434,8 @@ class Database:
         if field not in allowed:
             raise ValueError(f"Unsupported settings field: {field}")
         await self.ensure_guild(guild_id)
-        await self.execute(f"UPDATE guild_settings SET {field} = ?, updated_at = CURRENT_TIMESTAMP WHERE guild_id = ?", (value, guild_id))
+        query = "UPDATE guild_settings SET " + field + " = ?, updated_at = CURRENT_TIMESTAMP WHERE guild_id = ?"
+        await self.execute(query, (value, guild_id))
 
     async def create_case(self, guild_id: int, target_id: int | None, moderator_id: int | None, action: str, reason: str, channel_id: int | None = None, details: dict[str, Any] | None = None) -> int:
         connection = self._require_connection()
