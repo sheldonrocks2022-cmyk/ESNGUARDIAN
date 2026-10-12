@@ -197,8 +197,9 @@ class ProtectionCoordinatorCog(commands.Cog):
 
     async def safe_drill(self, guild: discord.Guild) -> dict[str, bool]:
         """Pure/non-destructive regression drill. Never mutates Discord resources."""
-        first, token = await self.claim(guild.id, "drill:duplicate", "drill-a", seconds=5)
-        second, owner = await self.claim(guild.id, "drill:duplicate", "drill-b", seconds=5)
+        event_key = f"drill:duplicate:{uuid.uuid4().hex}"
+        first, token = await self.claim(guild.id, event_key, "drill-a", seconds=5)
+        second, owner = await self.claim(guild.id, event_key, "drill-b", seconds=5)
         op = await self.begin_recovery(guild.id, "drill", "drill:recovery", "non-destructive coordinator drill", seconds=15)
         journal = await self.owns_recovery(guild.id, event_key="drill:recovery")
         await self.finish_recovery(op)
