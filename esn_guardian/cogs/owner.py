@@ -156,15 +156,48 @@ class OwnerCog(commands.Cog):
         self._global_bans[target_id] = reason
         banned = 0
         failed = 0
+        owner_notified = 0
+        owner_notify_failed = 0
         target = discord.Object(id=target_id)
+
         for guild in self.bot.guilds:
             outcome = "failed"
+            failure_reason = None
             try:
                 await guild.ban(target, reason=f"ESN Guardian global ban: {reason}", delete_message_seconds=0)
                 banned += 1
                 outcome = "banned"
-            except (discord.Forbidden, discord.HTTPException):
+            except discord.Forbidden:
                 failed += 1
+                failure_reason = "Discord denied the ban. Guardian may be missing Ban Members permission or sufficient role hierarchy."
+            except discord.HTTPException as exc:
+                failed += 1
+                failure_reason = f"Discord API error while applying the ban (HTTP {getattr(exc, 'status', 'unknown')})."
+
+            try:
+                guild_owner = guild.owner
+                if guild_owner is None:
+                    guild_owner = await self.bot.fetch_user(guild.owner_id)
+                status_text = (
+                    "SUCCESS — Guardian applied the global ban in your server."
+                    if outcome == "banned"
+                    else f"FAILED — {failure_reason or 'Guardian could not apply the global ban.'}"
+                )
+                notice = command_embed(
+                    (
+                        f"**User:** <@{target_id}> (\`{target_id}\`)\n"
+                        f"**Server:** {discord.utils.escape_markdown(guild.name)} (\`{guild.id}\`)\n"
+                        f"**Reason:** {discord.utils.escape_mentions(reason)[:1500]}\n"
+                        f"**Confidence:** {int(confidence)}%\n"
+                        f"**Enforcement:** {status_text}"
+                    ),
+                    title="Guardian Global Ban Alert",
+                )
+                await guild_owner.send(embed=notice, allowed_mentions=discord.AllowedMentions.none())
+                owner_notified += 1
+            except (discord.Forbidden, discord.HTTPException):
+                owner_notify_failed += 1
+
             v7 = self.bot.get_cog("SecurityV7Cog")
             if v7 is not None and hasattr(v7, "_evidence"):
                 try:
@@ -176,6 +209,7 @@ class OwnerCog(commands.Cog):
                         {
                             "reason": reason[:500],
                             "outcome": outcome,
+                            "failure_reason": failure_reason,
                             "confidence": int(confidence),
                             "evidence_case_id": evidence_case_id,
                             "source_server_id": interaction.guild_id,
@@ -184,15 +218,24 @@ class OwnerCog(commands.Cog):
                     )
                 except Exception:
                     pass
-        await self._notify_user_by_id(
-            target_id,
-            f"You have been globally banned by ESN Guardian.\nReason: {reason}",
+
+        user_dm = (
+            "**You have been globally banned by ESN Guardian.**\n"
+            f"**Reason:** {discord.utils.escape_mentions(reason)[:1500]}\n"
+            f"**Confidence:** {int(confidence)}%\n\n"
+            "**Appeal:** DM this bot with \`!appeal <your explanation>\` using a 20–1500 character explanation. "
+            "Your appeal is private and is reviewed by the Guardian bot owner."
         )
+        user_notified = await self._notify_user_by_id(target_id, user_dm)
         evidence_text = f" • evidence case #{evidence_case_id}" if evidence_case_id is not None else ""
         await respond(
             interaction,
-            f"Global ban saved for `{target_id}`. Confidence: {int(confidence)}%{evidence_text}. "
-            f"Banned in {banned} server(s); failed in {failed}.",
+            (
+                f"Global ban saved for \`{target_id}\`. Confidence: {int(confidence)}%{evidence_text}.\n"
+                f"Enforcement: {banned} successful • {failed} failed.\n"
+                f"Server-owner notices: {owner_notified} delivered • {owner_notify_failed} failed.\n"
+                f"Banned-user notice: {'delivered' if user_notified else 'failed (DM unavailable or Discord API error)'}."
+            ),
         )
 
     @app_commands.command(description="Preview global ban coverage without banning anyone.")
