@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import uuid
@@ -11,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import defer_response, guild_only, respond, staff_only, guild_owner_only
+from esn_guardian.cogs.common import defer_response, guild_only, guild_owner_only, respond, staff_only
 
 LOG = logging.getLogger("esn_guardian.coordinator")
 
