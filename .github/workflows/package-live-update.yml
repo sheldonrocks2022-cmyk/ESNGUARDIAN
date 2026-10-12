@@ -1,0 +1,23 @@
+name: Package Guardian Live Update
+on:
+  push:
+    paths:
+      - ".github/workflows/package-live-update.yml"
+  workflow_dispatch:
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Python
+        run: python -m py_compile esn_guardian/cogs/owner.py esn_guardian/cogs/security_v6.py esn_guardian/cogs/security_v7.py
+      - name: Stage files
+        run: |
+          mkdir -p package/esn_guardian/cogs
+          cp esn_guardian/cogs/owner.py package/esn_guardian/cogs/
+          cp esn_guardian/cogs/security_v6.py package/esn_guardian/cogs/
+          cp esn_guardian/cogs/security_v7.py package/esn_guardian/cogs/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ESN_Guardian_Live_Update
+          path: package/
