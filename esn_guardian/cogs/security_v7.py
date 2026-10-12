@@ -719,6 +719,17 @@ class SecurityV7Cog(commands.Cog):
             return
         v6 = self.bot.get_cog("ProtectionV6Cog")
         actor = await v6._audit_executor(after.guild, discord.AuditLogAction.channel_update, after.id) if v6 else None
+        if (
+            self.bot.user is not None
+            and actor is not None
+            and actor.id == self.bot.user.id
+        ):
+            return
+        if (
+            hasattr(self.bot, "should_suppress_security_event")
+            and self.bot.should_suppress_security_event(after.guild.id, actor)
+        ):
+            return
         if actor is not None and await self._is_recovery(after.guild, actor) and not row["canary"]:
             return
         await self._asset_violation(after.guild, actor, "channel", after.id, f"Protected channel changed: {after.name}", bool(row["canary"]))
