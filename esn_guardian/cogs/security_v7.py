@@ -243,56 +243,16 @@ class SecurityV7Cog(commands.Cog):
         return row is not None
 
     async def _interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Preserve the universal interaction safety check without second-person approval.
+
+        Individual command decorators still enforce their existing owner/staff/permission
+        requirements. Guardian's detection, evidence, rollback and containment systems
+        are unchanged.
+        """
         if self.previous_check is not None:
             if not await self.previous_check(interaction):
                 return False
-        if interaction.guild is None or interaction.command is None:
-            return True
-        command_name = interaction.command.qualified_name.casefold()
-        dynamic_catastrophic = command_name in CATASTROPHIC
-        if command_name == "guardian panic" and getattr(interaction.namespace, "enabled", True) is False:
-            dynamic_catastrophic = True
-        if command_name == "security automod" and getattr(interaction.namespace, "enabled", True) is False:
-            dynamic_catastrophic = True
-        if not dynamic_catastrophic:
-            return True
-        config = await self._config(interaction.guild.id)
-        if not config["two_person"]:
-            return True
-        now = datetime.now(UTC)
-        rows = await self.bot.database.fetchall(
-            "SELECT * FROM guardian_v7_approvals WHERE guild_id=? AND command_name=? AND requester_id=? "
-            "ORDER BY created_at DESC LIMIT 5",
-            (interaction.guild.id, command_name, interaction.user.id),
-        )
-        for row in rows:
-            try:
-                expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=UTC)
-            if not row["consumed"] and row["approver_id"] is not None and expires > now:
-                await self.bot.database.execute(
-                    "UPDATE guardian_v7_approvals SET consumed=1 WHERE approval_code=?",
-                    (row["approval_code"],),
-                )
-                return True
-        code = secrets.token_hex(3).upper()
-        expires = now + timedelta(minutes=3)
-        await self.bot.database.execute(
-            "INSERT INTO guardian_v7_approvals "
-            "(approval_code,guild_id,command_name,requester_id,expires_at) VALUES (?,?,?,?,?)",
-            (code, interaction.guild.id, command_name, interaction.user.id, expires.isoformat()),
-        )
-        await respond(
-            interaction,
-            f"Guardian v7 requires a second trusted person to approve /{command_name}. "
-            f"Approval code: {code}. A different recovery-team member or the server owner must run "
-            f"/shield approve code:{code} within 3 minutes, then you can rerun the command.",
-        )
-        await self._evidence(interaction.guild.id, interaction.user.id, "TWO_PERSON_APPROVAL", None, {"command": command_name, "code": code})
-        return False
+        return True
 
     async def _evidence(
         self,
