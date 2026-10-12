@@ -20,6 +20,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.security",
     "esn_guardian.cogs.advanced_security",
     "esn_guardian.cogs.security_intelligence",
+    "esn_guardian.cogs.protection_coordinator",
     "esn_guardian.cogs.security_overwatch",
     "esn_guardian.cogs.security_sentinel",
     "esn_guardian.cogs.security_resilience",
