@@ -1,0 +1,45 @@
+name: Guardian Hardening
+
+on:
+  push:
+    branches: [main, guardian-v8-hardening]
+    paths:
+      - "esn_guardian/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/hardening.yml"
+  pull_request:
+    paths:
+      - "esn_guardian/**"
+      - "tests/**"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/hardening.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hardening:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt pytest pytest-asyncio pip-audit ruff bandit
+      - name: Compile
+        run: python -m compileall -q bot.py main.py watchdog.py esn_guardian tests tools
+      - name: Ruff
+        run: ruff check esn_guardian tests
+      - name: Bandit
+        run: bandit -q -r esn_guardian -x tests
+      - name: Dependency audit
+        run: pip-audit -r requirements.txt
+      - name: Tests
+        run: PYTHONPATH=. python -m pytest -q
