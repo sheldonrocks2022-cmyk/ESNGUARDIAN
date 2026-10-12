@@ -36,7 +36,7 @@ jobs:
       - name: Compile
         run: python -m compileall -q bot.py main.py watchdog.py esn_guardian tests tools
       - name: Ruff
-        run: ruff check esn_guardian/cogs/protection_coordinator.py tests/test_protection_coordinator.py
+        run: ruff check --output-format=github esn_guardian/cogs/protection_coordinator.py tests/test_protection_coordinator.py
       - name: Bandit
         run: bandit -q -r esn_guardian -x tests
       - name: Dependency audit
