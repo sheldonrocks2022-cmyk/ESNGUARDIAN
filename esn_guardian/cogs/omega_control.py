@@ -2,8 +2,8 @@
 from __future__ import annotations
 import json
 from pathlib import Path
-import discord
 from discord.ext import commands
+from esn_guardian.luxury_ui import luxury_reply
 
 class OmegaControl(commands.Cog):
     def __init__(self, bot):
@@ -30,69 +30,66 @@ class OmegaControl(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(2, 10, commands.BucketType.user)
     async def omega(self, ctx):
-        await ctx.reply("**OMEGA Control**: `!omega status`, `!omega policy`, "
-                        "`!omega policy strict|balanced`, `!omega scan`. "
-                        "Configuration is isolated to this server.", mention_author=False)
+        await luxury_reply(ctx, "OMEGA Control Center", "Advisory security operations. Configuration is isolated to this server.",
+            fields=[("Monitoring", "`!omega status` • `!omega scan` • `!omega report`", False),
+                    ("Preferences", "`!omega policy` • `!omega alerts`", False)])
 
     @omega.command(name="status")
     async def status(self, ctx):
         policy = self.settings(ctx.guild.id).get("policy", "balanced")
-        await ctx.reply(f"**OMEGA** | Server: {ctx.guild.name} | Policy: {policy}\n"
-                        "Existing Guardian protection remains in charge. "
-                        "Policy is advisory until explicitly integrated with detection engines.", mention_author=False)
+        await luxury_reply(ctx, "OMEGA Status", "Existing Guardian protection remains in charge. OMEGA policy is advisory until integrated with detection engines.",
+            fields=[("Server", ctx.guild.name, True), ("Advisory Policy", policy.title(), True)])
 
     @omega.command(name="policy")
     @commands.has_guild_permissions(manage_guild=True)
     async def policy(self, ctx, mode: str = ""):
         if not mode:
-            return await ctx.reply("Policy: " + self.settings(ctx.guild.id).get("policy", "balanced"), mention_author=False)
+            policy = self.settings(ctx.guild.id).get("policy", "balanced")
+            return await luxury_reply(ctx, "Advisory Policy", policy.title())
         if mode.lower() not in ("strict", "balanced"):
-            return await ctx.reply("Choose strict or balanced.", mention_author=False)
-        guild_config = self.config.setdefault(str(ctx.guild.id), {})
-        guild_config["policy"] = mode.lower()
+            return await luxury_reply(ctx, "Invalid Policy", "Choose `strict` or `balanced`.", level="warning")
+        self.config.setdefault(str(ctx.guild.id), {})["policy"] = mode.lower()
         self.save()
-        await ctx.reply("Saved advisory OMEGA policy for this server. Existing security thresholds are unchanged.",
-                        mention_author=False)
+        await luxury_reply(ctx, "Policy Saved", "Advisory policy updated. Existing security thresholds are unchanged.", level="success",
+            fields=[("Selected Policy", mode.title(), True)])
 
     @omega.command(name="alerts")
     @commands.has_guild_permissions(manage_guild=True)
     async def alerts(self, ctx, enabled: str = ""):
-        """Per-server preference for future OMEGA advisory notifications."""
         if not enabled:
             state = self.settings(ctx.guild.id).get("alerts", True)
-            return await ctx.reply(f"OMEGA advisory alerts preference: {'on' if state else 'off'}", mention_author=False)
+            return await luxury_reply(ctx, "OMEGA Advisory Alerts", "Enabled" if state else "Disabled")
         if enabled.lower() not in ("on", "off"):
-            return await ctx.reply("Use !omega alerts on or !omega alerts off.", mention_author=False)
+            return await luxury_reply(ctx, "Invalid Setting", "Use `!omega alerts on` or `!omega alerts off`.", level="warning")
         self.config.setdefault(str(ctx.guild.id), {})["alerts"] = enabled.lower() == "on"
         self.save()
-        await ctx.reply("Saved advisory alert preference. Existing Guardian alerts are unchanged.", mention_author=False)
+        await luxury_reply(ctx, "Alert Preference Saved", "Existing Guardian alerts remain unchanged.", level="success")
 
     @omega.command(name="report")
     @commands.has_guild_permissions(manage_guild=True)
     async def report(self, ctx):
-        """Private guild-scoped readiness summary; never reveal other guilds."""
         health = getattr(self.bot, "runtime_health", {})
         me = ctx.guild.me
         audit_ok = bool(me and me.guild_permissions.view_audit_log)
         db_ok = bool(health.get("database_ok", False))
         policy = self.settings(ctx.guild.id).get("policy", "balanced")
-        await ctx.reply(f"**OMEGA Readiness — {ctx.guild.name}**\\n"
-                        f"Database: {'OK' if db_ok else 'CHECK'}\\n"
-                        f"Audit log access: {'YES' if audit_ok else 'NO'}\\n"
-                        f"Advisory policy: {policy}\\n"
-                        "Read-only report. Existing Guardian engines remain active.", mention_author=False)
+        await luxury_reply(ctx, "OMEGA Readiness Report", "Read-only report. Existing Guardian engines remain active.",
+            level="success" if db_ok and audit_ok else "warning",
+            fields=[("Database", "✓ OK" if db_ok else "✕ CHECK", True),
+                    ("Audit Log", "✓ Available" if audit_ok else "✕ Missing", True),
+                    ("Advisory Policy", policy.title(), False)])
 
     @omega.command(name="scan")
     @commands.has_guild_permissions(manage_guild=True)
     async def scan(self, ctx):
         me = ctx.guild.me
         if not me:
-            return await ctx.reply("Guardian's member record is unavailable.", mention_author=False)
+            return await luxury_reply(ctx, "OMEGA Scan", "Guardian member record unavailable.", level="warning")
         dangerous = [role for role in ctx.guild.roles if role.permissions.administrator and not role.is_default()]
         manageable = sum(1 for role in dangerous if role < me.top_role)
-        await ctx.reply(f"**Read-only OMEGA scan**\nAdministrator roles: {len(dangerous)}\n"
-                        f"Below Guardian's highest role: {manageable}\n"
-                        "No roles or permissions were changed.", mention_author=False)
+        await luxury_reply(ctx, "OMEGA Security Scan", "Read-only scan completed. No roles or permissions were changed.",
+            fields=[("Administrator Roles", str(len(dangerous)), True),
+                    ("Below Guardian's Top Role", str(manageable), True)])
 
 async def setup(bot):
     await bot.add_cog(OmegaControl(bot))
