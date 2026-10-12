@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import uuid
 from collections import defaultdict, deque
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from esn_guardian.cogs.common import defer_response, guild_only, log_event, respond, staff_only, guild_owner_only
+from esn_guardian.cogs.common import defer_response, guild_only, respond, staff_only, guild_owner_only
 
 LOG = logging.getLogger("esn_guardian.coordinator")
 
