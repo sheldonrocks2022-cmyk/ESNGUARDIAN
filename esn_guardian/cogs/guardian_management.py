@@ -116,7 +116,9 @@ class GuardianManagement(commands.Cog):
     async def contacts(self,user_id):
         return await self.bot.database.fetchall("SELECT guild_id FROM guardian_contacts WHERE user_id=?",(user_id,))
     @commands.group(name="gmessage",invoke_without_command=True)
-    async def gmessage(self,ctx):\n        where="**Run messaging commands in Guardian DMs.**\n\n" if ctx.guild else ""\n        await ctx.reply(embed=luxury("GUARDIAN CONTACT MESSAGING",where+"`!gmessage send <USER_ID> <message>`\n`!gmessage inbox`\n`!gmessage reply <MESSAGE_ID> <message>`\n`!gmessage block <USER_ID>`\n`!gmessage unblock <USER_ID>`\n`!gmessage report <MESSAGE_ID> <reason>`"),mention_author=False)
+    async def gmessage(self,ctx):
+        where="**Run messaging commands in Guardian DMs.**\n\n" if ctx.guild else ""
+        await ctx.reply(embed=luxury("GUARDIAN CONTACT MESSAGING",where+"`!gmessage send <USER_ID> <message>`\n`!gmessage inbox`\n`!gmessage reply <MESSAGE_ID> <message>`\n`!gmessage block <USER_ID>`\n`!gmessage unblock <USER_ID>`\n`!gmessage report <MESSAGE_ID> <reason>`"),mention_author=False)
     @gmessage.command(name="send")\n    @commands.dm_only()
     @commands.cooldown(1,20,commands.BucketType.user)
     async def message_send(self,ctx,user_id:int,*,message:str):
