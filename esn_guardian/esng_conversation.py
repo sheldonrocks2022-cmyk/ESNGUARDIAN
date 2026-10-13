@@ -15,6 +15,7 @@ from esn_guardian.esng_memory import MemoryStore
 from esn_guardian.esng_reasoning import diagnose, analyze_python, compare_options
 from esn_guardian.esng_capabilities import calculate, search_web, read_public_page
 from esn_guardian.esng_skills import answer_skill
+from esn_guardian.esng_extended import extended_skill
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -113,6 +114,9 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
+        skill_answer = extended_skill(p)
+        if skill_answer is not None:
+            return skill_answer
         skill_answer = answer_skill(p)
         if skill_answer is not None:
             return skill_answer
