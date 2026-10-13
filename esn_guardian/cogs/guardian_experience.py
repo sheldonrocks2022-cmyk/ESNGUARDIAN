@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, staff_only
+from esn_guardian.cogs.common import guild_only, staff_only, log_event
 
 BLUE = discord.Color(0x0B3D91)
 
@@ -165,6 +165,8 @@ class GuardianExperience(commands.Cog):
             "Refund requests": ("luxury_refund_requests", "created_at"),
             "Emergencies": ("luxury_emergency_requests", "created_at"),
             "Staff ratings": ("luxury_staff_ratings", "created_at"),
+            "Network cases": ("guardian_network_cases", "created_at"),
+            "Case timeline events": ("guardian_case_timeline", "created_at"),
         }
         result: dict[str, int] = {}
         for label, (table, column) in queries.items():
@@ -210,6 +212,17 @@ class GuardianExperience(commands.Cog):
                 end_dt = datetime(now.year, now.month + 1, 1, tzinfo=UTC)
             label = f"{calendar.month_name[now.month]} {now.year}"
         counts = await self.wrapped_counts(interaction.guild_id, start_dt.isoformat(), end_dt.isoformat())
+        # Security events are stored through Guardian's shared event log. Include
+        # them when that table is present, while remaining compatible with older DBs.
+        try:
+            security = await self.bot.database.fetchone(
+                "SELECT COUNT(*) AS n FROM event_log WHERE guild_id=? AND datetime(created_at)>=datetime(?) AND datetime(created_at)<datetime(?)",
+                (interaction.guild_id, start_dt.isoformat(), end_dt.isoformat()),
+            )
+            if security is not None:
+                counts["Guardian logged events"] = int(security["n"])
+        except Exception:
+            pass
         total = sum(counts.values())
         body = (
             f"### {interaction.guild.name} • {label}\n"
