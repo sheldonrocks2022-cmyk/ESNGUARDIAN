@@ -19,7 +19,7 @@ class NetworkOperations(commands.Cog):
     async def cog_load(self):
         for sql in (
           """CREATE TABLE IF NOT EXISTS guardian_trust(user_id INTEGER PRIMARY KEY,substantiated INTEGER NOT NULL DEFAULT 0,rejected INTEGER NOT NULL DEFAULT 0,duplicate INTEGER NOT NULL DEFAULT 0,abuse INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
-          """CREATE TABLE IF NOT EXISTS guardian_broadcasts(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER NOT NULL,kind TEXT NOT NULL,message TEXT NOT NULL,invite TEXT,status TEXT NOT NULL DEFAULT 'created',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+          """CREATE TABLE IF NOT EXISTS guardian_broadcasts(id INTEGER PRIMARY KEY AUTOINCREMENT,owner_id INTEGER NOT NULL,kind TEXT NOT NULL,message TEXT NOT NULL,invite TEXT DEFAULT '',status TEXT NOT NULL DEFAULT 'created',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
           """CREATE TABLE IF NOT EXISTS guardian_broadcast_delivery(broadcast_id INTEGER NOT NULL,user_id INTEGER NOT NULL,guild_id INTEGER NOT NULL,status TEXT NOT NULL,PRIMARY KEY(broadcast_id,user_id,guild_id))""",
           """CREATE TABLE IF NOT EXISTS guardian_contacts(guild_id INTEGER NOT NULL,user_id INTEGER NOT NULL,added_by INTEGER NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(guild_id,user_id))""",
           """CREATE TABLE IF NOT EXISTS guardian_unban_reviews(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,requester_id INTEGER NOT NULL,reason TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,reviewed_by INTEGER,reviewed_at TEXT)""",
