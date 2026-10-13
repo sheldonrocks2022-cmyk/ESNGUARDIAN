@@ -1,62 +1,92 @@
-"""Optional LLM conversation backend for ESNG AI.
+"""ESNG's independent, offline conversational assistant.
 
-Requires ESNG_LLM_API_KEY, ESNG_LLM_MODEL and ESNG_LLM_BASE_URL.
-Uses an OpenAI-compatible chat completions endpoint; no secret is logged.
+No external AI provider, API keys, model downloads, or network requests.
+This is a bounded symbolic assistant, not a trained language model.
 """
 from __future__ import annotations
 
-import os
-from collections import defaultdict, deque
+import ast
+import operator
+import re
+from collections import OrderedDict, deque
 
-import aiohttp
+OPS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod, ast.Pow: operator.pow,
+}
+UNARY = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def safe_calculate(expression: str) -> int | float:
+    """Evaluate basic arithmetic without eval or arbitrary code execution."""
+    if len(expression) > 100:
+        raise ValueError("Expression too long")
+    tree = ast.parse(expression, mode="eval")
+
+    def walk(node: ast.AST, depth: int = 0) -> int | float:
+        if depth > 12:
+            raise ValueError("Expression too complex")
+        if isinstance(node, ast.Expression):
+            return walk(node.body, depth + 1)
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            value = node.value
+        elif isinstance(node, ast.BinOp) and type(node.op) in OPS:
+            left, right = walk(node.left, depth + 1), walk(node.right, depth + 1)
+            if isinstance(node.op, ast.Pow) and (abs(right) > 8 or abs(left) > 100000):
+                raise ValueError("Power too large")
+            value = OPS[type(node.op)](left, right)
+        elif isinstance(node, ast.UnaryOp) and type(node.op) in UNARY:
+            value = UNARY[type(node.op)](walk(node.operand, depth + 1))
+        else:
+            raise ValueError("Unsupported expression")
+        if abs(value) > 10**12:
+            raise ValueError("Result too large")
+        return value
+
+    return walk(tree)
 
 
 class ESNGConversation:
     def __init__(self) -> None:
-        self.history: dict[tuple[int, int], deque[dict[str, str]]] = defaultdict(lambda: deque(maxlen=12))
+        self.history: OrderedDict[tuple[int, int], deque[str]] = OrderedDict()
 
     @property
     def enabled(self) -> bool:
-        return all(os.getenv(key, "").strip() for key in (
-            "ESNG_LLM_API_KEY", "ESNG_LLM_MODEL", "ESNG_LLM_BASE_URL"
-        ))
+        return True
 
     async def reply(self, guild_id: int, user_id: int, prompt: str) -> str | None:
-        if not self.enabled:
-            return None
-        base = os.environ["ESNG_LLM_BASE_URL"].strip().rstrip("/")
-        if not base.startswith("https://"):
-            return None
         key = (guild_id, user_id)
-        history = list(self.history[key])
-        messages = [
-            {"role": "system", "content": (
-                "You are ESNG AI, a helpful, accurate Discord assistant. "
-                "Speak naturally and admit uncertainty. You cannot access live Guardian "
-                "data unless it is supplied to you. Never claim to have executed a "
-                "moderation action or changed settings. Do not reveal secrets. "
-                "For security changes, direct users to permission-checked Guardian commands."
-            )},
-            *history,
-            {"role": "user", "content": prompt[:2000]},
-        ]
-        timeout = aiohttp.ClientTimeout(total=25)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                base + "/chat/completions",
-                headers={"Authorization": "Bearer " + os.environ["ESNG_LLM_API_KEY"].strip()},
-                json={
-                    "model": os.environ["ESNG_LLM_MODEL"].strip(),
-                    "messages": messages,
-                    "temperature": 0.5,
-                    "max_tokens": 700,
-                },
-            ) as response:
-                response.raise_for_status()
-                payload = await response.json()
-        answer = str(payload["choices"][0]["message"]["content"]).strip()[:3500]
-        if not answer:
-            return None
-        self.history[key].append({"role": "user", "content": prompt[:2000]})
-        self.history[key].append({"role": "assistant", "content": answer})
-        return answer
+        if key not in self.history:
+            if len(self.history) >= 2000:
+                self.history.popitem(last=False)
+            self.history[key] = deque(maxlen=8)
+        self.history.move_to_end(key)
+        history = self.history[key]
+        p = prompt.strip()[:2000]
+        normalized = p.casefold()
+        if not p:
+            return "Ask me a question, request a calculation, or tell me what you're working on."
+        if re.search(r"\b(forget (this|our) (chat|conversation)|clear (my )?memory|reset conversation)\b", normalized):
+            history.clear()
+            return "This conversation's temporary context has been cleared."
+        if re.search(r"\b(what (did i|were we) (ask|talk|discuss)|what was my last question)\b", normalized):
+            return ("Your previous message was: " + history[-1]) if history else "We haven't discussed anything in this session yet."
+        history.append(p)
+        calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%\s-]{3,100})\??", normalized)
+        if calc:
+            try:
+                return f"Result: {safe_calculate(calc.group(1).strip())}"
+            except (ValueError, SyntaxError, ZeroDivisionError, OverflowError):
+                return "I couldn't calculate that safely. Try a basic arithmetic expression."
+        if re.search(r"\b(hello|hi|hey|howdy)\b", normalized) and len(normalized.split()) <= 5:
+            return "Hey! I'm ESNG, Guardian's independent assistant. What are you working on?"
+        if "who are you" in normalized or "are you chatgpt" in normalized:
+            return ("I'm ESNG AI, an independent offline assistant built into Guardian. "
+                    "I can help with verified Guardian information, arithmetic and limited conversation, "
+                    "but I don't have ChatGPT's general language-model abilities.")
+        if re.search(r"\b(write|draft|rewrite|explain|code|program|debug|create|summarize)\b", normalized):
+            return ("I can help with Guardian-specific questions, but my offline language engine "
+                    "can't reliably generate arbitrary writing or code yet. "
+                    "Tell me the exact task and I can identify what information is needed.")
+        return None
