@@ -5,6 +5,7 @@ import hashlib
 import discord
 from discord.ext import commands
 from esn_guardian.owner_access import allowed
+from esn_guardian.cogs.network_operations import luxury
 
 def esc(value): return discord.utils.escape_mentions(str(value))
 
@@ -22,7 +23,7 @@ class GuardianBatchFive(commands.Cog):
     @commands.dm_only()
     async def caseintel(self,ctx):
         if not await allowed(self.bot,ctx.author.id,"cases"):return
-        await ctx.reply("Use timeline, note, evidence, or duplicates.",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN CASE INTELLIGENCE","Use `!caseintel timeline`, `note`, `evidence`, or `duplicates` with a case ID."),mention_author=False)
 
     @caseintel.command(name="timeline")
     async def timeline(self,ctx,case_id:int):
@@ -66,7 +67,7 @@ class GuardianBatchFive(commands.Cog):
 
     @commands.group(name="guardianassist",invoke_without_command=True)
     async def assist(self,ctx):
-        await ctx.reply("Use request <subject> | <details>, status <ID>, or close <ID>.",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN ASSISTANCE","Use `!guardianassist request <subject> | <details>`, `status <ID>`, or `close <ID>`."),mention_author=False)
 
     @assist.command(name="request")
     @commands.guild_only()
@@ -103,7 +104,7 @@ class GuardianBatchFive(commands.Cog):
     @commands.dm_only()
     async def incidentroom(self,ctx):
         if not await allowed(self.bot,ctx.author.id,"communications"):return
-        await ctx.reply("Use open <severity> <title>, list, or close <ID>.",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN INCIDENT ROOMS","Use `!incidentroom open <severity> <title>`, `list`, or `close <ID>`."),mention_author=False)
     @incidentroom.command(name="open")
     async def room_open(self,ctx,severity:str,*,title:str):
         if not await allowed(self.bot,ctx.author.id,"communications"):return
