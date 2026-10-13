@@ -41,6 +41,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.owner_command_center",
     "esn_guardian.cogs.owner_sandbox",
     "esn_guardian.cogs.network_cases",
+    "esn_guardian.cogs.network_operations",
 )
 
 
