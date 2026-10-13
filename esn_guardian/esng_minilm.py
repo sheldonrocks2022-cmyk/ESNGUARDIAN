@@ -45,7 +45,7 @@ WORD = re.compile(r"[a-z0-9']+|[.,!?;:]", re.I)
 STOP = frozenset("a an the is are was were to of in on and or it i you me my your do does what how why can".split())
 
 def _words(s: str) -> list[str]:
-    return WORD.findall(s.lower())[:100]
+    return [w for w in WORD.findall(s.lower()) if re.fullmatch(r"[a-z0-9\x27]+", w)][:100]
 
 class ESNGMiniLM:
     """Deterministic tiny trigram model plus conservative corpus retrieval."""
