@@ -14,6 +14,7 @@ from esn_guardian.esng_knowledge import retrieve
 from esn_guardian.esng_memory import MemoryStore
 from esn_guardian.esng_reasoning import diagnose, analyze_python, compare_options
 from esn_guardian.esng_capabilities import calculate, search_web, read_public_page
+from esn_guardian.esng_skills import answer_skill
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -112,6 +113,9 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
+        skill_answer = answer_skill(p)
+        if skill_answer is not None:
+            return skill_answer
         qa_match = re.fullmatch(r"(?:ask|answer|research)\s+(https://\S+)\s*[:|]\s*(.{5,250})", p, re.I | re.S)
         if qa_match:
             return await read_public_page(qa_match.group(1), qa_match.group(2))
