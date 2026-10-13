@@ -147,7 +147,7 @@ class ESNGConversation:
         skill_answer = answer_skill(p)
         if skill_answer is not None:
             return skill_answer
-        multi_match = re.fullmatch(r"(?:compare sources|research sources|multi research)\s*[: ]\s*(.{3,250}?)\s*\|\s*(https://\S+(?:\s*\|\s*https://\S+){1,3})", p, re.I | re.S)
+        multi_match = re.fullmatch(r"(?:compare sources|research sources|multi research)\s*[: ]\s*(.{3,250}?)\s*\|\s*(https://[^\s|]+(?:\s*\|\s*https://[^\s|]+){1,3})", p, re.I | re.S)
         if multi_match:
             urls = [u.strip() for u in multi_match.group(2).split('|')]
             answer = await research_many(multi_match.group(1), urls)
