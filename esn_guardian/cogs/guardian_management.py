@@ -69,21 +69,21 @@ class GuardianManagement(commands.Cog):
     @commands.dm_only()
     async def guardianowner(self,ctx):
         if not is_primary(self.bot,ctx.author.id):return
-        await ctx.reply("Owner IDs: add USER_ID LEVEL, permissions USER_ID, list, revoke USER_ID.",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN OWNER ACCESS","`!guardianowner add <USER_ID> <LEVEL>`\n`!guardianowner permissions <USER_ID>`\n`!guardianowner list`\n`!guardianowner revoke <USER_ID>`"),mention_author=False)
     @guardianowner.command(name="add")
     async def owner_add(self,ctx,user_id:int,level:str):
         if not is_primary(self.bot,ctx.author.id):return
         level=level.casefold()
-        if level not in LEVELS:return await ctx.reply("Level must be full, cases, or communications.",mention_author=False)
-        if user_id==ctx.author.id:return await ctx.reply("The Primary Owner is permanent.",mention_author=False)
+        if level not in LEVELS:return await ctx.reply(embed=luxury("OWNER ACCESS","Level must be `full`, `cases`, or `communications`.","warning"),mention_author=False)
+        if user_id==ctx.author.id:return await ctx.reply(embed=luxury("OWNER ACCESS","The Primary Owner is permanent.","warning"),mention_author=False)
         try:self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-        except discord.HTTPException:return await ctx.reply("That Discord user could not be verified.",mention_author=False)
+        except discord.HTTPException:return await ctx.reply(embed=luxury("OWNER ACCESS","That Discord user could not be verified.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_secondary_owners(user_id,level,added_by) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET level=excluded.level,added_by=excluded.added_by",(user_id,level,ctx.author.id))
-        await ctx.reply(f"Secondary owner {user_id} authorized for {level}. Secondary owners cannot grant ownership.",mention_author=False)
+        await ctx.reply(embed=luxury("SECONDARY OWNER AUTHORIZED",f"`{user_id}` authorized for **{level}**.\nSecondary owners cannot grant ownership.","success"),mention_author=False)
     @guardianowner.command(name="permissions")
     async def owner_permissions(self,ctx,user_id:int):
         if not is_primary(self.bot,ctx.author.id):return
-        level=await owner_level(self.bot,user_id);await ctx.reply(f"Owner {user_id} permission level: {level or 'none'}.",mention_author=False)
+        level=await owner_level(self.bot,user_id);await ctx.reply(embed=luxury("OWNER PERMISSIONS",f"**User:** `{user_id}`\n**Level:** {level or 'none'}"),mention_author=False)
     @guardianowner.command(name="list")
     async def owner_list(self,ctx):
         if not is_primary(self.bot,ctx.author.id):return
@@ -93,8 +93,8 @@ class GuardianManagement(commands.Cog):
     @guardianowner.command(name="revoke")
     async def owner_revoke(self,ctx,user_id:int):
         if not is_primary(self.bot,ctx.author.id):return
-        if user_id==int(self.bot.settings.owner_id):return await ctx.reply("The Primary Owner cannot be revoked through Discord.",mention_author=False)
-        await self.bot.database.execute("DELETE FROM guardian_secondary_owners WHERE user_id=?",(user_id,));await ctx.reply(f"Secondary owner {user_id} revoked.",mention_author=False)
+        if user_id==int(self.bot.settings.owner_id):return await ctx.reply(embed=luxury("OWNER ACCESS","The Primary Owner cannot be revoked through Discord.","warning"),mention_author=False)
+        await self.bot.database.execute("DELETE FROM guardian_secondary_owners WHERE user_id=?",(user_id,));await ctx.reply(embed=luxury("SECONDARY OWNER REVOKED",f"`{user_id}` revoked.","success"),mention_author=False)
 
     @commands.command(name="inbox")
     @commands.dm_only()
