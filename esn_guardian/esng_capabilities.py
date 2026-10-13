@@ -3,9 +3,10 @@ from __future__ import annotations
 import ast
 import math
 import operator
-import os
 import re
 import aiohttp
+from html.parser import HTMLParser
+from urllib.parse import urlparse, parse_qs, unquote
 
 BIN = {ast.Add:operator.add, ast.Sub:operator.sub, ast.Mult:operator.mul, ast.Div:operator.truediv, ast.FloorDiv:operator.floordiv, ast.Mod:operator.mod, ast.Pow:operator.pow}
 UNARY = {ast.UAdd:operator.pos, ast.USub:operator.neg}
@@ -38,25 +39,48 @@ def calculate(expression: str) -> int | float:
         return result
     return run(tree)
 
+
+class _SearchParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results=[]
+        self.capture=False
+        self.title=[]
+        self.url=""
+    def handle_starttag(self,tag,attrs):
+        d=dict(attrs)
+        if tag=="a" and "result__a" in d.get("class","") and len(self.results)<5:
+            self.capture=True
+            self.title=[]
+            self.url=d.get("href","")
+    def handle_data(self,data):
+        if self.capture: self.title.append(data)
+    def handle_endtag(self,tag):
+        if tag=="a" and self.capture:
+            self.capture=False
+            url=self.url
+            if url.startswith("//"): url="https:"+url
+            if "duckduckgo.com/l/" in url:
+                url=parse_qs(urlparse(url).query).get("uddg",[""])[0]
+            parsed=urlparse(url)
+            if parsed.scheme=="https" and parsed.hostname and parsed.hostname not in ("duckduckgo.com","html.duckduckgo.com"):
+                self.results.append((" ".join(self.title).strip()[:110],url[:500]))
+
 async def search_web(query: str) -> str:
-    key=os.getenv("BRAVE_SEARCH_API_KEY","").strip()
-    if not key: return "Web search is not configured. Set BRAVE_SEARCH_API_KEY in the server environment to enable sourced results."
-    if len(query)>350: return "Search query is too long."
-    timeout=aiohttp.ClientTimeout(total=8)
+    """Search public HTML without an API or credentials; availability is not guaranteed."""
+    if len(query)>200: return "Search query is too long."
+    timeout=aiohttp.ClientTimeout(total=10)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get("https://api.search.brave.com/res/v1/web/search",params={"q":query,"count":4,"safesearch":"moderate"},headers={"X-Subscription-Token":key,"Accept":"application/json"}) as resp:
-                if resp.status!=200: return f"Search unavailable (HTTP {resp.status})."
-                payload=await resp.json(content_type=None)
-        results=payload.get("web",{}).get("results",[])[:4]
-        if not results: return "No search results found."
-        lines=["Web search results (source snippets, not independently verified):"]
-        for item in results:
-            title=re.sub(r"[\\r\\n]+"," ",str(item.get("title","Untitled")))[:100]
-            desc=re.sub(r"[\\r\\n]+"," ",str(item.get("description","")))[:200]
-            url=str(item.get("url",""))
-            if not url.startswith(("https://","http://")): continue
-            lines.append(f"• {title} — {desc}\\n{url}")
+        async with aiohttp.ClientSession(timeout=timeout,headers={"User-Agent":"Mozilla/5.0 (compatible; ESNGGuardian/8)"}) as session:
+            async with session.get("https://html.duckduckgo.com/html/",params={"q":query},allow_redirects=False) as resp:
+                if resp.status!=200: return "Public web search is currently unavailable."
+                html=await resp.text(errors="replace")
+                if len(html)>800000: return "Search page exceeds safe size limits."
+        parser=_SearchParser()
+        parser.feed(html)
+        if not parser.results: return "No public search results were available. Some websites block automated searches."
+        lines=["Public web search results (titles and links; not independently verified):"]
+        for title,url in parser.results[:4]: lines.append(f"• {title}\\n{url}")
         return "\\n".join(lines)[:1800]
     except (aiohttp.ClientError,TimeoutError,ValueError):
-        return "Web search timed out or failed. Try again later."
+        return "Public web search is unavailable right now. Try again later."
