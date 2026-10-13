@@ -330,12 +330,15 @@ class SecuritySentinelCog(commands.Cog):
         processed = 0
         newest = last_case_id
         for row in rows:
-            newest = max(newest, int(row["case_id"]))
             try:
                 await self._analyze_case(guild, row)
-                processed += 1
             except Exception:
-                LOG.exception("Sentinel failed to analyze case %s in guild %s", row["case_id"], guild.id)
+                # Keep the cursor at the last successful case so a transient
+                # database/API failure cannot silently discard threat evidence.
+                LOG.exception("Sentinel failed to analyze case %s in guild %s; retrying next scan", row["case_id"], guild.id)
+                break
+            newest = int(row["case_id"])
+            processed += 1
 
         if newest != last_case_id:
             await self.bot.database.execute(
