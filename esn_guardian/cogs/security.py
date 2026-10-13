@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, guild_owner_only, safe_public_role, require_target, defer_response
+from esn_guardian.security_luxury import security_case_embed
 
 LOG = logging.getLogger("esn_guardian.security")
 
@@ -472,10 +473,13 @@ class SecurityCog(commands.Cog):
             target_text = f"{target} ({target.id})" if target else "N/A"
             try:
                 await guild.owner.send(
-                    f"Security alert in **{guild.name}** (`{guild.id}`)\n"
-                    f"Case #{case_id}: {action}\n"
-                    f"Target: {target_text}\n"
-                    f"Reason: {reason}",
+                    embed=security_case_embed(
+                        guild,
+                        case_id=case_id,
+                        action=action,
+                        target_text=target_text,
+                        reason=reason,
+                    ),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except discord.HTTPException:
