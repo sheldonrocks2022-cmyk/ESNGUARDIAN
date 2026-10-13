@@ -70,7 +70,15 @@ async def install_schema(bot: commands.Bot) -> None:
         """CREATE TABLE IF NOT EXISTS luxury_academy_courses (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
             name TEXT NOT NULL, content TEXT NOT NULL,
-            published INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual')""",
+            published INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual')""",,
+        """CREATE TABLE IF NOT EXISTS luxury_service_queue_config (
+            guild_id INTEGER PRIMARY KEY, channel_id INTEGER)""",
+        """CREATE TABLE IF NOT EXISTS luxury_service_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
+            customer_id INTEGER NOT NULL, service TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'received', assigned_to INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
     )
     for statement in statements:
         await bot.database.execute(statement)
@@ -730,6 +738,129 @@ class GuardianOperations(commands.Cog):
             (interaction.guild_id, channel.id),
         )
         await respond(interaction, "REPUTATION CONFIGURED", f"New vouches will now be published in {channel.mention}.")
+
+    async def service_queue_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        rows = await self.bot.database.fetchall(
+            "SELECT id,customer_id,service,status FROM luxury_service_queue WHERE guild_id=? AND status!='delivered' ORDER BY id DESC LIMIT 25",
+            (interaction.guild_id,),
+        )
+        needle = current.casefold().strip()
+        choices: list[app_commands.Choice[str]] = []
+        for row in rows:
+            member = interaction.guild.get_member(int(row["customer_id"])) if interaction.guild else None
+            who = member.display_name if member else f"User {row['customer_id']}"
+            label = f"{row['service']} • {who} • {str(row['status']).replace('_', ' ').title()}"
+            if needle and needle not in label.casefold():
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=str(row["id"])))
+        return choices
+
+    @app_commands.command(name="service-queue-configure", description="Set the channel for Guardian Service Queue updates.")
+    @app_commands.describe(channel="Channel where service queue updates will be posted")
+    @guild_only()
+    @staff_only()
+    async def service_queue_configure(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        await self.bot.database.execute(
+            """INSERT INTO luxury_service_queue_config(guild_id,channel_id) VALUES(?,?)
+            ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id""",
+            (interaction.guild_id, channel.id),
+        )
+        await respond(interaction, "SERVICE QUEUE CONFIGURED", f"Service progress updates will be posted in {channel.mention}.")
+
+    @app_commands.command(name="service-add", description="Add a customer service/order to Guardian Service Queue.")
+    @app_commands.describe(customer="Customer receiving the service", service="Product or service being delivered")
+    @guild_only()
+    @staff_only()
+    async def service_add(self, interaction: discord.Interaction, customer: discord.Member, service: app_commands.Range[str, 1, 120]) -> None:
+        await self.bot.database.execute(
+            "INSERT INTO luxury_service_queue(guild_id,customer_id,service) VALUES(?,?,?)",
+            (interaction.guild_id, customer.id, service),
+        )
+        await respond(interaction, "SERVICE ADDED", f"**{service}** for {customer.mention} entered the queue at **Received**.")
+        await self.post_service_update(interaction.guild, customer, service, "received", None)
+
+    @app_commands.command(name="service-update", description="Update a service/order in Guardian Service Queue.")
+    @app_commands.describe(service="Choose the active service", status="Choose its new progress stage", assigned_to="Staff member currently handling it")
+    @app_commands.choices(status=[
+        app_commands.Choice(name="Received", value="received"),
+        app_commands.Choice(name="Assigned", value="assigned"),
+        app_commands.Choice(name="In Progress", value="in_progress"),
+        app_commands.Choice(name="Testing", value="testing"),
+        app_commands.Choice(name="Ready", value="ready"),
+        app_commands.Choice(name="Delivered", value="delivered"),
+    ])
+    @app_commands.autocomplete(service=service_queue_autocomplete)
+    @guild_only()
+    @staff_only()
+    async def service_update(self, interaction: discord.Interaction, service: str, status: app_commands.Choice[str], assigned_to: discord.Member | None = None) -> None:
+        try:
+            queue_id = int(service)
+        except ValueError:
+            await respond(interaction, "SERVICE QUEUE", "Choose a service from Guardian's selector.")
+            return
+        row = await self.bot.database.fetchone(
+            "SELECT * FROM luxury_service_queue WHERE id=? AND guild_id=?", (queue_id, interaction.guild_id)
+        )
+        if row is None:
+            await respond(interaction, "SERVICE QUEUE", "That service is no longer available.")
+            return
+        assignee_id = assigned_to.id if assigned_to else row["assigned_to"]
+        await self.bot.database.execute(
+            "UPDATE luxury_service_queue SET status=?,assigned_to=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND guild_id=?",
+            (status.value, assignee_id, queue_id, interaction.guild_id),
+        )
+        customer = interaction.guild.get_member(int(row["customer_id"]))
+        label = status.value.replace("_", " ").title()
+        await respond(interaction, "SERVICE UPDATED", f"**{row['service']}** is now **{label}**.")
+        if customer:
+            await self.post_service_update(interaction.guild, customer, str(row["service"]), status.value, assigned_to or (interaction.guild.get_member(int(assignee_id)) if assignee_id else None))
+            try:
+                await customer.send(embed=luxury("SERVICE UPDATE", f"**{row['service']}** is now **{label}**.", interaction.guild))
+            except discord.HTTPException:
+                pass
+
+    @app_commands.command(name="service-status", description="View a customer's active Guardian Service Queue items.")
+    @app_commands.describe(customer="Customer to check; leave blank to check yourself")
+    @guild_only()
+    async def service_status(self, interaction: discord.Interaction, customer: discord.Member | None = None) -> None:
+        target = customer or interaction.user
+        if customer is not None and customer.id != interaction.user.id:
+            perms = getattr(interaction.user, "guild_permissions", None)
+            if not perms or not perms.manage_guild:
+                await respond(interaction, "SERVICE QUEUE", "You can only view your own service status.")
+                return
+        rows = await self.bot.database.fetchall(
+            "SELECT service,status,assigned_to FROM luxury_service_queue WHERE guild_id=? AND customer_id=? AND status!='delivered' ORDER BY id DESC",
+            (interaction.guild_id, target.id),
+        )
+        if not rows:
+            await respond(interaction, "SERVICE QUEUE", f"{target.mention} has no active services.")
+            return
+        body = "\n\n".join(
+            f"**{row['service']}**\nStatus: **{str(row['status']).replace('_', ' ').title()}**" + (f" • Staff: <@{row['assigned_to']}>" if row["assigned_to"] else "")
+            for row in rows[:15]
+        )
+        await respond(interaction, "SERVICE QUEUE", body)
+
+    async def post_service_update(self, guild: discord.Guild, customer: discord.Member, service: str, status: str, assigned_to: discord.Member | None) -> None:
+        config = await self.bot.database.fetchone("SELECT channel_id FROM luxury_service_queue_config WHERE guild_id=?", (guild.id,))
+        if config is None:
+            return
+        channel = guild.get_channel(int(config["channel_id"]))
+        if not isinstance(channel, discord.TextChannel):
+            return
+        stages = ["received", "assigned", "in_progress", "testing", "ready", "delivered"]
+        current = stages.index(status) if status in stages else 0
+        progress = " → ".join((f"**{s.replace('_', ' ').title()}**" if i == current else s.replace("_", " ").title()) for i, s in enumerate(stages))
+        body = f"Customer: {customer.mention}\nService: **{service}**\n\n{progress}"
+        if assigned_to:
+            body += f"\n\nAssigned staff: {assigned_to.mention}"
+        try:
+            await channel.send(embed=luxury("SERVICE QUEUE UPDATE", body, guild))
+        except discord.HTTPException:
+            pass
 
     @academy.command(name="configure", description="Configure Guardian Staff Academy.")
     @guild_only()
