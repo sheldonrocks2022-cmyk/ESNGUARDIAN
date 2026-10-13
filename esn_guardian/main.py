@@ -290,12 +290,41 @@ class GuardianBot(commands.Bot):
                 LOG.warning("Could not fetch bot owner %s for guild join notification", self.settings.owner_id)
                 return
         try:
-            await owner.send(
-                f"ESN Guardian was added to **{guild.name}** (`{guild.id}`).\n"
-                f"Server owner: {guild.owner} (`{guild.owner_id}`)\n"
-                f"Members: {guild.member_count or 0}",
-                allowed_mentions=discord.AllowedMentions.none(),
+            administrator_members = []
+            seen_ids: set[int] = set()
+            for member in guild.members:
+                if member.bot or member.id == guild.owner_id:
+                    continue
+                if member.guild_permissions.administrator and member.id not in seen_ids:
+                    administrator_members.append(member)
+                    seen_ids.add(member.id)
+            admin_lines = "\n".join(
+                f"• {member} — <@{member.id}> (`{member.id}`)"
+                for member in administrator_members[:30]
+            ) or "None visible to Guardian"
+            if len(administrator_members) > 30:
+                admin_lines += f"\n• +{len(administrator_members) - 30} more administrators"
+
+            embed = discord.Embed(
+                title="✦ GUARDIAN DEPLOYMENT DETECTED",
+                description=(
+                    f"ESN Guardian has been added to **{guild.name}**.\n\n"
+                    f"**Server Intelligence**\n"
+                    f"Server ID: `{guild.id}`\n"
+                    f"Members: **{guild.member_count or 0:,}**\n"
+                    f"Owner: {guild.owner or 'Unknown'} — <@{guild.owner_id}> (`{guild.owner_id}`)\n\n"
+                    f"**Administrator Staff**\n{admin_lines}"
+                ),
+                color=discord.Color(0x0B3D91),
+                timestamp=discord.utils.utcnow(),
             )
+            if guild.icon:
+                embed.set_author(name=f"ESN GUARDIAN  •  {guild.name}", icon_url=guild.icon.url)
+                embed.set_thumbnail(url=guild.icon.url)
+            else:
+                embed.set_author(name=f"ESN GUARDIAN  •  {guild.name}")
+            embed.set_footer(text="ESN GUARDIAN  •  V8 LUXURY  •  SERVER JOIN")
+            await owner.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             LOG.warning("Could not DM bot owner about joining guild %s (%s)", guild.name, guild.id)
 
