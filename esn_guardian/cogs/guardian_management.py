@@ -89,7 +89,7 @@ class GuardianManagement(commands.Cog):
         if not is_primary(self.bot,ctx.author.id):return
         rows=await self.bot.database.fetchall("SELECT user_id,level FROM guardian_secondary_owners ORDER BY created_at")
         body="\n".join(f"{r['user_id']} - {r['level']}" for r in rows) or "No secondary owners."
-        await ctx.reply(f"Primary: {self.bot.settings.owner_id}\n{body}",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN OWNER ACCESS",f"**Primary:** `{self.bot.settings.owner_id}`\n\n{body}"),mention_author=False)
     @guardianowner.command(name="revoke")
     async def owner_revoke(self,ctx,user_id:int):
         if not is_primary(self.bot,ctx.author.id):return
@@ -105,7 +105,7 @@ class GuardianManagement(commands.Cog):
         unbans=await self.bot.database.fetchall("SELECT id,user_id FROM guardian_unban_reviews WHERE status='pending' ORDER BY id DESC LIMIT 5")
         reports=await self.bot.database.fetchall("SELECT id,message_id FROM guardian_contact_reports WHERE status='pending' ORDER BY id DESC LIMIT 5")
         lines=[f"GNC-{r['id']:06d} user {r['reported_user_id']}" for r in cases]+[f"Appeal {r['id']} user {r['user_id']}" for r in appeals]+[f"GUR-{r['id']:06d} user {r['user_id']}" for r in unbans]+[f"Contact report {r['id']} message GMSG-{r['message_id']:06d}" for r in reports]
-        await ctx.reply("GUARDIAN OWNER INBOX\n"+("\n".join(lines) if lines else "No pending review items."),mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN OWNER INBOX","\n".join(lines) if lines else "No pending review items."),mention_author=False)
 
     @commands.command(name="commandguide")
     @commands.dm_only()
