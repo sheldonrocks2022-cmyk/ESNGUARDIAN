@@ -39,6 +39,9 @@ class GuardianNetworkCases(commands.Cog):
             row=await self.bot.database.fetchone("SELECT * FROM guardian_network_cases WHERE id=? AND status='pending'",(case_id,))
             if row is None: return False,"That case is no longer pending."
             status="approved_for_global_ban" if decision=="approve" else "rejected"
+            reporter_id=int(row["reporter_id"])
+            metric="substantiated" if decision=="approve" else "rejected"
+            await self.bot.database.execute(f"INSERT INTO guardian_trust(user_id,{metric}) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET {metric}={metric}+1,updated_at=CURRENT_TIMESTAMP",(reporter_id,))
             await self.bot.database.execute("UPDATE guardian_network_cases SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'",(status,reviewer,case_id))
             if decision=="approve":
                 return True,f"GNC-{case_id:06d} approved for global-ban enforcement. Use the existing audited /globalban command with this case ID."
@@ -70,7 +73,9 @@ class GuardianNetworkCases(commands.Cog):
         reason=reason.strip()
         if not 10<=len(reason)<=1000:return await ctx.reply("Give a reason between 10 and 1000 characters.",mention_author=False)
         old=await self.bot.database.fetchone("SELECT id FROM guardian_network_cases WHERE reporter_id=? AND reported_user_id=? AND status='pending'",(ctx.author.id,user_id))
-        if old:return await ctx.reply(f"You already have pending case GNC-{int(old['id']):06d} for that user.",mention_author=False)
+        if old:
+            await self.bot.database.execute("INSERT INTO guardian_trust(user_id,duplicate) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET duplicate=duplicate+1,updated_at=CURRENT_TIMESTAMP",(ctx.author.id,))
+            return await ctx.reply(f"You already have pending case GNC-{int(old['id']):06d} for that user.",mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_network_cases(reporter_id,reported_user_id,guild_id,reason) VALUES(?,?,?,?)",(ctx.author.id,user_id,ctx.guild.id,reason))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_network_cases WHERE reporter_id=? ORDER BY id DESC LIMIT 1",(ctx.author.id,))
         cid=int(row["id"]);await self.notify_owner(cid,ctx.author,user_id,ctx.guild,reason)
