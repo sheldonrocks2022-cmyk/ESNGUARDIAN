@@ -10,6 +10,7 @@ import asyncio
 import aiohttp
 from html.parser import HTMLParser
 from urllib.parse import urlparse, parse_qs, unquote
+from esn_guardian.esng_research import extractive_answer
 
 BIN = {ast.Add:operator.add, ast.Sub:operator.sub, ast.Mult:operator.mul, ast.Div:operator.truediv, ast.FloorDiv:operator.floordiv, ast.Mod:operator.mod, ast.Pow:operator.pow}
 UNARY = {ast.UAdd:operator.pos, ast.USub:operator.neg}
@@ -116,7 +117,7 @@ def _public_address(host: str) -> bool:
     except (OSError,ValueError):
         return False
 
-async def read_public_page(url: str) -> str:
+async def read_public_page(url: str, question: str = "") -> str:
     parsed=urlparse(url)
     if parsed.scheme!="https" or not parsed.hostname or parsed.username or parsed.password or parsed.port not in (None,443):
         return "Only public HTTPS pages are supported."
@@ -136,6 +137,6 @@ async def read_public_page(url: str) -> str:
         parser.feed(raw.decode("utf-8","replace"))
         passages=parser.parts[:35]
         if not passages: return "No readable article text was found."
-        return "Extracted website passages (unverified):\\n"+"\\n".join("• "+p[:280] for p in passages)[:1500]+"\\nSource: "+url
+        return extractive_answer(question, passages, url)
     except (aiohttp.ClientError,TimeoutError,ValueError,UnicodeError):
         return "Could not read this webpage."
