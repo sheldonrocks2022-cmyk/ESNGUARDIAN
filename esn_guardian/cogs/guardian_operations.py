@@ -1116,7 +1116,7 @@ class GuardianOperations(commands.Cog):
         avg = sum(ratings)/len(ratings) if ratings else 0
         await respond(interaction, "STAFF REPUTATION", f"{staff.mention}\nAverage: **{avg:.2f}/5**\nVerified service ratings: **{len(ratings)}**")
 
-    @app_commands.command(name="guardian", description="Open Guardian V8 Luxury Command Center.")
+    @app_commands.command(name="operations", description="Open Guardian V8 Luxury Operations Center.")
     @guild_only()
     async def guardian_center(self, interaction: discord.Interaction) -> None:
         body = (
@@ -1127,7 +1127,7 @@ class GuardianOperations(commands.Cog):
             "**Operations** — Service emergencies, order progress and customer delivery history.\n\n"
             "Use Discord's slash-command picker to open the system you need. Guardian never requires internal database IDs for these customer-facing flows."
         )
-        await respond(interaction, "GUARDIAN COMMAND CENTER 2.0", body)
+        await respond(interaction, "GUARDIAN OPERATIONS CENTER 2.0", body)
 
     @academy.command(name="configure", description="Configure Guardian Staff Academy.")
     @guild_only()
