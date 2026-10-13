@@ -1,6 +1,7 @@
 """Guardian V8 Luxury operations: configurable tickets, applications and Staff Academy."""
 from __future__ import annotations
 
+import io
 import json
 import time
 from datetime import UTC, datetime
@@ -90,6 +91,12 @@ async def install_schema(bot: commands.Bot) -> None:
             queue_id INTEGER, customer_id INTEGER NOT NULL, order_number TEXT NOT NULL,
             service TEXT NOT NULL, expires_at TEXT, status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+        """CREATE TABLE IF NOT EXISTS luxury_reputation_config (
+            guild_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS luxury_vouches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL, stars INTEGER NOT NULL, received TEXT NOT NULL,
+            experience TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
         """CREATE TABLE IF NOT EXISTS luxury_vouch_wall_config (
             guild_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL, message_id INTEGER)""",
         """CREATE TABLE IF NOT EXISTS luxury_invoices (
@@ -100,7 +107,12 @@ async def install_schema(bot: commands.Bot) -> None:
         """CREATE TABLE IF NOT EXISTS luxury_refund_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, customer_id INTEGER NOT NULL,
             queue_id INTEGER, reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-            reviewer_id INTEGER, decision_note TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
+            reviewer_id INTEGER, decision_note TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            decided_at TEXT)""",
+        """CREATE TABLE IF NOT EXISTS luxury_refund_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, refund_id INTEGER NOT NULL, guild_id INTEGER NOT NULL,
+            action TEXT NOT NULL, actor_id INTEGER NOT NULL, note TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""",
         """CREATE TABLE IF NOT EXISTS luxury_emergency_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, customer_id INTEGER NOT NULL,
             queue_id INTEGER, issue TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
@@ -136,6 +148,11 @@ async def install_schema(bot: commands.Bot) -> None:
         await bot.database.execute("ALTER TABLE luxury_service_queue ADD COLUMN order_number TEXT")
     if "delivered_at" not in queue_names:
         await bot.database.execute("ALTER TABLE luxury_service_queue ADD COLUMN delivered_at TEXT")
+
+    refund_columns = await bot.database.fetchall("PRAGMA table_info(luxury_refund_requests)")
+    refund_names = {str(row["name"]) for row in refund_columns}
+    if "decided_at" not in refund_names:
+        await bot.database.execute("ALTER TABLE luxury_refund_requests ADD COLUMN decided_at TEXT")
 
 
 class TicketModal(discord.ui.Modal, title="Create Guardian Ticket"):
@@ -377,13 +394,53 @@ class GuardianOperations(commands.Cog):
         if interaction.user.id != row["user_id"] and not self.is_staff(interaction, config["staff_role_id"] if config else None):
             await respond(interaction, "TICKETS", "Only the ticket opener or configured staff can close this ticket.")
             return
+
+        transcript_lines = [
+            f"ESN Guardian V8 Luxury Ticket Transcript",
+            f"Server: {interaction.guild.name}",
+            f"Subject: {row['subject']}",
+            f"Opened by: {row['user_id']}",
+            f"Closed by: {interaction.user} ({interaction.user.id})",
+            "",
+        ]
+        try:
+            async for message in interaction.channel.history(limit=None, oldest_first=True):
+                stamp = message.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+                content = message.clean_content or ""
+                attachments = " ".join(a.url for a in message.attachments)
+                transcript_lines.append(f"[{stamp}] {message.author} ({message.author.id}): {content} {attachments}".rstrip())
+        except discord.HTTPException:
+            transcript_lines.append("[Guardian could not read complete channel history.]")
+
+        transcript_bytes = "\n".join(transcript_lines).encode("utf-8", errors="replace")
+        filename = f"guardian-ticket-{int(row['ticket_id'])}-transcript.txt"
+        log_channel = interaction.guild.get_channel(int(config["log_channel_id"])) if config and config["log_channel_id"] else None
+        if isinstance(log_channel, discord.TextChannel):
+            try:
+                await log_channel.send(
+                    embed=luxury("TICKET TRANSCRIPT", f"Subject: **{row['subject']}**\nClosed by: {interaction.user.mention}", interaction.guild),
+                    file=discord.File(io.BytesIO(transcript_bytes), filename=filename),
+                )
+            except discord.HTTPException:
+                pass
+
+        opener = interaction.guild.get_member(int(row["user_id"]))
+        if opener is not None:
+            try:
+                await opener.send(
+                    embed=luxury("SUPPORT TICKET CLOSED", f"Your ticket **{row['subject']}** was closed. Your transcript is attached.", interaction.guild),
+                    file=discord.File(io.BytesIO(transcript_bytes), filename=filename),
+                )
+            except discord.HTTPException:
+                pass
+
         await self.bot.database.execute(
             "UPDATE luxury_tickets SET status='closed',channel_id=NULL,closed_at=? WHERE ticket_id=?",
             (time.time(), row["ticket_id"]),
         )
         if not interaction.response.is_done():
             await interaction.response.send_message(
-                embed=luxury("TICKET CLOSED", "Ticket record preserved. Deleting this channel now.", interaction.guild),
+                embed=luxury("TICKET CLOSED", "Transcript saved and delivered where configured. Deleting this channel now.", interaction.guild),
                 ephemeral=True,
             )
         try:
@@ -749,7 +806,16 @@ class GuardianOperations(commands.Cog):
             await respond(interaction, "REPUTATION", "Guardian could not post in the configured reputation channel.")
             return
         await respond(interaction, "VOUCH SUBMITTED", f"Your **{stars}/5** vouch was posted in {channel.mention}. Thank you for your feedback.")
-        await self.refresh_vouch_wall(interaction.guild)
+        try:
+            await self.refresh_vouch_wall(interaction.guild)
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+            pass
+        owner = interaction.guild.owner
+        if owner is not None and owner.id != interaction.user.id:
+            try:
+                await owner.send(embed=luxury("NEW COMMUNITY VOUCH", f"**{stars}/5 ⭐** from {interaction.user.mention}\n**Received:** {received}\n\n{experience}", interaction.guild))
+            except discord.HTTPException:
+                pass
 
     @app_commands.command(name="reputation", description="View this server's Guardian Reputation.")
     @guild_only()
@@ -997,8 +1063,11 @@ class GuardianOperations(commands.Cog):
             ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,message_id=NULL""",
             (interaction.guild_id, channel.id),
         )
-        await self.refresh_vouch_wall(interaction.guild)
         await respond(interaction, "VOUCH WALL CONFIGURED", f"The live Guardian Reputation wall is now in {channel.mention}.")
+        try:
+            await self.refresh_vouch_wall(interaction.guild)
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+            pass
 
     async def refresh_vouch_wall(self, guild: discord.Guild) -> None:
         config = await self.bot.database.fetchone("SELECT * FROM luxury_vouch_wall_config WHERE guild_id=?", (guild.id,))
@@ -1063,6 +1132,38 @@ class GuardianOperations(commands.Cog):
         body = "\n\n".join(f"**{r['service']}** — {r['amount']}\nStatus: **{str(r['status']).title()}**" + (f" • Next: <t:{int(datetime.fromisoformat(str(r['next_due_at'])).timestamp())}:D>" if r["next_due_at"] else "") for r in rows)
         await respond(interaction, "YOUR INVOICES", body or "You have no Guardian invoices.")
 
+    async def pending_refund_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        rows = await self.bot.database.fetchall(
+            """SELECT r.id,r.customer_id,q.service,q.order_number FROM luxury_refund_requests r
+            LEFT JOIN luxury_service_queue q ON q.id=r.queue_id
+            WHERE r.guild_id=? AND r.status='pending' ORDER BY r.id DESC LIMIT 25""",
+            (interaction.guild_id,),
+        )
+        needle = current.casefold().strip()
+        choices: list[app_commands.Choice[str]] = []
+        for row in rows:
+            member = interaction.guild.get_member(int(row["customer_id"])) if interaction.guild else None
+            who = member.display_name if member else "Customer"
+            label = f"{who} • {row['service'] or 'Service'} • {row['order_number'] or 'Order'}"
+            if needle and needle not in label.casefold():
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=str(row["id"])))
+        return choices[:25]
+
+    async def get_refund_for_staff(self, interaction: discord.Interaction, refund: str):
+        try:
+            refund_id = int(refund)
+        except ValueError:
+            return None
+        return await self.bot.database.fetchone(
+            """SELECT r.*,q.service,q.order_number,q.assigned_to FROM luxury_refund_requests r
+            LEFT JOIN luxury_service_queue q ON q.id=r.queue_id
+            WHERE r.id=? AND r.guild_id=?""",
+            (refund_id, interaction.guild_id),
+        )
+
     @app_commands.command(name="refund-request", description="Request a refund review for your latest delivered service.")
     @app_commands.describe(reason="Explain why you are requesting a refund")
     @guild_only()
@@ -1071,8 +1172,115 @@ class GuardianOperations(commands.Cog):
         if row is None:
             await respond(interaction, "REFUND CENTER", "You have no delivered Guardian service available for a refund request.")
             return
+        existing = await self.bot.database.fetchone(
+            "SELECT id FROM luxury_refund_requests WHERE guild_id=? AND customer_id=? AND queue_id=? AND status='pending'",
+            (interaction.guild_id, interaction.user.id, int(row["id"])),
+        )
+        if existing is not None:
+            await respond(interaction, "REFUND CENTER", "That order already has a pending refund request.")
+            return
         await self.bot.database.execute("INSERT INTO luxury_refund_requests(guild_id,customer_id,queue_id,reason) VALUES(?,?,?,?)", (interaction.guild_id, interaction.user.id, int(row["id"]), reason))
-        await respond(interaction, "REFUND REQUEST SUBMITTED", f"Service: **{row['service']}**\nOrder: **{row['order_number'] or 'Recorded order'}**\n\nManagement can now review your request.")
+        created = await self.bot.database.fetchone(
+            "SELECT id FROM luxury_refund_requests WHERE guild_id=? AND customer_id=? AND queue_id=? ORDER BY id DESC LIMIT 1",
+            (interaction.guild_id, interaction.user.id, int(row["id"])),
+        )
+        if created is not None:
+            await self.bot.database.execute(
+                "INSERT INTO luxury_refund_history(refund_id,guild_id,action,actor_id,note) VALUES(?,?,?,?,?)",
+                (int(created["id"]), interaction.guild_id, "submitted", interaction.user.id, reason),
+            )
+        alert = luxury("REFUND REQUEST", f"Customer: {interaction.user.mention}\nService: **{row['service']}**\nOrder: **{row['order_number'] or 'Recorded order'}**\n\n**Reason**\n{reason}", interaction.guild)
+        config = await self.bot.database.fetchone("SELECT channel_id FROM luxury_service_queue_config WHERE guild_id=?", (interaction.guild_id,))
+        if config:
+            channel = interaction.guild.get_channel(int(config["channel_id"]))
+            if isinstance(channel, discord.TextChannel):
+                try:
+                    await channel.send(embed=alert)
+                except discord.HTTPException:
+                    pass
+        notify_ids = {int(row["assigned_to"])} if row["assigned_to"] else set()
+        if interaction.guild.owner_id:
+            notify_ids.add(int(interaction.guild.owner_id))
+        for user_id in notify_ids:
+            member = interaction.guild.get_member(user_id)
+            if member is not None and member.id != interaction.user.id:
+                try:
+                    await member.send(embed=alert)
+                except discord.HTTPException:
+                    pass
+        await respond(interaction, "REFUND REQUEST SUBMITTED", f"Service: **{row['service']}**\nOrder: **{row['order_number'] or 'Recorded order'}**\n\nManagement has been notified.")
+
+    @app_commands.command(name="refund-review", description="Review a pending Guardian refund request.")
+    @app_commands.describe(refund="Choose a pending refund request")
+    @app_commands.autocomplete(refund=pending_refund_autocomplete)
+    @guild_only()
+    @staff_only()
+    async def refund_review(self, interaction: discord.Interaction, refund: str) -> None:
+        row = await self.get_refund_for_staff(interaction, refund)
+        if row is None:
+            await respond(interaction, "REFUND REVIEW", "Choose a refund request from Guardian's selector.")
+            return
+        await respond(interaction, "REFUND REVIEW", f"Customer: <@{row['customer_id']}>\nService: **{row['service'] or 'Service'}**\nOrder: **{row['order_number'] or 'Recorded order'}**\nStatus: **{str(row['status']).title()}**\n\n**Reason**\n{row['reason']}")
+
+    async def decide_refund(self, interaction: discord.Interaction, refund: str, status: str, note: str) -> None:
+        row = await self.get_refund_for_staff(interaction, refund)
+        if row is None:
+            await respond(interaction, "REFUND REVIEW", "Choose a refund request from Guardian's selector.")
+            return
+        if str(row["status"]) != "pending":
+            await respond(interaction, "REFUND REVIEW", f"This refund is already **{row['status']}**.")
+            return
+        await self.bot.database.execute(
+            "UPDATE luxury_refund_requests SET status=?,reviewer_id=?,decision_note=?,decided_at=CURRENT_TIMESTAMP WHERE id=?",
+            (status, interaction.user.id, note, int(row["id"])),
+        )
+        await self.bot.database.execute(
+            "INSERT INTO luxury_refund_history(refund_id,guild_id,action,actor_id,note) VALUES(?,?,?,?,?)",
+            (int(row["id"]), interaction.guild_id, status, interaction.user.id, note),
+        )
+        customer = interaction.guild.get_member(int(row["customer_id"]))
+        body = f"Service: **{row['service'] or 'Service'}**\nOrder: **{row['order_number'] or 'Recorded order'}**\nDecision: **{status.title()}**\nReviewed by: {interaction.user.mention}\n\n**Decision note**\n{note}"
+        dm_status = "Customer notified by DM."
+        if customer is not None:
+            try:
+                await customer.send(embed=luxury(f"REFUND {status.upper()}", body, interaction.guild))
+            except discord.HTTPException:
+                dm_status = "Customer DMs are closed."
+        else:
+            dm_status = "Customer is no longer available in this server."
+        await respond(interaction, "REFUND DECIDED", f"{body}\n\n{dm_status}")
+
+    @app_commands.command(name="refund-accept", description="Accept a pending Guardian refund request.")
+    @app_commands.describe(refund="Choose a pending refund request", note="Decision note sent to the customer")
+    @app_commands.autocomplete(refund=pending_refund_autocomplete)
+    @guild_only()
+    @staff_only()
+    async def refund_accept(self, interaction: discord.Interaction, refund: str, note: app_commands.Range[str,1,500]) -> None:
+        await self.decide_refund(interaction, refund, "accepted", note)
+
+    @app_commands.command(name="refund-deny", description="Deny a pending Guardian refund request.")
+    @app_commands.describe(refund="Choose a pending refund request", reason="Reason sent to the customer")
+    @app_commands.autocomplete(refund=pending_refund_autocomplete)
+    @guild_only()
+    @staff_only()
+    async def refund_deny(self, interaction: discord.Interaction, refund: str, reason: app_commands.Range[str,1,500]) -> None:
+        await self.decide_refund(interaction, refund, "denied", reason)
+
+    @app_commands.command(name="refund-history", description="View your Guardian refund decision history.")
+    @guild_only()
+    async def refund_history(self, interaction: discord.Interaction) -> None:
+        rows = await self.bot.database.fetchall(
+            """SELECT r.status,r.reason,r.decision_note,r.created_at,r.decided_at,q.service,q.order_number
+            FROM luxury_refund_requests r LEFT JOIN luxury_service_queue q ON q.id=r.queue_id
+            WHERE r.guild_id=? AND r.customer_id=? ORDER BY r.id DESC LIMIT 10""",
+            (interaction.guild_id, interaction.user.id),
+        )
+        body = "\n\n".join(
+            f"**{r['service'] or 'Service'}** • {r['order_number'] or 'Recorded order'}\nStatus: **{str(r['status']).title()}**"
+            + (f"\nDecision: {r['decision_note']}" if r["decision_note"] else "")
+            for r in rows
+        )
+        await respond(interaction, "REFUND HISTORY", body or "You have no Guardian refund history.")
 
     @app_commands.command(name="service-emergency", description="Escalate a serious problem with your active Guardian service.")
     @app_commands.describe(issue="Describe the urgent service problem")
@@ -1091,7 +1299,18 @@ class GuardianOperations(commands.Cog):
                     await channel.send(embed=luxury("⚠ SERVICE EMERGENCY", f"Customer: {interaction.user.mention}\nService: **{row['service']}**\nOrder: **{row['order_number'] or 'Recorded order'}**\n\n{issue}", interaction.guild))
                 except discord.HTTPException:
                     pass
-        await respond(interaction, "SERVICE EMERGENCY ESCALATED", "Guardian recorded the emergency and escalated it to the configured service channel.")
+        notify_ids = {int(row["assigned_to"])} if row["assigned_to"] else set()
+        if interaction.guild.owner_id:
+            notify_ids.add(int(interaction.guild.owner_id))
+        dm_embed = luxury("⚠ SERVICE EMERGENCY", f"Customer: {interaction.user.mention}\nService: **{row['service']}**\nOrder: **{row['order_number'] or 'Recorded order'}**\n\n{issue}", interaction.guild)
+        for user_id in notify_ids:
+            member = interaction.guild.get_member(user_id)
+            if member is not None and member.id != interaction.user.id:
+                try:
+                    await member.send(embed=dm_embed)
+                except discord.HTTPException:
+                    pass
+        await respond(interaction, "SERVICE EMERGENCY ESCALATED", "Guardian recorded the emergency and notified the configured service channel and responsible staff.")
 
     @app_commands.command(name="staff-vouch", description="Rate the staff member who handled your service.")
     @app_commands.describe(staff="Staff member you are rating", stars="1 through 5 stars", feedback="How good their service was")
@@ -1105,6 +1324,10 @@ class GuardianOperations(commands.Cog):
             await respond(interaction, "STAFF REPUTATION", "Guardian could not verify a delivered service handled by that staff member.")
             return
         await self.bot.database.execute("INSERT INTO luxury_staff_ratings(guild_id,customer_id,staff_id,stars,feedback) VALUES(?,?,?,?,?)", (interaction.guild_id, interaction.user.id, staff.id, stars, feedback))
+        try:
+            await staff.send(embed=luxury("NEW VERIFIED STAFF RATING", f"You received **{stars}/5 ⭐** from {interaction.user.mention}.\n\n{feedback}", interaction.guild))
+        except discord.HTTPException:
+            pass
         await respond(interaction, "STAFF VOUCH SUBMITTED", f"{staff.mention} received **{stars}/5 ⭐**.\n\n{feedback}", ephemeral=False)
 
     @app_commands.command(name="staff-reputation", description="View a staff member's Guardian service reputation.")
