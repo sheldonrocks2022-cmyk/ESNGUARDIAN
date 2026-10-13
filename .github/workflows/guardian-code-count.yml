@@ -1,0 +1,66 @@
+name: Guardian Code Line Count
+on:
+  workflow_dispatch:
+  push:
+    branches: [guardian-v8-hardening]
+    paths:
+      - '.github/workflows/guardian-code-count.yml'
+permissions:
+  contents: read
+jobs:
+  count-lines:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out V8
+        uses: actions/checkout@v4
+      - name: Count tracked Python source lines
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess
+          root = pathlib.Path(".")
+          paths = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          groups = {"ESNG AI": [0,0], "Tests": [0,0], "Other Guardian": [0,0]}
+          totals = {"files":0,"lines":0,"nonblank":0,"code":0}
+          for name in paths:
+              if not name.endswith(".py"):
+                  continue
+              p = pathlib.Path(name)
+              if not p.is_file() or any(part in {".venv","venv","__pycache__"} for part in p.parts):
+                  continue
+              lines = p.read_text(encoding="utf-8",errors="replace").splitlines()
+              group = "Tests" if p.parts[0] == "tests" or p.name.startswith("test_") else ("ESNG AI" if p.name.startswith("esng_") else "Other Guardian")
+              groups[group][0] += 1
+              groups[group][1] += len(lines)
+              totals["files"] += 1
+              totals["lines"] += len(lines)
+              totals["nonblank"] += sum(bool(line.strip()) for line in lines)
+              totals["code"] += sum(bool(line.strip()) and not line.lstrip().startswith("#") for line in lines)
+          report = [
+              "# ESNG Guardian V8 Python Code Count",
+              "",
+              f"- Branch: {subprocess.check_output(['git','branch','--show-current'],text=True).strip()}",
+              f"- Commit: {subprocess.check_output(['git','rev-parse','--short','HEAD'],text=True).strip()}",
+              f"- Python files: **{totals['files']:,}**",
+              f"- Total Python lines (including blanks/comments): **{totals['lines']:,}**",
+              f"- Nonblank lines: **{totals['nonblank']:,}**",
+              f"- Nonblank, non-comment lines (approximate): **{totals['code']:,}**",
+              "",
+              "| Category | Python files | Total lines |",
+              "|---|---:|---:|",
+          ]
+          for name,(files,lines) in groups.items():
+              report.append(f"| {name} | {files:,} | {lines:,} |")
+          report.append("\nOnly Git-tracked Python files are counted; generated, untracked, and installed dependencies are excluded.")
+          text = "\n".join(report) + "\n"
+          pathlib.Path("guardian-code-count.md").write_text(text,encoding="utf-8")
+          print(text)
+          with open(__import__("os").environ["GITHUB_STEP_SUMMARY"],"a",encoding="utf-8") as out:
+              out.write(text)
+          PY
+      - name: Upload count report
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardian-v8-code-count
+          path: guardian-code-count.md
+          retention-days: 30
