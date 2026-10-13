@@ -90,12 +90,28 @@ class NetworkOperations(commands.Cog):
         await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST",f"**User:** `{user_id}`\n**Substantiated:** {row['substantiated']}\n**Rejected:** {row['rejected']}\n**Duplicates:** {row['duplicate']}\n**Abuse flags:** {row['abuse']}\n\nTrust data never auto-bans anyone."),mention_author=False)
 
     async def _recipients(self):
+        """Every connected guild owner plus administrators/manage-guild staff.
+
+        Uses cached members first, then fetch_members when permitted so a broadcast
+        is not silently limited by an incomplete member cache.
+        """
         found={}
         for g in self.bot.guilds:
-            if g.owner:found[(g.owner.id,g.id)]=g.owner
-            for m in g.members:
-                if m.id==g.owner_id:continue
-                if m.guild_permissions.administrator or m.guild_permissions.manage_guild:found[(m.id,g.id)]=m
+            owner=g.owner
+            if owner is None:
+                try: owner=await self.bot.fetch_user(g.owner_id)
+                except discord.HTTPException: owner=None
+            if owner is not None: found[(owner.id,g.id)]=owner
+            members=list(g.members)
+            try:
+                fetched=[m async for m in g.fetch_members(limit=None)]
+                if fetched: members=fetched
+            except (discord.Forbidden,discord.HTTPException):
+                pass
+            for m in members:
+                if m.bot or m.id==g.owner_id: continue
+                if m.guild_permissions.administrator or m.guild_permissions.manage_guild:
+                    found[(m.id,g.id)]=m
         return found
 
     @commands.group(name="broadcast",invoke_without_command=True)
@@ -122,10 +138,7 @@ class NetworkOperations(commands.Cog):
         if row is None:return await ctx.reply("Unsent broadcast not found.",mention_author=False)
         await self.bot.database.execute("UPDATE guardian_broadcasts SET status='sending' WHERE id=?",(bid,))
         recipients=await self._recipients()
-        seen=set()
         for (uid,gid),user in recipients.items():
-            if uid in seen:continue
-            seen.add(uid)
             guild=self.bot.get_guild(gid)
             e=luxury(f"GUARDIAN NETWORK • {str(row['kind']).upper()}",f"**Broadcast:** `ESNG-NET-{bid:04d}`\n**Server:** {discord.utils.escape_markdown(guild.name) if guild else gid}\n\n{discord.utils.escape_mentions(str(row['message']))}")
             status="delivered"
@@ -133,7 +146,9 @@ class NetworkOperations(commands.Cog):
             except discord.HTTPException:status="failed"
             await self.bot.database.execute("INSERT OR REPLACE INTO guardian_broadcast_delivery(broadcast_id,user_id,guild_id,status) VALUES(?,?,?,?)",(bid,uid,gid,status))
         await self.bot.database.execute("UPDATE guardian_broadcasts SET status='sent' WHERE id=?",(bid,))
-        await ctx.reply(f"Broadcast ID: ESNG-NET-{bid:04d}",mention_author=False)
+        rows=await self.bot.database.fetchall("SELECT status,COUNT(*) n FROM guardian_broadcast_delivery WHERE broadcast_id=? GROUP BY status",(bid,))
+        stats={str(r["status"]):int(r["n"]) for r in rows}
+        await ctx.reply(embed=luxury("BROADCAST COMPLETE",f"**ID:** `ESNG-NET-{bid:04d}`\n**Guilds connected:** {len(self.bot.guilds)}\n**Delivered:** {stats.get('delivered',0)}\n**Failed:** {stats.get('failed',0)}","success"),mention_author=False)
 
     @broadcast.command(name="status")
     async def broadcast_status(self,ctx,bid:int):
@@ -149,10 +164,9 @@ class NetworkOperations(commands.Cog):
         if not severity or not message.strip():
             return await ctx.reply(embed=luxury("GUARDIAN EMERGENCY ALERT","Usage: `!emergency <severity> <message>`\nTargets every connected guild owner and administrator. Nothing is sent until both values are supplied.","warning"),mention_author=False)
         severity=severity.upper()[:20]
-        recipients=await self._recipients(); seen=set(); delivered=0
+        recipients=await self._recipients(); delivered=0
         for (uid,gid),user in recipients.items():
-            if uid in seen:continue
-            seen.add(uid); guild=self.bot.get_guild(gid)
+            guild=self.bot.get_guild(gid)
             try:
                 await user.send(embed=luxury("🚨 GUARDIAN NETWORK EMERGENCY",f"**Severity:** {severity}\n**Server:** {guild.name if guild else gid}\n\n{discord.utils.escape_mentions(message)[:1800]}","danger"));delivered+=1
             except discord.HTTPException:pass
