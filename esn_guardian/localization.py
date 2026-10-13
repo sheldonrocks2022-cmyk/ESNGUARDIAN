@@ -32,6 +32,23 @@ HELLOS = {
 RESET = {"en": ("reset conversation", "clear my memory"), "es": ("borrar conversación",), "fr": ("effacer la conversation",), "de": ("gespräch löschen",), "pt": ("limpar conversa",), "ja": ("会話を消去",), "ko": ("대화 삭제",), "zh": ("清除对话",), "ar": ("مسح المحادثة",), "hi": ("बातचीत मिटाओ",), "ru": ("очистить диалог",), "tr": ("sohbeti temizle",)}
 
 
+ERROR_TEXT = {
+    "en": ("Access denied", "You do not have permission to use this command.", "Please wait", "Try again in {seconds} seconds.", "Command unavailable", "The command failed safely. Staff can check the system log."),
+    "es": ("Acceso denegado", "No tienes permiso para usar este comando.", "Espera", "Inténtalo de nuevo en {seconds} segundos.", "Comando no disponible", "El comando falló de forma segura. El personal puede revisar el registro."),
+    "fr": ("Accès refusé", "Vous n'avez pas la permission d'utiliser cette commande.", "Veuillez patienter", "Réessayez dans {seconds} secondes.", "Commande indisponible", "La commande a échoué sans risque. Le personnel peut consulter les journaux."),
+    "de": ("Zugriff verweigert", "Du hast keine Berechtigung für diesen Befehl.", "Bitte warten", "Versuche es in {seconds} Sekunden erneut.", "Befehl nicht verfügbar", "Der Befehl ist sicher fehlgeschlagen. Das Team kann die Protokolle prüfen."),
+    "pt": ("Acesso negado", "Você não tem permissão para usar este comando.", "Aguarde", "Tente novamente em {seconds} segundos.", "Comando indisponível", "O comando falhou com segurança. A equipe pode verificar os registros."),
+    "ja": ("アクセス拒否", "このコマンドを使用する権限がありません。", "お待ちください", "{seconds} 秒後に再試行してください。", "コマンドを利用できません", "コマンドは安全に失敗しました。スタッフがログを確認できます。"),
+    "ko": ("접근 거부", "이 명령을 사용할 권한이 없습니다.", "잠시 기다려 주세요", "{seconds}초 후에 다시 시도하세요.", "명령을 사용할 수 없음", "명령이 안전하게 실패했습니다. 관리자가 로그를 확인할 수 있습니다."),
+    "zh": ("访问被拒绝", "你没有使用此命令的权限。", "请稍候", "请在 {seconds} 秒后重试。", "命令不可用", "命令已安全失败。管理员可以检查日志。"),
+}
+
+def error_message(kind: str, locale: str | None = None, *, seconds: int = 0) -> tuple[str, str]:
+    strings = ERROR_TEXT.get(normalize_locale(locale), ERROR_TEXT["en"])
+    index = {"denied": 0, "cooldown": 2, "failed": 4}.get(kind, 4)
+    return strings[index], strings[index + 1].format(seconds=seconds)
+
+
 def normalize_locale(locale: str | None) -> str:
     language = (locale or "en").replace("_", "-").split("-", 1)[0].casefold()
     return language if language in STRINGS else "en"
