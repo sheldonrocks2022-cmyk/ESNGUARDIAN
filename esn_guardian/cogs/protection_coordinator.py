@@ -35,6 +35,7 @@ class ProtectionCoordinatorCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self._claims: dict[tuple[int, str], tuple[datetime, str, str]] = {}
+        self._claim_limit = 10000
         self._signals: dict[int, deque[tuple[datetime, int, str]]] = defaultdict(lambda: deque(maxlen=200))
 
     async def cog_load(self) -> None:
@@ -72,6 +73,14 @@ class ProtectionCoordinatorCog(commands.Cog):
         existing = self._claims.get(key)
         if existing and existing[0] > now:
             return False, existing[1]
+        # Bound transient deduplication memory during sustained raids.
+        if len(self._claims) >= self._claim_limit:
+            expired = [claim_key for claim_key, value in self._claims.items() if value[0] <= now]
+            for claim_key in expired:
+                self._claims.pop(claim_key, None)
+            if len(self._claims) >= self._claim_limit:
+                oldest = min(self._claims, key=lambda claim_key: self._claims[claim_key][0])
+                self._claims.pop(oldest, None)
         op_id = uuid.uuid4().hex
         self._claims[key] = (now + timedelta(seconds=max(5, seconds)), engine, op_id)
         return True, op_id
