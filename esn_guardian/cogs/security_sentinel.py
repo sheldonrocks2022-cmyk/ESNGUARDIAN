@@ -11,6 +11,7 @@ from discord.ext import commands, tasks
 
 from esn_guardian.cogs.common import guild_only, log_event, respond, staff_only, defer_response
 from esn_guardian.cogs.security_intelligence import case_weight
+from esn_guardian.intelligence_v10 import assess_threat
 
 LOG = logging.getLogger("esn_guardian.sentinel")
 
@@ -236,7 +237,17 @@ class SecuritySentinelCog(commands.Cog):
             subject_case_count=int(context["subject_case_count"]),
             rare_action=rare_action,
         )
-        severity = severity_from_score(score)
+        assessment = assess_threat(
+            base_score=score,
+            burst_count=int(context["burst_count"]),
+            category_count=int(context["category_count"]),
+            surface_count=int(context["surface_count"]),
+            subject_case_count=int(context["subject_case_count"]),
+            rare_action=rare_action,
+            baseline_samples=seen_count,
+        )
+        score = assessment.score
+        severity = assessment.severity
         categories = set(context["categories"])
         categories.add(category)
 
@@ -247,6 +258,9 @@ class SecuritySentinelCog(commands.Cog):
             "surface_count": context["surface_count"],
             "subject_case_count": context["subject_case_count"],
             "rare_action": rare_action,
+            "intelligence_version": assessment.version,
+            "evidence_confidence": assessment.confidence,
+            "risk_reasons": list(assessment.reasons),
             "chain": chain_summary(categories),
         }
 
