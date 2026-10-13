@@ -85,19 +85,19 @@ class GuardianBatchFour(commands.Cog):
         await self.bot.database.execute("UPDATE guardian_contact_messages SET body='[deleted]',status='deleted' WHERE id=?",(message_id,));await ctx.reply(embed=luxury("MESSAGE CONTENT DELETED",f"`GMSG-{message_id:06d}` content deleted; audit ID retained.","success"),mention_author=False)
     @gmsgctl.command(name="mute")
     async def mute(self,ctx):
-        await self.bot.database.execute("INSERT INTO guardian_contact_preferences(user_id,muted) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET muted=1,updated_at=CURRENT_TIMESTAMP",(ctx.author.id,));await ctx.reply("Guardian contact messages muted.",mention_author=False)
+        await self.bot.database.execute("INSERT INTO guardian_contact_preferences(user_id,muted) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET muted=1,updated_at=CURRENT_TIMESTAMP",(ctx.author.id,));await ctx.reply(embed=luxury("CONTACT MESSAGING MUTED","Guardian contact messages are now muted.","success"),mention_author=False)
     @gmsgctl.command(name="unmute")
     async def unmute(self,ctx):
-        await self.bot.database.execute("INSERT INTO guardian_contact_preferences(user_id,muted) VALUES(?,0) ON CONFLICT(user_id) DO UPDATE SET muted=0,updated_at=CURRENT_TIMESTAMP",(ctx.author.id,));await ctx.reply("Guardian contact messages unmuted.",mention_author=False)
+        await self.bot.database.execute("INSERT INTO guardian_contact_preferences(user_id,muted) VALUES(?,0) ON CONFLICT(user_id) DO UPDATE SET muted=0,updated_at=CURRENT_TIMESTAMP",(ctx.author.id,));await ctx.reply(embed=luxury("CONTACT MESSAGING ENABLED","Guardian contact messages are enabled.","success"),mention_author=False)
     @gmsgctl.command(name="status")
     async def status(self,ctx):
         pref=await self.bot.database.fetchone("SELECT muted FROM guardian_contact_preferences WHERE user_id=?",(ctx.author.id,))
         contacts=await self.bot.database.fetchall("SELECT guild_id FROM guardian_contacts WHERE user_id=?",(ctx.author.id,))
-        await ctx.reply(f"Registered servers: {len(contacts)} | Messaging: {'muted' if pref and pref['muted'] else 'enabled'}",mention_author=False)
+        await ctx.reply(embed=luxury("CONTACT MESSAGING STATUS",f"**Registered servers:** {len(contacts)}\n**Messaging:** {'muted' if pref and pref['muted'] else 'enabled'}"),mention_author=False)
     @gmsgctl.command(name="blocked")
     async def blocked(self,ctx):
         rows=await self.bot.database.fetchall("SELECT blocked_id FROM guardian_contact_blocks WHERE owner_id=?",(ctx.author.id,))
-        await ctx.reply("Blocked: "+(", ".join(str(r["blocked_id"]) for r in rows) if rows else "none"),mention_author=False)
+        await ctx.reply(embed=luxury("BLOCKED GUARDIAN CONTACTS",", ".join(str(r["blocked_id"]) for r in rows) if rows else "None"),mention_author=False)
 
     @commands.command(name="contactinfo")
     @commands.dm_only()
@@ -112,10 +112,10 @@ class GuardianBatchFour(commands.Cog):
     async def contactreportreview(self,ctx,report_id:int,decision:str):
         if not await allowed(self.bot,ctx.author.id,"cases"):return
         decision=decision.casefold()
-        if decision not in {"resolve","dismiss"}:return await ctx.reply("Use resolve or dismiss.",mention_author=False)
+        if decision not in {"resolve","dismiss"}:return await ctx.reply(embed=luxury("CONTACT REPORT REVIEW","Use `resolve` or `dismiss`.","warning"),mention_author=False)
         row=await self.bot.database.fetchone("SELECT id FROM guardian_contact_reports WHERE id=? AND status='pending'",(report_id,))
-        if row is None:return await ctx.reply("Pending contact report not found.",mention_author=False)
-        await self.bot.database.execute("UPDATE guardian_contact_reports SET status=? WHERE id=?",(decision,report_id));await ctx.reply(f"Contact report {report_id} marked {decision}.",mention_author=False)
+        if row is None:return await ctx.reply(embed=luxury("CONTACT REPORT NOT FOUND","Pending contact report not found.","warning"),mention_author=False)
+        await self.bot.database.execute("UPDATE guardian_contact_reports SET status=? WHERE id=?",(decision,report_id));await ctx.reply(embed=luxury("CONTACT REPORT REVIEWED",f"Contact report `{report_id}` marked **{decision}**.","success"),mention_author=False)
 
     @commands.command(name="networkdirectory")
     @commands.dm_only()
