@@ -652,6 +652,41 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
                     f"{recent}"
                 )
 
+        if _contains(p, "v10 threat", "v10 intelligence", "v10 risk", "adaptive intelligence"):
+            from esn_guardian.intelligence_v10 import assess_threat
+
+            rows = await self.bot.database.fetchall(
+                "SELECT score, explanation_json FROM guardian_sentinel_signals "
+                "WHERE guild_id=? ORDER BY signal_id DESC LIMIT 25", (guild.id,),
+            ) if sentinel is not None else []
+            if not rows:
+                return (
+                    "**ESNG Intelligence V10**\\n"
+                    "No Sentinel evidence is available yet. V10 risk fusion is advisory, "
+                    "runs locally, and does not execute moderation actions."
+                )
+            import json
+            latest = rows[0]
+            details = json.loads(latest["explanation_json"] or "{}")
+            assessment = assess_threat(
+                base_score=int(latest["score"]),
+                burst_count=int(details.get("burst_count", 0)),
+                category_count=int(details.get("category_count", 0)),
+                surface_count=int(details.get("surface_count", 0)),
+                subject_case_count=int(details.get("subject_case_count", 0)),
+                rare_action=bool(details.get("rare_action", False)),
+                baseline_samples=0,
+            )
+            return (
+                "**ESNG Intelligence V10 — Latest Sentinel Evidence**\\n"
+                f"Stored risk: {int(latest['score'])}/100\\n"
+                f"V10 assessment: {assessment.score}/100 ({assessment.severity})\\n"
+                f"Evidence confidence: {assessment.confidence:.0%} (not a probability)\\n"
+                "Reasons: " + ", ".join(assessment.reasons) + "\\n"
+                f"Recent signals reviewed: {len(rows)}\\n"
+                "Advisory only; Guardian's permission-checked protections control enforcement."
+            )
+
         if _contains(
             p,
             "ai version",
@@ -661,7 +696,7 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
             "new ai",
         ):
             return (
-                "**ESNG Intelligence v7 MAX**\n"
+                "**ESNG Intelligence V10 (Sentinel risk fusion)**\n"
                 "I now combine live configuration, threat history, Protection v6 adaptive containment, Guardian v7 predictive state, "
                 "staff behavior baselines, trust graphs, privilege-path analysis, protected-asset/canary state, cryptographic evidence-chain integrity, "
                 "signed-release health, recovery checkpoints, post-attack forensics, incident replay, application reputation, "
