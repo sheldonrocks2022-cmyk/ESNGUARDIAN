@@ -1,7 +1,7 @@
 """ESNG's independent, offline conversational assistant.
 
-No external AI provider, API keys, model downloads, or network requests.
-This is a bounded symbolic assistant, not a trained language model.
+No external AI provider, API keys, or model downloads. Public HTML research is optional.
+Includes a tiny locally trained statistical language model, not a transformer LLM.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from esn_guardian.esng_reasoning import diagnose, analyze_python, compare_option
 from esn_guardian.esng_capabilities import calculate, search_web, read_public_page
 from esn_guardian.esng_skills import answer_skill
 from esn_guardian.esng_extended import extended_skill
+from esn_guardian.esng_minilm import ESNGMiniLM
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -59,6 +60,7 @@ class ESNGConversation:
         self.history: OrderedDict[tuple[int, int], deque[str]] = OrderedDict()
         self.locales: dict[tuple[int, int], str] = {}
         self.memory = MemoryStore()
+        self.language_model = ESNGMiniLM()
 
     @property
     def enabled(self) -> bool:
@@ -127,6 +129,8 @@ class ESNGConversation:
                     "• sort: 3, 1, 2 | word frequency: hello hello world\n"
                     "• days between: 2026-01-01, 2026-01-10\n"
                     "Source research is extractive, not a general AI model.")
+        if normalized in ('ai model', 'language model'):
+            return self.language_model.reply('model status')
         skill_answer = extended_skill(p)
         if skill_answer is not None:
             return skill_answer
@@ -148,6 +152,9 @@ class ESNGConversation:
                 return translate("result", locale, value=calculate(calc.group(1).strip()))
             except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, TypeError):
                 return "I couldn't calculate that safely. Try a supported expression."
+        model_answer = self.language_model.reply(p)
+        if model_answer is not None:
+            return model_answer
         if is_greeting(p, locale):
             return translate("hello", locale)
         if "who are you" in normalized or "are you chatgpt" in normalized:
