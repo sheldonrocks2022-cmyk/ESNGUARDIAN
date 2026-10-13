@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from esn_guardian.cogs.common import guild_only, staff_only, log_event
+from esn_guardian.cogs.common import guild_only, staff_only
 
 BLUE = discord.Color(0x0B3D91)
 
