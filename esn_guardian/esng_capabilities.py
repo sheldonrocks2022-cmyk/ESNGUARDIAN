@@ -4,6 +4,9 @@ import ast
 import math
 import operator
 import re
+import ipaddress
+import socket
+import asyncio
 import aiohttp
 from html.parser import HTMLParser
 from urllib.parse import urlparse, parse_qs, unquote
@@ -84,3 +87,55 @@ async def search_web(query: str) -> str:
         return "\\n".join(lines)[:1800]
     except (aiohttp.ClientError,TimeoutError,ValueError):
         return "Public web search is unavailable right now. Try again later."
+
+class _ArticleParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.skip=0
+        self.parts=[]
+        self.active=0
+    def handle_starttag(self,tag,attrs):
+        if tag in ("script","style","nav","footer","header","noscript","form"):
+            self.skip+=1
+        elif not self.skip and tag in ("p","h1","h2","h3","li"):
+            self.active+=1
+    def handle_endtag(self,tag):
+        if tag in ("script","style","nav","footer","header","noscript","form"):
+            self.skip=max(0,self.skip-1)
+        elif tag in ("p","h1","h2","h3","li"):
+            self.active=max(0,self.active-1)
+    def handle_data(self,data):
+        if not self.skip and self.active and len(" ".join(self.parts))<25000:
+            cleaned=" ".join(data.split())
+            if len(cleaned)>30: self.parts.append(cleaned)
+
+def _public_address(host: str) -> bool:
+    try:
+        addresses=socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)
+        return bool(addresses) and all(ipaddress.ip_address(item[4][0]).is_global for item in addresses)
+    except (OSError,ValueError):
+        return False
+
+async def read_public_page(url: str) -> str:
+    parsed=urlparse(url)
+    if parsed.scheme!="https" or not parsed.hostname or parsed.username or parsed.password or parsed.port not in (None,443):
+        return "Only public HTTPS pages are supported."
+    if not await asyncio.to_thread(_public_address,parsed.hostname):
+        return "This destination is not a verified public address."
+    timeout=aiohttp.ClientTimeout(total=9)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout,trust_env=False) as session:
+            async with session.get(url,allow_redirects=False,headers={"User-Agent":"ESNGGuardian/8"}) as response:
+                if response.status!=200 or "text/html" not in response.headers.get("Content-Type",""):
+                    return "The website did not provide a readable HTML page."
+                if response.content_length and response.content_length>200000:
+                    return "The webpage is too large to read safely."
+                raw=await response.content.read(200001)
+                if len(raw)>200000: return "The webpage is too large to read safely."
+        parser=_ArticleParser()
+        parser.feed(raw.decode("utf-8","replace"))
+        passages=parser.parts[:35]
+        if not passages: return "No readable article text was found."
+        return "Extracted website passages (unverified):\\n"+"\\n".join("• "+p[:280] for p in passages)[:1500]+"\\nSource: "+url
+    except (aiohttp.ClientError,TimeoutError,ValueError,UnicodeError):
+        return "Could not read this webpage."
