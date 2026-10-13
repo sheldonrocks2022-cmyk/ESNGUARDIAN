@@ -2,7 +2,7 @@ name: Python Guardian CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, guardian-v8-hardening, guardian-v8-luxury]
     paths:
       - "esn_guardian/**"
       - "main.py"
