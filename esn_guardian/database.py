@@ -419,7 +419,8 @@ class Database:
     async def setting(self, guild_id: int) -> aiosqlite.Row:
         await self.ensure_guild(guild_id)
         row = await self.fetchone("SELECT * FROM guild_settings WHERE guild_id = ?", (guild_id,))
-        assert row is not None
+        if row is None:
+            raise RuntimeError(f"Guild settings row missing after initialization for guild {guild_id}")
         return row
 
     async def update_setting(self, guild_id: int, field: str, value: Any) -> None:
