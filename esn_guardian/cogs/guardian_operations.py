@@ -70,7 +70,7 @@ async def install_schema(bot: commands.Bot) -> None:
         """CREATE TABLE IF NOT EXISTS luxury_academy_courses (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
             name TEXT NOT NULL, content TEXT NOT NULL,
-            published INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual')""",,
+            published INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'manual')""",
         """CREATE TABLE IF NOT EXISTS luxury_service_queue_config (
             guild_id INTEGER PRIMARY KEY, channel_id INTEGER)""",
         """CREATE TABLE IF NOT EXISTS luxury_service_queue (
