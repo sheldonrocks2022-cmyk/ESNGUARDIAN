@@ -126,6 +126,7 @@ class ESNGConversation:
         if normalized in ("ai capabilities", "ai tools", "ai help", "what can you do"):
             return ("ESNG AI tools (no API keys):\n"
                     "• search web for <topic>\n"
+                    "• compare sources: <question> | https://site1 | https://site2\n"
                     "• summarize https://example.org\n"
                     "• ask https://example.org : <question>\n"
                     "• calculate sqrt(144) + 2 ** 10\n"
@@ -135,6 +136,8 @@ class ESNGConversation:
                     "• circle area: 2 | probability: 1, 4\n"
                     "• sort: 3, 1, 2 | word frequency: hello hello world\n"
                     "• days between: 2026-01-01, 2026-01-10\n"
+                    "• explain error: KeyError\n"
+                    "• model status | ai generate: hello\n"
                     "Source research is extractive, not a general AI model.")
         if normalized in ('ai model', 'language model'):
             return self.language_model.reply('model status')
