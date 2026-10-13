@@ -13,7 +13,7 @@ from esn_guardian.localization import RESET, detect_locale, is_greeting, normali
 from esn_guardian.esng_knowledge import retrieve
 from esn_guardian.esng_memory import MemoryStore
 from esn_guardian.esng_reasoning import diagnose, analyze_python, compare_options
-from esn_guardian.esng_capabilities import calculate, search_web
+from esn_guardian.esng_capabilities import calculate, search_web, read_public_page
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -112,15 +112,18 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
+        page_match = re.fullmatch(r"(?:read|summarize|extract)(?: (?:webpage|article|page|url))?\\s*[: ]\\s*(https://\\S+)", p, re.I)
+        if page_match:
+            return await read_public_page(page_match.group(1))
         web_query = re.fullmatch(r"(?:search(?: the)? web(?: for)?|look up online|google)\\s*[: ]\\s*(.{3,350})", p, re.I | re.S)
         if web_query:
             return await search_web(web_query.group(1).strip())
-        calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%\s-]{3,100})\??", normalized)
+        calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\\s*([0-9+*/().%^×÷−π√a-zA-Z,\\s-]{1,180})\\??", p, re.I)
         if calc and re.search(r"\\d|[π√]", calc.group(1)) and re.match(r"\\s*(?:[+\\-(\\dπ√]|(?:sqrt|sin|cos|tan|log|ln|exp|abs|floor|ceil|factorial|degrees|radians)\\s*\\()", calc.group(1), re.I):
             try:
                 return translate("result", locale, value=calculate(calc.group(1).strip()))
             except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, TypeError):
-                return "I couldn't calculate that safely. Try a basic arithmetic expression."
+                return "I couldn't calculate that safely. Try a supported expression."
         if is_greeting(p, locale):
             return translate("hello", locale)
         if "who are you" in normalized or "are you chatgpt" in normalized:
