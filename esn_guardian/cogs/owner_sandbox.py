@@ -46,14 +46,17 @@ class OwnerSandboxLab(commands.Cog):
         clean=module.strip().replace(".", "/").strip("/")
         if not clean or ".." in clean or not all(c.isalnum() or c in "_/" for c in clean):
             return await ctx.reply("Provide a Guardian module name, for example `security_v7`.", mention_author=False)
-        path=(PACKAGE / (clean + ".py")).resolve()
-        if PACKAGE.resolve() not in path.parents or not path.is_file():
-            return await ctx.reply("Guardian module not found.", mention_author=False)
+        candidates=[(PACKAGE / (clean + ".py")).resolve()]
+        if "/" not in clean:
+            candidates.extend(p.resolve() for p in PACKAGE.rglob(clean + ".py"))
+        path=next((p for p in candidates if PACKAGE.resolve() in p.parents and p.is_file()),None)
+        if path is None:
+            return await ctx.reply("Guardian module not found. Try a filename such as `network_cases`.", mention_author=False)
         tree=ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         funcs=sum(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) for n in ast.walk(tree))
         classes=sum(isinstance(n,ast.ClassDef) for n in ast.walk(tree))
         imports=sum(isinstance(n,(ast.Import,ast.ImportFrom)) for n in ast.walk(tree))
-        await ctx.reply(f"**Sandbox inspection: {clean}**\nFunctions: {funcs}\nClasses: {classes}\nImports: {imports}\nRead-only; nothing executed.", mention_author=False)
+        await ctx.reply(f"**✦ ESNG OWNER SANDBOX • INSPECTION**\nModule: `{path.relative_to(PACKAGE)}`\nFunctions: **{funcs}**\nClasses: **{classes}**\nImports: **{imports}**\n\nRead-only • Nothing executed • Production unchanged.", mention_author=False)
 
 async def setup(bot):
     await bot.add_cog(OwnerSandboxLab(bot))
