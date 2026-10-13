@@ -125,7 +125,7 @@ class NetworkOperations(commands.Cog):
         if not self.primary(ctx.author.id):return
         kind=kind.casefold()
         if kind not in {"normal","important","critical","maintenance"} or not 5<=len(message)<=1800:
-            return await ctx.reply("Use a valid type and a 5-1800 character message.",mention_author=False)
+            return await ctx.reply(embed=luxury("BROADCAST • INVALID REQUEST","Use a valid type and a 5-1800 character message.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_broadcasts(owner_id,kind,message) VALUES(?,?,?)",(ctx.author.id,kind,message))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_broadcasts ORDER BY id DESC LIMIT 1")
         bid=int(row["id"])
@@ -135,7 +135,7 @@ class NetworkOperations(commands.Cog):
     async def broadcast_send(self,ctx,bid:int):
         if not self.primary(ctx.author.id):return
         row=await self.bot.database.fetchone("SELECT * FROM guardian_broadcasts WHERE id=? AND status='created'",(bid,))
-        if row is None:return await ctx.reply("Unsent broadcast not found.",mention_author=False)
+        if row is None:return await ctx.reply(embed=luxury("BROADCAST NOT FOUND","No unsent broadcast exists with that ID.","warning"),mention_author=False)
         await self.bot.database.execute("UPDATE guardian_broadcasts SET status='sending' WHERE id=?",(bid,))
         recipients=await self._recipients()
         for (uid,gid),user in recipients.items():
@@ -155,7 +155,7 @@ class NetworkOperations(commands.Cog):
         if not self.primary(ctx.author.id):return
         rows=await self.bot.database.fetchall("SELECT status,COUNT(*) n FROM guardian_broadcast_delivery WHERE broadcast_id=? GROUP BY status",(bid,))
         stats=", ".join(f"{r['status']}: {r['n']}" for r in rows) or "No delivery records"
-        await ctx.reply(f"**ESNG-NET-{bid:04d}** • {stats}",mention_author=False)
+        await ctx.reply(embed=luxury("BROADCAST STATUS",f"**ID:** `ESNG-NET-{bid:04d}`\n**Delivery:** {stats}"),mention_author=False)
 
     @commands.command(name="emergency")
     @commands.dm_only()
@@ -170,7 +170,7 @@ class NetworkOperations(commands.Cog):
             try:
                 await user.send(embed=luxury("🚨 GUARDIAN NETWORK EMERGENCY",f"**Severity:** {severity}\n**Server:** {guild.name if guild else gid}\n\n{discord.utils.escape_mentions(message)[:1800]}","danger"));delivered+=1
             except discord.HTTPException:pass
-        await ctx.reply(f"Emergency alert delivered to {delivered} unique network recipient(s).",mention_author=False)
+        await ctx.reply(embed=luxury("EMERGENCY ALERT COMPLETE",f"Delivered to **{delivered}** network recipient(s).","success"),mention_author=False)
 
     @commands.group(name="gcontact",invoke_without_command=True)
     async def gcontact(self,ctx):
@@ -184,16 +184,16 @@ class NetworkOperations(commands.Cog):
     async def contact_add(self,ctx,user_id:int):
         if not self.contact_manager(ctx):return
         try:user=self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-        except discord.HTTPException:return await ctx.reply("That Discord user could not be verified.",mention_author=False)
+        except discord.HTTPException:return await ctx.reply(embed=luxury("CONTACT NOT ADDED","That Discord user could not be verified.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT OR REPLACE INTO guardian_contacts(guild_id,user_id,added_by) VALUES(?,?,?)",(ctx.guild.id,user_id,ctx.author.id))
-        await ctx.reply(f"Guardian contact added: {user} (`{user_id}`).",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN CONTACT ADDED",f"**User:** {user}\n**ID:** `{user_id}`\n**Server:** {discord.utils.escape_markdown(ctx.guild.name)}","success"),mention_author=False)
 
     @gcontact.command(name="remove")
     @commands.guild_only()
     async def contact_remove(self,ctx,user_id:int):
         if not self.contact_manager(ctx):return
         await self.bot.database.execute("DELETE FROM guardian_contacts WHERE guild_id=? AND user_id=?",(ctx.guild.id,user_id))
-        await ctx.reply(f"Guardian contact removed: `{user_id}`.",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN CONTACT REMOVED",f"**User ID:** `{user_id}`\n**Server:** {discord.utils.escape_markdown(ctx.guild.name)}","success"),mention_author=False)
 
     @gcontact.command(name="list")
     @commands.guild_only()
@@ -201,6 +201,6 @@ class NetworkOperations(commands.Cog):
         if not self.contact_manager(ctx):return
         rows=await self.bot.database.fetchall("SELECT user_id,created_at FROM guardian_contacts WHERE guild_id=? ORDER BY created_at",(ctx.guild.id,))
         body="\n".join(f"• `{r['user_id']}`" for r in rows) or "No registered contacts."
-        await ctx.reply(f"**Guardian Authorized Contacts**\n{body}",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN AUTHORIZED CONTACTS",body),mention_author=False)
 
 async def setup(bot):await bot.add_cog(NetworkOperations(bot))
