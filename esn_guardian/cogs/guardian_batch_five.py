@@ -82,7 +82,7 @@ class GuardianBatchFive(commands.Cog):
         if owner_id:
             try:
                 owner=self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))
-                await owner.send(f"GUARDIAN ASSISTANCE GA-{rid:06d}\nServer: {esc(ctx.guild.name)} ({ctx.guild.id})\nFrom: {ctx.author.id}\nSubject: {esc(subject)}\n{esc(details)}",allowed_mentions=discord.AllowedMentions.none())
+                await owner.send(embed=luxury("GUARDIAN ASSISTANCE REQUEST",f"**Request:** `GA-{rid:06d}`\n**Server:** {esc(ctx.guild.name)} (`{ctx.guild.id}`)\n**From:** `{ctx.author.id}`\n**Subject:** {esc(subject)}\n\n{esc(details)}","warning"),allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:pass
         await ctx.reply(f"Guardian assistance request GA-{rid:06d} opened.",mention_author=False)
 
@@ -133,6 +133,6 @@ class GuardianBatchFive(commands.Cog):
         rejected=await self.bot.database.fetchone("SELECT COUNT(*) n FROM guardian_network_cases WHERE status='rejected'")
         contacts=await self.bot.database.fetchone("SELECT COUNT(*) n FROM guardian_contacts")
         messages=await self.bot.database.fetchone("SELECT COUNT(*) n FROM guardian_contact_messages")
-        await ctx.reply(f"GUARDIAN NETWORK STATS\nPending cases: {pending['n']}\nApproved-for-review cases: {approved['n']}\nRejected cases: {rejected['n']}\nAuthorized contacts: {contacts['n']}\nContact messages: {messages['n']}",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN NETWORK STATS",f"**Pending cases:** {pending['n']}\n**Approved for review:** {approved['n']}\n**Rejected cases:** {rejected['n']}\n**Authorized contacts:** {contacts['n']}\n**Contact messages:** {messages['n']}"),mention_author=False)
 
 async def setup(bot):await bot.add_cog(GuardianBatchFive(bot))
