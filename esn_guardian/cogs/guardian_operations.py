@@ -458,13 +458,38 @@ class GuardianOperations(commands.Cog):
         )
         await respond(interaction, "APPLICATION TYPE CREATED", f"**{name}** is ready. Add questions with **/application question-add**.")
 
+    async def application_type_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        rows = await self.bot.database.fetchall(
+            "SELECT id,name FROM luxury_application_types WHERE guild_id=? ORDER BY name",
+            (interaction.guild_id,),
+        )
+        needle = current.casefold().strip()
+        choices: list[app_commands.Choice[str]] = []
+        for row in rows:
+            name = str(row["name"])
+            if needle and needle not in name.casefold():
+                continue
+            choices.append(app_commands.Choice(name=name[:100], value=str(row["id"])))
+            if len(choices) >= 25:
+                break
+        return choices
+
     @application.command(name="question-add", description="Add a question to an application type.")
+    @app_commands.describe(application="Choose the application type", question="Question to add")
+    @app_commands.autocomplete(application=application_type_autocomplete)
     @guild_only()
     @staff_only()
     async def application_question_add(
-        self, interaction: discord.Interaction, application_id: int,
+        self, interaction: discord.Interaction, application: str,
         question: app_commands.Range[str, 1, 100],
     ) -> None:
+        try:
+            application_id = int(application)
+        except ValueError:
+            await respond(interaction, "APPLICATIONS", "Choose an application from Guardian's selector.")
+            return
         row = await self.bot.database.fetchone(
             "SELECT * FROM luxury_application_types WHERE id=? AND guild_id=?",
             (application_id, interaction.guild_id),
