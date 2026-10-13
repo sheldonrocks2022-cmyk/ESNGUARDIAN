@@ -41,6 +41,48 @@ CORPUS = (
     ("what is a neural network", "A neural network learns weighted connections between mathematical processing units."),
     ("what is an ngram", "An n gram is a sequence of adjacent words used in statistical language modeling."),
 )
+EXTRA_CORPUS = (
+    ("what is recursion", "Recursion occurs when a function calls itself with a smaller subproblem and a stopping condition."),
+    ("what is a list", "A list is an ordered mutable collection of values in Python."),
+    ("what is a dictionary", "A dictionary maps unique keys to values."),
+    ("what is a tuple", "A tuple is an ordered immutable sequence in Python."),
+    ("what is a class", "A class defines a template for objects with attributes and methods."),
+    ("what is an exception", "An exception signals an error or unusual condition during execution."),
+    ("what is a traceback", "A traceback lists the call path and location of an exception."),
+    ("what is a unit test", "A unit test checks a small piece of software against expected behavior."),
+    ("what is continuous integration", "Continuous integration runs automated checks when changes are submitted."),
+    ("what is git", "Git is a distributed version control system for tracking code changes."),
+    ("what is github", "GitHub hosts Git repositories and supports collaboration and automated workflows."),
+    ("what is a branch", "A branch is an independent line of development in a version control repository."),
+    ("what is a commit", "A commit records a snapshot of changes in version control."),
+    ("what is latency", "Latency is the delay between an action and its response."),
+    ("what is ram", "RAM stores data actively used by running programs."),
+    ("what is a cpu", "A CPU executes instructions and coordinates computations."),
+    ("what is a gpu", "A GPU performs parallel operations useful for graphics and some machine learning."),
+    ("what is a server", "A server provides resources or services to other computers over a network."),
+    ("what is an ip address", "An IP address identifies a network interface for internet protocol communication."),
+    ("what is dns", "DNS translates domain names into network addresses."),
+    ("what is https", "HTTPS uses transport encryption to protect web communication."),
+    ("what is json", "JSON is a structured text format for exchanging data."),
+    ("what is sql", "SQL is a language for querying and modifying relational databases."),
+    ("what is a regex", "A regular expression describes patterns for matching text."),
+    ("what is statistics", "Statistics analyzes data through summaries, variability, and inference."),
+    ("what is a mean", "The mean is the sum of values divided by the number of values."),
+    ("what is a median", "The median is the middle value after sorting observations."),
+    ("what is a standard deviation", "Standard deviation measures how far values typically vary from their mean."),
+    ("what is a hypothesis", "A hypothesis is a testable explanation or prediction."),
+    ("what is a citation", "A citation identifies the source supporting a statement."),
+    ("what is misinformation", "Misinformation is false or misleading information, whether shared intentionally or not."),
+    ("what is a transformer model", "A transformer is a neural network architecture using attention to process sequences."),
+    ("what is a token", "A token is a unit of text processed by a language model."),
+    ("what is model training", "Model training adjusts parameters or statistical counts using example data."),
+    ("what is overfitting", "Overfitting happens when a model learns training examples too closely and generalizes poorly."),
+    ("what is inference", "Inference uses an already built model to produce predictions."),
+    ("what is a context window", "A context window is the amount of recent input a model can consider."),
+    ("what is a hallucination", "A model hallucination is an unsupported or invented answer presented as fact."),
+    ("what is source verification", "Source verification checks provenance, credibility, and agreement with independent evidence."),
+    ("what is local ai", "Local AI runs inference on hardware controlled by the operator rather than a hosted provider."),
+)
 WORD = re.compile(r"[a-z0-9']+|[.,!?;:]", re.I)
 STOP = frozenset("a an the is are was were to of in on and or it i you me my your do does what how why can".split())
 
@@ -52,7 +94,7 @@ class ESNGMiniLM:
     def __init__(self):
         self.next_words: dict[tuple[str,str], Counter[str]] = defaultdict(Counter)
         self.entries = []
-        for question, answer in CORPUS:
+        for question, answer in CORPUS + EXTRA_CORPUS:
             self.entries.append((set(w for w in _words(question) if w not in STOP), answer))
             tokens = ["<s>", "<s>"] + _words(answer) + ["</s>"]
             for i in range(2, len(tokens)):
@@ -99,7 +141,7 @@ class ESNGMiniLM:
     def reply(self, prompt: str) -> str | None:
         p = prompt.strip()[:500]
         if re.fullmatch(r"(?:ai model|language model|model) (?:info|status)", p, re.I):
-            return f"ESNG MiniLM: local statistical trigram model; {len(CORPUS)} curated training pairs; no external API; no private-chat training; not a transformer LLM."
+            return f"ESNG MiniLM: local statistical trigram model; {len(CORPUS) + len(EXTRA_CORPUS)} curated training pairs; no external API; no private-chat training; not a transformer LLM."
         m = re.fullmatch(r"(?:ai generate|model generate)\s*[: ]\s*(.{1,180})", p, re.I | re.S)
         if m:
             return "Experimental local word prediction (not verified facts): " + self.generate(m.group(1))
