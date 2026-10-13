@@ -70,7 +70,9 @@ class GuardianNetworkCases(commands.Cog):
     @commands.guild_only()
     @commands.cooldown(1,120,commands.BucketType.user)
     async def report(self,ctx,user_id:int|None=None,*,reason:str=""):
-        if user_id is None or not reason.strip():\n            return await ctx.reply(embed=luxury("GUARDIAN REPORT","Usage: `!guardian report <USER_ID> <reason>`\n\nThe reason must be 10-1000 characters. Reports never automatically punish anyone.","warning"),mention_author=False)\n        if user_id in {ctx.author.id,self.bot.user.id if self.bot.user else 0}:return await ctx.reply(embed=luxury("REPORT NOT ACCEPTED","You cannot submit yourself or Guardian as the report target.","warning"),mention_author=False)
+        if user_id is None or not reason.strip():
+            return await ctx.reply(embed=luxury("GUARDIAN REPORT","Usage: `!guardian report <USER_ID> <reason>`\n\nThe reason must be 10-1000 characters. Reports never automatically punish anyone.","warning"),mention_author=False)
+        if user_id in {ctx.author.id,self.bot.user.id if self.bot.user else 0}:return await ctx.reply(embed=luxury("REPORT NOT ACCEPTED","You cannot submit yourself or Guardian as the report target.","warning"),mention_author=False)
         try:
             self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
         except (discord.NotFound,discord.Forbidden,discord.HTTPException):
