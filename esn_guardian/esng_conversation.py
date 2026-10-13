@@ -114,6 +114,19 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
+        if normalized in ("ai capabilities", "ai tools", "ai help", "what can you do"):
+            return ("ESNG AI tools (no API keys):\n"
+                    "• search web for <topic>\n"
+                    "• summarize https://example.org\n"
+                    "• ask https://example.org : <question>\n"
+                    "• calculate sqrt(144) + 2 ** 10\n"
+                    "• stats: 1, 2, 3 | convert 5 km to mi\n"
+                    "• quadratic: 1, -5, 6 | linear: 2, -4\n"
+                    "• gcd: 54, 24 | combinations: 5, 2\n"
+                    "• circle area: 2 | probability: 1, 4\n"
+                    "• sort: 3, 1, 2 | word frequency: hello hello world\n"
+                    "• days between: 2026-01-01, 2026-01-10\n"
+                    "Source research is extractive, not a general AI model.")
         skill_answer = extended_skill(p)
         if skill_answer is not None:
             return skill_answer
