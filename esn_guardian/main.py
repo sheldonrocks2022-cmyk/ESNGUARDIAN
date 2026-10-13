@@ -46,6 +46,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.guardian_batch_four",
     "esn_guardian.cogs.guardian_batch_five",
     "esn_guardian.cogs.guardian_operations",
+    "esn_guardian.cogs.guardian_experience",
 )
 
 
@@ -279,6 +280,54 @@ class GuardianBot(commands.Bot):
         if await self.database.is_guild_blacklisted(guild.id):
             await guild.leave()
             return
+
+        # Give Discord a moment to populate guild/member state, then sync this
+        # installation immediately so its onboarding commands are available.
+        await asyncio.sleep(1)
+        try:
+            await self.sync_guild_commands(guild)
+        except discord.HTTPException:
+            LOG.exception("Could not sync Guardian onboarding commands for new guild %s (%s)", guild.name, guild.id)
+
+        # Welcome the actual server owner with a branded, interactive onboarding
+        # experience. This is separate from the Guardian operator deployment DM.
+        server_owner = guild.owner
+        if server_owner is None:
+            try:
+                server_owner = await guild.fetch_member(guild.owner_id)
+            except discord.HTTPException:
+                server_owner = None
+        if server_owner is not None:
+            experience = self.get_cog("GuardianExperience")
+            welcome_view = None
+            if experience is not None:
+                try:
+                    from esn_guardian.cogs.guardian_experience import WelcomeView
+                    welcome_view = WelcomeView(experience)
+                except Exception:
+                    LOG.exception("Could not prepare Guardian owner welcome controls for guild %s", guild.id)
+            owner_embed = discord.Embed(
+                title="✦ WELCOME TO ESN GUARDIAN V8 LUXURY",
+                description=(
+                    f"Guardian is now connected to **{guild.name}**.\n\n"
+                    "**Your next move**\n"
+                    "Start the guided Setup Journey to connect Guardian's existing systems to your server, "
+                    "or open the systems overview to see what V8 can do.\n\n"
+                    "Guardian uses your server identity throughout its Luxury interfaces and keeps setup controls private to authorized staff."
+                ),
+                color=discord.Color(0x0B3D91),
+                timestamp=discord.utils.utcnow(),
+            )
+            if guild.icon:
+                owner_embed.set_author(name=f"ESN GUARDIAN  •  {guild.name}", icon_url=guild.icon.url)
+                owner_embed.set_thumbnail(url=guild.icon.url)
+            else:
+                owner_embed.set_author(name=f"ESN GUARDIAN  •  {guild.name}")
+            owner_embed.set_footer(text="ESN GUARDIAN  •  V8 LUXURY  •  OWNER ONBOARDING")
+            try:
+                await server_owner.send(embed=owner_embed, view=welcome_view)
+            except discord.HTTPException:
+                LOG.info("Server owner DM unavailable for Guardian onboarding in guild %s", guild.id)
 
         if self.settings.owner_id is None:
             return
