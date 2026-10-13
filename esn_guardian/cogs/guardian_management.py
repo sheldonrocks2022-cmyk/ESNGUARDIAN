@@ -2,6 +2,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands,tasks
 from esn_guardian.owner_access import LEVELS,allowed,ensure_owner_table,is_primary,owner_level
+from esn_guardian.cogs.network_operations import luxury
 
 class GuardianManagement(commands.Cog):
     def __init__(self,bot):
@@ -11,15 +12,37 @@ class GuardianManagement(commands.Cog):
     def cog_unload(self):
         self.owner_command_guide_loop.cancel()
 
-    def command_guide_text(self):
-        prefix=sorted({cmd.qualified_name for cmd in self.bot.walk_commands() if not cmd.hidden})
-        slash=sorted({cmd.qualified_name for cmd in self.bot.tree.walk_commands()})
-        return "PREFIX\n"+", ".join("!"+x for x in prefix)+"\n\nSLASH\n"+", ".join("/"+x for x in slash)
+    def command_guide_sections(self):
+        commands_all=sorted({cmd.qualified_name for cmd in self.bot.walk_commands() if not cmd.hidden})
+        groups={
+            "OWNER & FLEET":("ownercenter","ownersandbox","guardianowner","inbox","commandguide","fleet"),
+            "NETWORK CASES":("guardian","networkcase","caseintel","appeal","appealreview","appeals","globalbanlist","unbanrequest","unbanreview","trust"),
+            "BROADCAST & EMERGENCY":("broadcast","broadcastmanage","emergency"),
+            "CONTACTS & MESSAGING":("gcontact","gmessage","gmsgctl","contactinfo","contactreportreview","networkdirectory"),
+            "ASSISTANCE & INCIDENTS":("guardianassist","incidentroom","networkstats"),
+            "OMEGA & SECURITY":("ESNG","omega","omegadefense","phoenixsnapshot"),
+        }
+        used=set(); result=[]
+        for title,roots in groups.items():
+            items=[x for x in commands_all if x.split()[0] in roots]
+            used.update(items)
+            if items: result.append((title,items))
+        other=[x for x in commands_all if x not in used]
+        if other: result.append(("OTHER COMMANDS",other))
+        return result
 
     async def send_command_guide(self,user):
-        guide=self.command_guide_text()
-        for start in range(0,len(guide),3900):
-            await user.send(guide[start:start+3900],allowed_mentions=discord.AllowedMentions.none())
+        sections=self.command_guide_sections()
+        total=sum(len(items) for _,items in sections)
+        for index,(title,items) in enumerate(sections,1):
+            lines="\n".join(f"• `!{name}`" for name in items)
+            e=luxury(f"COMMAND GUIDE • {title}",f"**Section {index}/{len(sections)}**\n{lines}")
+            e.set_footer(text=f"ESN GUARDIAN V8 LUXURY • {total} PREFIX COMMANDS • AUTO GUIDE EVERY 2 HOURS")
+            await user.send(embed=e,allowed_mentions=discord.AllowedMentions.none())
+        slash=sorted({cmd.qualified_name for cmd in self.bot.tree.walk_commands()})
+        if slash:
+            body="\n".join(f"• `/{name}`" for name in slash)
+            await user.send(embed=luxury("COMMAND GUIDE • SLASH COMMANDS",body),allowed_mentions=discord.AllowedMentions.none())
 
     @tasks.loop(hours=2)
     async def owner_command_guide_loop(self):
@@ -94,7 +117,7 @@ class GuardianManagement(commands.Cog):
         return await self.bot.database.fetchall("SELECT guild_id FROM guardian_contacts WHERE user_id=?",(user_id,))
     @commands.group(name="gmessage",invoke_without_command=True)
     @commands.dm_only()
-    async def gmessage(self,ctx):await ctx.reply("Use send, inbox, reply, block, unblock, or report.",mention_author=False)
+    async def gmessage(self,ctx):await ctx.reply(embed=luxury("GUARDIAN CONTACT MESSAGING","`!gmessage send <USER_ID> <message>`\n`!gmessage inbox`\n`!gmessage reply <MESSAGE_ID> <message>`\n`!gmessage block <USER_ID>`\n`!gmessage unblock <USER_ID>`\n`!gmessage report <MESSAGE_ID> <reason>`"),mention_author=False)
     @gmessage.command(name="send")
     @commands.cooldown(1,20,commands.BucketType.user)
     async def message_send(self,ctx,user_id:int,*,message:str):
@@ -109,7 +132,7 @@ class GuardianManagement(commands.Cog):
         row=await self.bot.database.fetchone("SELECT id FROM guardian_contact_messages WHERE sender_id=? ORDER BY id DESC LIMIT 1",(ctx.author.id,));mid=int(row["id"])
         try:
             user=self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-            await user.send(f"GUARDIAN CONTACT MESSAGE GMSG-{mid:06d}\nFrom: {ctx.author} ({ctx.author.id})\n{discord.utils.escape_mentions(message)}",allowed_mentions=discord.AllowedMentions.none())
+            await user.send(embed=luxury("GUARDIAN CONTACT MESSAGE",f"**Message:** `GMSG-{mid:06d}`\n**From:** {ctx.author} (`{ctx.author.id}`)\n\n{discord.utils.escape_mentions(message)}"),allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:return await ctx.reply(f"GMSG-{mid:06d} stored, but DM delivery failed.",mention_author=False)
         await ctx.reply(f"GMSG-{mid:06d} delivered.",mention_author=False)
     @gmessage.command(name="inbox")
