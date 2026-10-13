@@ -9,6 +9,7 @@ import ast
 import operator
 import re
 from collections import OrderedDict, deque
+from esn_guardian.localization import RESET, detect_locale, is_greeting, normalize_locale, translate
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -50,6 +51,7 @@ def safe_calculate(expression: str) -> int | float:
 class ESNGConversation:
     def __init__(self) -> None:
         self.history: OrderedDict[tuple[int, int], deque[str]] = OrderedDict()
+        self.locales: dict[tuple[int, int], str] = {}
 
     @property
     def enabled(self) -> bool:
@@ -59,28 +61,36 @@ class ESNGConversation:
         key = (guild_id, user_id)
         if key not in self.history:
             if len(self.history) >= 2000:
-                self.history.popitem(last=False)
+                old_key, _ = self.history.popitem(last=False)
+                self.locales.pop(old_key, None)
             self.history[key] = deque(maxlen=8)
         self.history.move_to_end(key)
         history = self.history[key]
         p = prompt.strip()[:2000]
         normalized = p.casefold()
+        locale = detect_locale(p, self.locales.get(key, "en"))
+        self.locales[key] = locale
+        explicit = re.fullmatch(r"(?:language|lang|idioma)\s*[:=]?\s*([a-zA-Z_-]{2,12})", p, re.IGNORECASE)
+        if explicit:
+            requested = normalize_locale(explicit.group(1))
+            self.locales[key] = requested
+            return f"Language set to {requested}."
         if not p:
             return "Ask me a question, request a calculation, or tell me what you're working on."
-        if re.search(r"\b(forget (this|our) (chat|conversation)|clear (my )?memory|reset conversation)\b", normalized):
+        if re.search(r"\b(forget (this|our) (chat|conversation)|clear (my )?memory|reset conversation)\b", normalized) or any(phrase in normalized for phrase in RESET.get(locale, ())):
             history.clear()
-            return "This conversation's temporary context has been cleared."
+            return translate("reset", locale)
         if re.search(r"\b(what (did i|were we) (ask|talk|discuss)|what was my last question)\b", normalized):
-            return ("Your previous message was: " + history[-1]) if history else "We haven't discussed anything in this session yet."
+            return translate("memory", locale, value=history[-1]) if history else translate("empty", locale)
         history.append(p)
         calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%\s-]{3,100})\??", normalized)
         if calc:
             try:
-                return f"Result: {safe_calculate(calc.group(1).strip())}"
+                return translate("result", locale, value=safe_calculate(calc.group(1).strip()))
             except (ValueError, SyntaxError, ZeroDivisionError, OverflowError):
                 return "I couldn't calculate that safely. Try a basic arithmetic expression."
-        if re.search(r"\b(hello|hi|hey|howdy)\b", normalized) and len(normalized.split()) <= 5:
-            return "Hey! I'm ESNG, Guardian's independent assistant. What are you working on?"
+        if is_greeting(p, locale):
+            return translate("hello", locale)
         if "who are you" in normalized or "are you chatgpt" in normalized:
             return ("I'm ESNG AI, an independent offline assistant built into Guardian. "
                     "I can help with verified Guardian information, arithmetic and limited conversation, "
