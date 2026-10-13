@@ -29,6 +29,8 @@ class GuardianBatchSix(commands.Cog):
         if not 1<=len(message)<=1200: return await ctx.reply("Message must be 1-1200 characters.",mention_author=False)
         source,target=self.bot.get_guild(source_id),self.bot.get_guild(target_id)
         if source is None or target is None: return await ctx.reply("Guardian must be in both servers.",mention_author=False)
+        enrollment=await self.bot.database.fetchall("SELECT guild_id FROM guardian_server_enrollment WHERE guild_id IN (?,?) AND status='active'",(source_id,target_id))
+        if {int(row["guild_id"]) for row in enrollment}!={source_id,target_id}: return await ctx.reply("Both servers must opt in using !networkenroll join before network alerts can be sent.",mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_server_alerts(source_guild_id,target_guild_id,sender_id,severity,message) VALUES(?,?,?,?,?)",(source_id,target_id,ctx.author.id,severity,message))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_server_alerts ORDER BY id DESC LIMIT 1"); aid=int(row["id"])
         if target.owner:
