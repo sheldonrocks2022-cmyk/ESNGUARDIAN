@@ -10,6 +10,7 @@ import operator
 import re
 from collections import OrderedDict, deque
 from esn_guardian.localization import RESET, detect_locale, is_greeting, normalize_locale, translate
+from esn_guardian.esng_knowledge import retrieve
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -99,4 +100,8 @@ class ESNGConversation:
             return ("I can help with Guardian-specific questions, but my offline language engine "
                     "can't reliably generate arbitrary writing or code yet. "
                     "Tell me the exact task and I can identify what information is needed.")
+        if any(word in normalized.split() for word in ("explain", "help", "how", "what", "guide", "information")):
+            matches = retrieve(p)
+            if matches:
+                return "ESNG local knowledge:\n" + "\n".join(matches)
         return None
