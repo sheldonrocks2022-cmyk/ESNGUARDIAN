@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import discord
 from discord.ext import commands
-from esn_guardian.cogs.network_operations import luxury
+from esn_guardian.cogs.network_operations import luxury, luxury_reply
 
 class CaseDecisionView(discord.ui.View):
     def __init__(self,cog,case_id:int):
@@ -65,37 +65,37 @@ class GuardianNetworkCases(commands.Cog):
 
     @commands.group(name="guardian",invoke_without_command=True,case_insensitive=True)
     async def guardian(self,ctx):
-        await ctx.reply(embed=luxury("GUARDIAN NETWORK CASES","Report a user with `!guardian report <USER_ID> <reason>`\n\nReports require private owner review and never automatically punish a user."),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("GUARDIAN NETWORK CASES","Report a user with `!guardian report <USER_ID> <reason>`\n\nReports require private owner review and never automatically punish a user."),mention_author=False)
     @guardian.command(name="report")
     @commands.guild_only()
     @commands.cooldown(1,120,commands.BucketType.user)
     async def report(self,ctx,user_id:int|None=None,*,reason:str=""):
         if user_id is None or not reason.strip():
-            return await ctx.reply(embed=luxury("GUARDIAN REPORT","Usage: `!guardian report <USER_ID> <reason>`\n\nThe reason must be 10-1000 characters. Reports never automatically punish anyone.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("GUARDIAN REPORT","Usage: `!guardian report <USER_ID> <reason>`\n\nThe reason must be 10-1000 characters. Reports never automatically punish anyone.","warning"),mention_author=False)
         if user_id is None or not reason.strip():
-            return await ctx.reply(embed=luxury("GUARDIAN REPORT • HOW TO SUBMIT","Use `!guardian report <USER_ID> <reason>` in a server. The reason must be 10–1000 characters. No report was filed."),mention_author=False)
-        if user_id in {ctx.author.id,self.bot.user.id if self.bot.user else 0}:return await ctx.reply(embed=luxury("REPORT NOT ACCEPTED","You cannot submit yourself or Guardian as the report target.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("GUARDIAN REPORT • HOW TO SUBMIT","Use `!guardian report <USER_ID> <reason>` in a server. The reason must be 10–1000 characters. No report was filed."),mention_author=False)
+        if user_id in {ctx.author.id,self.bot.user.id if self.bot.user else 0}:return await luxury_reply(ctx,embed=luxury("REPORT NOT ACCEPTED","You cannot submit yourself or Guardian as the report target.","warning"),mention_author=False)
         try:
             self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
         except (discord.NotFound,discord.Forbidden,discord.HTTPException):
-            return await ctx.reply(embed=luxury("REPORT NOT ACCEPTED",f"Discord user `{user_id}` could not be verified. Check the ID and try again.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("REPORT NOT ACCEPTED",f"Discord user `{user_id}` could not be verified. Check the ID and try again.","warning"),mention_author=False)
         reason=reason.strip()
-        if not 10<=len(reason)<=1000:return await ctx.reply(embed=luxury("REPORT NOT ACCEPTED","Give a reason between 10 and 1000 characters.","warning"),mention_author=False)
+        if not 10<=len(reason)<=1000:return await luxury_reply(ctx,embed=luxury("REPORT NOT ACCEPTED","Give a reason between 10 and 1000 characters.","warning"),mention_author=False)
         old=await self.bot.database.fetchone("SELECT id FROM guardian_network_cases WHERE reporter_id=? AND reported_user_id=? AND status='pending'",(ctx.author.id,user_id))
         if old:
             await self.bot.database.execute("INSERT INTO guardian_trust(user_id,duplicate) VALUES(?,1) ON CONFLICT(user_id) DO UPDATE SET duplicate=duplicate+1,updated_at=CURRENT_TIMESTAMP",(ctx.author.id,))
-            return await ctx.reply(embed=luxury("REPORT ALREADY PENDING",f"You already have case `GNC-{int(old['id']):06d}` pending for that user.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("REPORT ALREADY PENDING",f"You already have case `GNC-{int(old['id']):06d}` pending for that user.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_network_cases(reporter_id,reported_user_id,guild_id,reason) VALUES(?,?,?,?)",(ctx.author.id,user_id,ctx.guild.id,reason))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_network_cases WHERE reporter_id=? ORDER BY id DESC LIMIT 1",(ctx.author.id,))
         cid=int(row["id"]);await self.notify_owner(cid,ctx.author,user_id,ctx.guild,reason)
-        await ctx.reply(embed=luxury("REPORT SUBMITTED",f"**Case:** `GNC-{cid:06d}`\n**Target:** `{user_id}`\n\nQueued for private owner review. A report does not automatically punish anyone.","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("REPORT SUBMITTED",f"**Case:** `GNC-{cid:06d}`\n**Target:** `{user_id}`\n\nQueued for private owner review. A report does not automatically punish anyone.","success"),mention_author=False)
     @commands.command(name="networkcase")
     @commands.dm_only()
     async def networkcase(self,ctx,action:str|None=None,case_id:int|None=None):
         if not self.is_owner(ctx.author.id):return
-        if action is None or case_id is None:return await ctx.reply(embed=luxury("NETWORK CASE REVIEW","Usage: `!networkcase approve <ID>` or `!networkcase deny <ID>`."),mention_author=False)
+        if action is None or case_id is None:return await luxury_reply(ctx,embed=luxury("NETWORK CASE REVIEW","Usage: `!networkcase approve <ID>` or `!networkcase deny <ID>`."),mention_author=False)
         action=action.casefold()
-        if action not in {"approve","deny"}:return await ctx.reply(embed=luxury("NETWORK CASE REVIEW","Use `!networkcase approve <ID>` or `!networkcase deny <ID>`.","warning"),mention_author=False)
-        ok,msg=await self.review(case_id,ctx.author.id,action);await ctx.reply(embed=luxury("NETWORK CASE DECISION",msg,"success" if ok else "warning"),mention_author=False)
+        if action not in {"approve","deny"}:return await luxury_reply(ctx,embed=luxury("NETWORK CASE REVIEW","Use `!networkcase approve <ID>` or `!networkcase deny <ID>`.","warning"),mention_author=False)
+        ok,msg=await self.review(case_id,ctx.author.id,action);await luxury_reply(ctx,embed=luxury("NETWORK CASE DECISION",msg,"success" if ok else "warning"),mention_author=False)
 
 async def setup(bot): await bot.add_cog(GuardianNetworkCases(bot))
