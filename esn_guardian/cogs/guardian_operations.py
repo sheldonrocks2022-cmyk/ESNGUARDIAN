@@ -28,10 +28,14 @@ def luxury(title: str, body: str, guild: discord.Guild | None = None) -> discord
 
 async def respond(interaction: discord.Interaction, title: str, body: str, *, ephemeral: bool = True) -> None:
     embed = luxury(title, body, interaction.guild)
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
-    else:
-        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+    except discord.NotFound:
+        # The interaction token expired; do not leave an uncaught callback failure.
+        return
 
 
 async def install_schema(bot: commands.Bot) -> None:
@@ -70,6 +74,23 @@ async def install_schema(bot: commands.Bot) -> None:
     )
     for statement in statements:
         await bot.database.execute(statement)
+
+    # Safe in-code migrations for servers that already created the earlier V8 tables.
+    # SQLite has no ADD COLUMN IF NOT EXISTS, so inspect first and only add missing fields.
+    ticket_columns = await bot.database.fetchall("PRAGMA table_info(luxury_ticket_config)")
+    ticket_names = {str(row["name"]) for row in ticket_columns}
+    for name, definition in (
+        ("panel_title", "TEXT NOT NULL DEFAULT 'Guardian Support Center'"),
+        ("panel_description", "TEXT NOT NULL DEFAULT 'Press Open Ticket for private support.'"),
+        ("panel_button_label", "TEXT NOT NULL DEFAULT 'Open Ticket'"),
+    ):
+        if name not in ticket_names:
+            await bot.database.execute(f"ALTER TABLE luxury_ticket_config ADD COLUMN {name} {definition}")
+
+    application_columns = await bot.database.fetchall("PRAGMA table_info(luxury_application_types)")
+    application_names = {str(row["name"]) for row in application_columns}
+    if "review_channel_id" not in application_names:
+        await bot.database.execute("ALTER TABLE luxury_application_types ADD COLUMN review_channel_id INTEGER")
 
 
 class TicketModal(discord.ui.Modal, title="Create Guardian Ticket"):
