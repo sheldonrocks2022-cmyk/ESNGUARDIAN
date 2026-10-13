@@ -963,7 +963,8 @@ class SecurityV7Cog(commands.Cog):
         app.router.add_get("/health", health)
         runner = web.AppRunner(app, access_log=None)
         await runner.setup()
-        await web.TCPSite(runner, "0.0.0.0", port).start()
+        dashboard_host = os.getenv("GUARDIAN_DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        await web.TCPSite(runner, dashboard_host, port).start()
         self.dashboard_runner = runner
 
     def _subject_hash(self, value: str) -> str:
