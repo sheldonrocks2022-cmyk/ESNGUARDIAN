@@ -351,6 +351,11 @@ class GuardianOperations(commands.Cog):
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
         }
         category = guild.get_channel(int(config["category_id"])) if config["category_id"] else None
+        # If no destination category is configured, keep tickets synced with the
+        # category containing the support panel that opened them.
+        if not isinstance(category, discord.CategoryChannel):
+            source_channel = interaction.channel
+            category = source_channel.category if isinstance(source_channel, discord.TextChannel) else None
         try:
             channel = await guild.create_text_channel(
                 f"ticket-{interaction.user.name}"[:90],
@@ -395,6 +400,14 @@ class GuardianOperations(commands.Cog):
             await respond(interaction, "TICKETS", "Only the ticket opener or configured staff can close this ticket.")
             return
 
+        # Transcript generation and DM/file delivery can exceed Discord's
+        # interaction acknowledgement window. Acknowledge the button first.
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+            except discord.HTTPException:
+                pass
+
         transcript_lines = [
             f"ESN Guardian V8 Luxury Ticket Transcript",
             f"Server: {interaction.guild.name}",
@@ -438,11 +451,19 @@ class GuardianOperations(commands.Cog):
             "UPDATE luxury_tickets SET status='closed',channel_id=NULL,closed_at=? WHERE ticket_id=?",
             (time.time(), row["ticket_id"]),
         )
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                embed=luxury("TICKET CLOSED", "Transcript saved and delivered where configured. Deleting this channel now.", interaction.guild),
-                ephemeral=True,
-            )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    embed=luxury("TICKET CLOSED", "Transcript saved and delivered where configured. Deleting this channel now.", interaction.guild),
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    embed=luxury("TICKET CLOSED", "Transcript saved and delivered where configured. Deleting this channel now.", interaction.guild),
+                    ephemeral=True,
+                )
+        except (discord.HTTPException, discord.NotFound):
+            pass
         try:
             await interaction.channel.delete(reason=f"Guardian ticket closed by {interaction.user.id}")
         except discord.HTTPException:
