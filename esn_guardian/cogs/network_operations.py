@@ -81,11 +81,13 @@ class NetworkOperations(commands.Cog):
 
     @commands.command(name="trust")
     @commands.dm_only()
-    async def trust(self,ctx,user_id:int):
+    async def trust(self,ctx,user_id:int|None=None):
         if not self.primary(ctx.author.id):return
+        if user_id is None:
+            return await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST","Usage: `!trust <USER_ID>`\nTrust is advisory and never auto-bans anyone."),mention_author=False)
         row=await self.bot.database.fetchone("SELECT * FROM guardian_trust WHERE user_id=?",(user_id,))
-        if row is None:return await ctx.reply("No Guardian trust history for that reporter.",mention_author=False)
-        await ctx.reply(f"**Guardian Network Trust • {user_id}**\nSubstantiated: {row['substantiated']}\nRejected: {row['rejected']}\nDuplicates: {row['duplicate']}\nAbuse flags: {row['abuse']}\nTrust data never auto-bans anyone.",mention_author=False)
+        if row is None:return await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST",f"No trust history exists for `{user_id}`."),mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST",f"**User:** `{user_id}`\n**Substantiated:** {row['substantiated']}\n**Rejected:** {row['rejected']}\n**Duplicates:** {row['duplicate']}\n**Abuse flags:** {row['abuse']}\n\nTrust data never auto-bans anyone."),mention_author=False)
 
     async def _recipients(self):
         found={}
@@ -100,7 +102,7 @@ class NetworkOperations(commands.Cog):
     @commands.dm_only()
     async def broadcast(self,ctx):
         if not self.primary(ctx.author.id):return
-        await ctx.reply("Use `!broadcast create normal|important|critical|maintenance <message>`, then `!broadcast send <ID>`. Status: `!broadcast status <ID>`.",mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN NETWORK BROADCAST","**Create** `!broadcast create <type> <message>`\n**Send** `!broadcast send <ID>`\n**Status** `!broadcast status <ID>`\n\nTypes: `normal` • `important` • `critical` • `maintenance`\nDelivery targets every connected guild owner and administrator."),mention_author=False)
 
     @broadcast.command(name="create")
     async def broadcast_create(self,ctx,kind:str,*,message:str):
@@ -142,8 +144,10 @@ class NetworkOperations(commands.Cog):
 
     @commands.command(name="emergency")
     @commands.dm_only()
-    async def emergency(self,ctx,severity:str,*,message:str):
+    async def emergency(self,ctx,severity:str|None=None,*,message:str=""):
         if not self.primary(ctx.author.id):return
+        if not severity or not message.strip():
+            return await ctx.reply(embed=luxury("GUARDIAN EMERGENCY ALERT","Usage: `!emergency <severity> <message>`\nTargets every connected guild owner and administrator. Nothing is sent until both values are supplied.","warning"),mention_author=False)
         severity=severity.upper()[:20]
         recipients=await self._recipients(); seen=set(); delivered=0
         for (uid,gid),user in recipients.items():
@@ -156,10 +160,10 @@ class NetworkOperations(commands.Cog):
 
     @commands.group(name="gcontact",invoke_without_command=True)
     async def gcontact(self,ctx):
-        await ctx.reply("Guardian contacts: `!gcontact add <USER_ID>` • `!gcontact remove <USER_ID>` • `!gcontact list`.",mention_author=False)
+        await ctx.reply(embed=luxury("AUTHORIZED GUARDIAN CONTACTS","`!gcontact add <USER_ID>`\n`!gcontact remove <USER_ID>`\n`!gcontact list`\n\nRun contact management inside the server whose contact list you are managing."),mention_author=False)
 
     def contact_manager(self,ctx):
-        return ctx.guild is not None and (ctx.author.id==ctx.guild.owner_id or self.primary(ctx.author.id))
+        return ctx.guild is not None and (ctx.author.id==ctx.guild.owner_id or (isinstance(ctx.author,discord.Member) and (ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_guild)) or self.primary(ctx.author.id))
 
     @gcontact.command(name="add")
     @commands.guild_only()
