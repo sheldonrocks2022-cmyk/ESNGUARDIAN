@@ -13,6 +13,7 @@ from esn_guardian.cogs.common import command_embed, log_event
 from esn_guardian.config import Settings
 from esn_guardian.database import Database
 from esn_guardian.release_guard import mark_healthy
+from esn_guardian.localization import error_message
 
 LOG = logging.getLogger("esn_guardian")
 EXTENSIONS = (
@@ -317,13 +318,16 @@ class GuardianBot(commands.Bot):
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         if isinstance(error, app_commands.CheckFailure):
-            embed = command_embed("This command is unavailable here, or you do not have permission to use it.", title="Access denied")
+            title, message = error_message("denied", str(interaction.locale))
+            embed = command_embed(message, title=title)
         elif isinstance(error, app_commands.CommandOnCooldown):
-            embed = command_embed(f"Try again in {error.retry_after:.0f} seconds.", title="Please wait")
+            title, message = error_message("cooldown", str(interaction.locale), seconds=max(1, round(error.retry_after)))
+            embed = command_embed(message, title=title)
         else:
             LOG.exception("Application command failed", exc_info=error)
             await self._log_command_invocation(interaction, "failed")
-            embed = command_embed("The command failed safely. Staff can check the system log.", title="Command unavailable")
+            title, message = error_message("failed", str(interaction.locale))
+            embed = command_embed(message, title=title)
 
         try:
             if interaction.response.is_done():
