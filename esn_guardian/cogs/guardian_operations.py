@@ -668,6 +668,69 @@ class GuardianOperations(commands.Cog):
             return
         await self.decide_application(interaction, application_id, "denied", reason)
 
+    @app_commands.command(name="vouch", description="Leave a Guardian Reputation vouch for this server.")
+    @app_commands.describe(stars="Rate the service from 1 to 5 stars", received="What you bought or received", experience="How good the service was")
+    @guild_only()
+    async def vouch(
+        self, interaction: discord.Interaction,
+        stars: app_commands.Range[int, 1, 5],
+        received: app_commands.Range[str, 1, 120],
+        experience: app_commands.Range[str, 1, 1000],
+    ) -> None:
+        config = await self.bot.database.fetchone(
+            "SELECT channel_id FROM luxury_reputation_config WHERE guild_id=?", (interaction.guild_id,)
+        )
+        if config is None:
+            await respond(interaction, "REPUTATION", "The reputation channel has not been configured yet.")
+            return
+        channel = interaction.guild.get_channel(int(config["channel_id"]))
+        if not isinstance(channel, discord.TextChannel):
+            await respond(interaction, "REPUTATION", "The configured reputation channel is unavailable. Ask staff to configure it again.")
+            return
+        await self.bot.database.execute(
+            "INSERT INTO luxury_vouches(guild_id,user_id,stars,received,experience) VALUES(?,?,?,?,?)",
+            (interaction.guild_id, interaction.user.id, stars, received, experience),
+        )
+        stars_text = "⭐" * stars + "☆" * (5 - stars)
+        embed = luxury(
+            f"COMMUNITY VOUCH • {stars}/5",
+            f"**Rating**\n{stars_text}\n\n**Bought / Received**\n{received}\n\n**Service Experience**\n{experience}\n\n**Vouched by**\n{interaction.user.mention}",
+            interaction.guild,
+        )
+        embed.set_author(name=f"{interaction.user.display_name} • Guardian Reputation", icon_url=interaction.user.display_avatar.url)
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException:
+            await respond(interaction, "REPUTATION", "Guardian could not post in the configured reputation channel.")
+            return
+        await respond(interaction, "VOUCH SUBMITTED", f"Your **{stars}/5** vouch was posted in {channel.mention}. Thank you for your feedback.")
+
+    @app_commands.command(name="reputation", description="View this server's Guardian Reputation.")
+    @guild_only()
+    async def reputation(self, interaction: discord.Interaction) -> None:
+        rows = await self.bot.database.fetchall(
+            "SELECT stars FROM luxury_vouches WHERE guild_id=? ORDER BY id DESC", (interaction.guild_id,)
+        )
+        if not rows:
+            await respond(interaction, "GUARDIAN REPUTATION", "No community vouches have been submitted yet.")
+            return
+        ratings = [int(row["stars"]) for row in rows]
+        average = sum(ratings) / len(ratings)
+        breakdown = " • ".join(f"{n}⭐ **{ratings.count(n)}**" for n in range(5, 0, -1))
+        await respond(interaction, "GUARDIAN REPUTATION", f"Average rating: **{average:.2f}/5**\nTotal vouches: **{len(ratings)}**\n\n{breakdown}")
+
+    @app_commands.command(name="reputation-configure", description="Set the channel where Guardian Reputation vouches are posted.")
+    @app_commands.describe(channel="Channel where customer vouches will be published")
+    @guild_only()
+    @staff_only()
+    async def reputation_configure(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        await self.bot.database.execute(
+            """INSERT INTO luxury_reputation_config(guild_id,channel_id) VALUES(?,?)
+            ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id""",
+            (interaction.guild_id, channel.id),
+        )
+        await respond(interaction, "REPUTATION CONFIGURED", f"New vouches will now be published in {channel.mention}.")
+
     @academy.command(name="configure", description="Configure Guardian Staff Academy.")
     @guild_only()
     @staff_only()
