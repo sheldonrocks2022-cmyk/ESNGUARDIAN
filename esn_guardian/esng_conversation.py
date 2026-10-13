@@ -112,6 +112,9 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
+        qa_match = re.fullmatch(r"(?:ask|answer|research)\\s+(https://\\S+)\\s*[:|]\\s*(.{5,250})", p, re.I | re.S)
+        if qa_match:
+            return await read_public_page(qa_match.group(1), qa_match.group(2))
         page_match = re.fullmatch(r"(?:read|summarize|extract)(?: (?:webpage|article|page|url))?\\s*[: ]\\s*(https://\\S+)", p, re.I)
         if page_match:
             return await read_public_page(page_match.group(1))
