@@ -13,6 +13,7 @@ from esn_guardian.localization import RESET, detect_locale, is_greeting, normali
 from esn_guardian.esng_knowledge import retrieve
 from esn_guardian.esng_memory import MemoryStore
 from esn_guardian.esng_reasoning import diagnose, analyze_python, compare_options
+from esn_guardian.esng_capabilities import calculate, search_web
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -111,11 +112,14 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
+        web_query = re.fullmatch(r"(?:search(?: the)? web(?: for)?|look up online|google)\\s*[: ]\\s*(.{3,350})", p, re.I | re.S)
+        if web_query:
+            return await search_web(web_query.group(1).strip())
         calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%\s-]{3,100})\??", normalized)
         if calc:
             try:
-                return translate("result", locale, value=safe_calculate(calc.group(1).strip()))
-            except (ValueError, SyntaxError, ZeroDivisionError, OverflowError):
+                return translate("result", locale, value=calculate(calc.group(1).strip()))
+            except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, TypeError):
                 return "I couldn't calculate that safely. Try a basic arithmetic expression."
         if is_greeting(p, locale):
             return translate("hello", locale)
