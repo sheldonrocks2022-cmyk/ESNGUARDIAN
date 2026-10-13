@@ -44,6 +44,7 @@ EXTENSIONS = (
     "esn_guardian.cogs.network_operations",
     "esn_guardian.cogs.guardian_management",
     "esn_guardian.cogs.guardian_batch_four",
+    "esn_guardian.cogs.guardian_batch_five",
 )
 
 
