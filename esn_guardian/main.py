@@ -38,6 +38,9 @@ EXTENSIONS = (
     "esn_guardian.cogs.omega_control",
     "esn_guardian.cogs.global_appeals",
     "esn_guardian.cogs.omega_operations",
+    "esn_guardian.cogs.owner_command_center",
+    "esn_guardian.cogs.owner_sandbox",
+    "esn_guardian.cogs.network_cases",
 )
 
 
