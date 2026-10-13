@@ -11,6 +11,13 @@ def luxury(title,description,level="info"):
     e.set_footer(text="ESN GUARDIAN V8 LUXURY • NETWORK")
     return e
 
+async def luxury_reply(ctx, content=None, *, embed=None, mention_author=False, **kwargs):
+    """Render ordinary command responses with the Luxury visual language."""
+    if embed is None:
+        body=str(content) if content is not None else "No details available."
+        embed=luxury("ESN GUARDIAN • COMMAND RESPONSE",discord.utils.escape_mentions(body))
+    return await ctx.reply(embed=embed,mention_author=mention_author,**kwargs)
+
 class NetworkOperations(commands.Cog):
     def __init__(self,bot):
         self.bot=bot
@@ -51,43 +58,43 @@ class NetworkOperations(commands.Cog):
     @commands.cooldown(1,300,commands.BucketType.user)
     async def unbanrequest(self,ctx,*,reason:str):
         if await self.bot.database.global_ban_reason(ctx.author.id) is None:
-            return await ctx.reply(embed=luxury("UNBAN REVIEW","There is no active Guardian global ban for your account.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("UNBAN REVIEW","There is no active Guardian global ban for your account.","warning"),mention_author=False)
         reason=reason.strip()
-        if not 20<=len(reason)<=1500:return await ctx.reply(embed=luxury("UNBAN REVIEW","Use `!unbanrequest <20-1500 character reason>`.","warning"),mention_author=False)
+        if not 20<=len(reason)<=1500:return await luxury_reply(ctx,embed=luxury("UNBAN REVIEW","Use `!unbanrequest <20-1500 character reason>`.","warning"),mention_author=False)
         old=await self.bot.database.fetchone("SELECT id FROM guardian_unban_reviews WHERE user_id=? AND status='pending'",(ctx.author.id,))
-        if old:return await ctx.reply(embed=luxury("UNBAN REVIEW PENDING",f"`GUR-{int(old['id']):06d}` is already pending.","warning"),mention_author=False)
+        if old:return await luxury_reply(ctx,embed=luxury("UNBAN REVIEW PENDING",f"`GUR-{int(old['id']):06d}` is already pending.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_unban_reviews(user_id,requester_id,reason) VALUES(?,?,?)",(ctx.author.id,ctx.author.id,reason))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_unban_reviews WHERE user_id=? ORDER BY id DESC LIMIT 1",(ctx.author.id,))
         rid=int(row["id"]); owner=await self._owner_user()
         if owner:
             try:await owner.send(embed=luxury("GLOBAL UNBAN REVIEW",f"**Review:** `GUR-{rid:06d}`\n**User:** `{ctx.author.id}`\n**Reason:** {discord.utils.escape_mentions(reason)}","warning"))
             except discord.HTTPException:pass
-        await ctx.reply(embed=luxury("UNBAN REVIEW SUBMITTED",f"`GUR-{rid:06d}` submitted.","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("UNBAN REVIEW SUBMITTED",f"`GUR-{rid:06d}` submitted.","success"),mention_author=False)
 
     @commands.command(name="unbanreview")
     @commands.dm_only()
     async def unbanreview(self,ctx,review_id:int,decision:str):
         if not self.primary(ctx.author.id):return
         decision=decision.casefold()
-        if decision not in {"approve","deny"}:return await ctx.reply(embed=luxury("UNBAN REVIEW","Use `!unbanreview <ID> approve|deny`.","warning"),mention_author=False)
+        if decision not in {"approve","deny"}:return await luxury_reply(ctx,embed=luxury("UNBAN REVIEW","Use `!unbanreview <ID> approve|deny`.","warning"),mention_author=False)
         row=await self.bot.database.fetchone("SELECT * FROM guardian_unban_reviews WHERE id=? AND status='pending'",(review_id,))
-        if row is None:return await ctx.reply(embed=luxury("UNBAN REVIEW NOT FOUND","Pending review not found.","warning"),mention_author=False)
+        if row is None:return await luxury_reply(ctx,embed=luxury("UNBAN REVIEW NOT FOUND","Pending review not found.","warning"),mention_author=False)
         status="approved" if decision=="approve" else "denied"
         await self.bot.database.execute("UPDATE guardian_unban_reviews SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?",(status,ctx.author.id,review_id))
         if decision=="approve":
             ok,failed=await self._apply_unban(int(row["user_id"]))
-            return await ctx.reply(embed=luxury("UNBAN REVIEW APPROVED",f"`GUR-{review_id:06d}` approved.\n**Unbanned:** {ok}\n**Failed:** {failed}","success"),mention_author=False)
-        await ctx.reply(embed=luxury("UNBAN REVIEW DENIED",f"`GUR-{review_id:06d}` denied.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("UNBAN REVIEW APPROVED",f"`GUR-{review_id:06d}` approved.\n**Unbanned:** {ok}\n**Failed:** {failed}","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("UNBAN REVIEW DENIED",f"`GUR-{review_id:06d}` denied.","warning"),mention_author=False)
 
     @commands.command(name="trust")
     @commands.dm_only()
     async def trust(self,ctx,user_id:int|None=None):
         if not self.primary(ctx.author.id):return
         if user_id is None:
-            return await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST","Usage: `!trust <USER_ID>`\nTrust is advisory and never auto-bans anyone."),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("GUARDIAN NETWORK TRUST","Usage: `!trust <USER_ID>`\nTrust is advisory and never auto-bans anyone."),mention_author=False)
         row=await self.bot.database.fetchone("SELECT * FROM guardian_trust WHERE user_id=?",(user_id,))
-        if row is None:return await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST",f"No trust history exists for `{user_id}`."),mention_author=False)
-        await ctx.reply(embed=luxury("GUARDIAN NETWORK TRUST",f"**User:** `{user_id}`\n**Substantiated:** {row['substantiated']}\n**Rejected:** {row['rejected']}\n**Duplicates:** {row['duplicate']}\n**Abuse flags:** {row['abuse']}\n\nTrust data never auto-bans anyone."),mention_author=False)
+        if row is None:return await luxury_reply(ctx,embed=luxury("GUARDIAN NETWORK TRUST",f"No trust history exists for `{user_id}`."),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("GUARDIAN NETWORK TRUST",f"**User:** `{user_id}`\n**Substantiated:** {row['substantiated']}\n**Rejected:** {row['rejected']}\n**Duplicates:** {row['duplicate']}\n**Abuse flags:** {row['abuse']}\n\nTrust data never auto-bans anyone."),mention_author=False)
 
     async def _recipients(self):
         """Every connected guild owner plus administrators/manage-guild staff.
@@ -118,24 +125,24 @@ class NetworkOperations(commands.Cog):
     @commands.dm_only()
     async def broadcast(self,ctx):
         if not self.primary(ctx.author.id):return
-        await ctx.reply(embed=luxury("GUARDIAN NETWORK BROADCAST","**Create** `!broadcast create <type> <message>`\n**Send** `!broadcast send <ID>`\n**Status** `!broadcast status <ID>`\n\nTypes: `normal` • `important` • `critical` • `maintenance`\nDelivery targets every connected guild owner and administrator."),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("GUARDIAN NETWORK BROADCAST","**Create** `!broadcast create <type> <message>`\n**Send** `!broadcast send <ID>`\n**Status** `!broadcast status <ID>`\n\nTypes: `normal` • `important` • `critical` • `maintenance`\nDelivery targets every connected guild owner and administrator."),mention_author=False)
 
     @broadcast.command(name="create")
     async def broadcast_create(self,ctx,kind:str,*,message:str):
         if not self.primary(ctx.author.id):return
         kind=kind.casefold()
         if kind not in {"normal","important","critical","maintenance"} or not 5<=len(message)<=1800:
-            return await ctx.reply(embed=luxury("BROADCAST • INVALID REQUEST","Use a valid type and a 5-1800 character message.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("BROADCAST • INVALID REQUEST","Use a valid type and a 5-1800 character message.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_broadcasts(owner_id,kind,message) VALUES(?,?,?)",(ctx.author.id,kind,message))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_broadcasts ORDER BY id DESC LIMIT 1")
         bid=int(row["id"])
-        await ctx.reply(embed=luxury("BROADCAST PREVIEW",f"**ID:** ESNG-NET-{bid:04d}\n**Type:** {kind.upper()}\n\n{discord.utils.escape_mentions(message)}\n\nSend with `!broadcast send {bid}`.","warning"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("BROADCAST PREVIEW",f"**ID:** ESNG-NET-{bid:04d}\n**Type:** {kind.upper()}\n\n{discord.utils.escape_mentions(message)}\n\nSend with `!broadcast send {bid}`.","warning"),mention_author=False)
 
     @broadcast.command(name="send")
     async def broadcast_send(self,ctx,bid:int):
         if not self.primary(ctx.author.id):return
         row=await self.bot.database.fetchone("SELECT * FROM guardian_broadcasts WHERE id=? AND status='created'",(bid,))
-        if row is None:return await ctx.reply(embed=luxury("BROADCAST NOT FOUND","No unsent broadcast exists with that ID.","warning"),mention_author=False)
+        if row is None:return await luxury_reply(ctx,embed=luxury("BROADCAST NOT FOUND","No unsent broadcast exists with that ID.","warning"),mention_author=False)
         await self.bot.database.execute("UPDATE guardian_broadcasts SET status='sending' WHERE id=?",(bid,))
         recipients=await self._recipients()
         for (uid,gid),user in recipients.items():
@@ -148,21 +155,21 @@ class NetworkOperations(commands.Cog):
         await self.bot.database.execute("UPDATE guardian_broadcasts SET status='sent' WHERE id=?",(bid,))
         rows=await self.bot.database.fetchall("SELECT status,COUNT(*) n FROM guardian_broadcast_delivery WHERE broadcast_id=? GROUP BY status",(bid,))
         stats={str(r["status"]):int(r["n"]) for r in rows}
-        await ctx.reply(embed=luxury("BROADCAST COMPLETE",f"**ID:** `ESNG-NET-{bid:04d}`\n**Guilds connected:** {len(self.bot.guilds)}\n**Delivered:** {stats.get('delivered',0)}\n**Failed:** {stats.get('failed',0)}","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("BROADCAST COMPLETE",f"**ID:** `ESNG-NET-{bid:04d}`\n**Guilds connected:** {len(self.bot.guilds)}\n**Delivered:** {stats.get('delivered',0)}\n**Failed:** {stats.get('failed',0)}","success"),mention_author=False)
 
     @broadcast.command(name="status")
     async def broadcast_status(self,ctx,bid:int):
         if not self.primary(ctx.author.id):return
         rows=await self.bot.database.fetchall("SELECT status,COUNT(*) n FROM guardian_broadcast_delivery WHERE broadcast_id=? GROUP BY status",(bid,))
         stats=", ".join(f"{r['status']}: {r['n']}" for r in rows) or "No delivery records"
-        await ctx.reply(embed=luxury("BROADCAST STATUS",f"**ID:** `ESNG-NET-{bid:04d}`\n**Delivery:** {stats}"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("BROADCAST STATUS",f"**ID:** `ESNG-NET-{bid:04d}`\n**Delivery:** {stats}"),mention_author=False)
 
     @commands.command(name="emergency")
     @commands.dm_only()
     async def emergency(self,ctx,severity:str|None=None,*,message:str=""):
         if not self.primary(ctx.author.id):return
         if not severity or not message.strip():
-            return await ctx.reply(embed=luxury("GUARDIAN EMERGENCY ALERT","Usage: `!emergency <severity> <message>`\nTargets every connected guild owner and administrator. Nothing is sent until both values are supplied.","warning"),mention_author=False)
+            return await luxury_reply(ctx,embed=luxury("GUARDIAN EMERGENCY ALERT","Usage: `!emergency <severity> <message>`\nTargets every connected guild owner and administrator. Nothing is sent until both values are supplied.","warning"),mention_author=False)
         severity=severity.upper()[:20]
         recipients=await self._recipients(); delivered=0
         for (uid,gid),user in recipients.items():
@@ -170,11 +177,11 @@ class NetworkOperations(commands.Cog):
             try:
                 await user.send(embed=luxury("🚨 GUARDIAN NETWORK EMERGENCY",f"**Severity:** {severity}\n**Server:** {guild.name if guild else gid}\n\n{discord.utils.escape_mentions(message)[:1800]}","danger"));delivered+=1
             except discord.HTTPException:pass
-        await ctx.reply(embed=luxury("EMERGENCY ALERT COMPLETE",f"Delivered to **{delivered}** network recipient(s).","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("EMERGENCY ALERT COMPLETE",f"Delivered to **{delivered}** network recipient(s).","success"),mention_author=False)
 
     @commands.group(name="gcontact",invoke_without_command=True)
     async def gcontact(self,ctx):
-        await ctx.reply(embed=luxury("AUTHORIZED GUARDIAN CONTACTS","`!gcontact add <USER_ID>`\n`!gcontact remove <USER_ID>`\n`!gcontact list`\n\nRun contact management inside the server whose contact list you are managing."),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("AUTHORIZED GUARDIAN CONTACTS","`!gcontact add <USER_ID>`\n`!gcontact remove <USER_ID>`\n`!gcontact list`\n\nRun contact management inside the server whose contact list you are managing."),mention_author=False)
 
     def contact_manager(self,ctx):
         return ctx.guild is not None and (ctx.author.id==ctx.guild.owner_id or (isinstance(ctx.author,discord.Member) and (ctx.author.guild_permissions.administrator or ctx.author.guild_permissions.manage_guild)) or self.primary(ctx.author.id))
@@ -184,16 +191,16 @@ class NetworkOperations(commands.Cog):
     async def contact_add(self,ctx,user_id:int):
         if not self.contact_manager(ctx):return
         try:user=self.bot.get_user(user_id) or await self.bot.fetch_user(user_id)
-        except discord.HTTPException:return await ctx.reply(embed=luxury("CONTACT NOT ADDED","That Discord user could not be verified.","warning"),mention_author=False)
+        except discord.HTTPException:return await luxury_reply(ctx,embed=luxury("CONTACT NOT ADDED","That Discord user could not be verified.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT OR REPLACE INTO guardian_contacts(guild_id,user_id,added_by) VALUES(?,?,?)",(ctx.guild.id,user_id,ctx.author.id))
-        await ctx.reply(embed=luxury("GUARDIAN CONTACT ADDED",f"**User:** {user}\n**ID:** `{user_id}`\n**Server:** {discord.utils.escape_markdown(ctx.guild.name)}","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("GUARDIAN CONTACT ADDED",f"**User:** {user}\n**ID:** `{user_id}`\n**Server:** {discord.utils.escape_markdown(ctx.guild.name)}","success"),mention_author=False)
 
     @gcontact.command(name="remove")
     @commands.guild_only()
     async def contact_remove(self,ctx,user_id:int):
         if not self.contact_manager(ctx):return
         await self.bot.database.execute("DELETE FROM guardian_contacts WHERE guild_id=? AND user_id=?",(ctx.guild.id,user_id))
-        await ctx.reply(embed=luxury("GUARDIAN CONTACT REMOVED",f"**User ID:** `{user_id}`\n**Server:** {discord.utils.escape_markdown(ctx.guild.name)}","success"),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("GUARDIAN CONTACT REMOVED",f"**User ID:** `{user_id}`\n**Server:** {discord.utils.escape_markdown(ctx.guild.name)}","success"),mention_author=False)
 
     @gcontact.command(name="list")
     @commands.guild_only()
@@ -201,6 +208,6 @@ class NetworkOperations(commands.Cog):
         if not self.contact_manager(ctx):return
         rows=await self.bot.database.fetchall("SELECT user_id,created_at FROM guardian_contacts WHERE guild_id=? ORDER BY created_at",(ctx.guild.id,))
         body="\n".join(f"• `{r['user_id']}`" for r in rows) or "No registered contacts."
-        await ctx.reply(embed=luxury("GUARDIAN AUTHORIZED CONTACTS",body),mention_author=False)
+        await luxury_reply(ctx,embed=luxury("GUARDIAN AUTHORIZED CONTACTS",body),mention_author=False)
 
 async def setup(bot):await bot.add_cog(NetworkOperations(bot))
