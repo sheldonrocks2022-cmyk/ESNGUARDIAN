@@ -11,6 +11,8 @@ import re
 from collections import OrderedDict, deque
 from esn_guardian.localization import RESET, detect_locale, is_greeting, normalize_locale, translate
 from esn_guardian.esng_knowledge import retrieve
+from esn_guardian.esng_memory import MemoryStore
+from esn_guardian.esng_reasoning import diagnose, analyze_python, compare_options
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -53,6 +55,7 @@ class ESNGConversation:
     def __init__(self) -> None:
         self.history: OrderedDict[tuple[int, int], deque[str]] = OrderedDict()
         self.locales: dict[tuple[int, int], str] = {}
+        self.memory = MemoryStore()
 
     @property
     def enabled(self) -> bool:
@@ -83,6 +86,30 @@ class ESNGConversation:
             return translate("reset", locale)
         if re.search(r"\b(what (did i|were we) (ask|talk|discuss)|what was my last question)\b", normalized):
             return translate("memory", locale, value=history[-1]) if history else translate("empty", locale)
+        if normalized == "memory on":
+            self.memory.opt_in(guild_id, user_id)
+            return "Persistent notes enabled. Use 'remember label: text'. Notes stay on this server."
+        if normalized in ("memory off", "forget everything", "delete my notes"):
+            self.memory.forget(guild_id, user_id)
+            history.clear()
+            return "Persistent notes and consent deleted."
+        if normalized in ("my notes", "memory status"):
+            if not self.memory.enabled(guild_id, user_id):
+                return "Persistent notes are off. Use 'memory on' to opt in."
+            notes = self.memory.notes(guild_id, user_id)
+            return "Saved notes:\n" + ("\n".join(f"{k}: {v}" for k,v in notes) if notes else "(none)")
+        note = re.fullmatch(r"remember ([a-zA-Z0-9_-]{1,40}):\s*(.{1,500})", p, re.S | re.I)
+        if note:
+            return ("Note saved." if self.memory.remember(guild_id, user_id, note.group(1).lower(), note.group(2).strip()) else
+                    "Notes require opt-in ('memory on') and allow up to 20 labeled entries.")
+        if normalized.startswith("check python:"):
+            return analyze_python(p[len("check python:"):].strip())
+        comparison = compare_options(p)
+        if comparison:
+            return comparison
+        diagnostic = diagnose(p)
+        if diagnostic:
+            return diagnostic
         history.append(p)
         calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%\s-]{3,100})\??", normalized)
         if calc:
