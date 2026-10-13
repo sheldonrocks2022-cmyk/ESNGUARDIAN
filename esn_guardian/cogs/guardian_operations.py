@@ -508,9 +508,36 @@ class GuardianOperations(commands.Cog):
         )
         await respond(interaction, "QUESTION ADDED", f"Question **{len(questions)}** added to **{row['name']}**.")
 
+    async def pending_application_autocomplete(
+        self, interaction: discord.Interaction, current: str,
+    ) -> list[app_commands.Choice[str]]:
+        rows = await self.bot.database.fetchall(
+            """SELECT a.id,a.user_id,t.name FROM luxury_applications a
+            JOIN luxury_application_types t ON t.id=a.type_id
+            WHERE a.guild_id=? AND a.status='pending' ORDER BY a.id DESC LIMIT 25""",
+            (interaction.guild_id,),
+        )
+        needle = current.casefold().strip()
+        choices: list[app_commands.Choice[str]] = []
+        for row in rows:
+            member = interaction.guild.get_member(int(row["user_id"])) if interaction.guild else None
+            who = member.display_name if member else f"User {row['user_id']}"
+            label = f"{row['name']} • {who}"
+            if needle and needle not in label.casefold():
+                continue
+            choices.append(app_commands.Choice(name=label[:100], value=str(row["id"])))
+        return choices
+
     @application.command(name="apply", description="Start a configured Guardian application.")
     @guild_only()
-    async def application_apply(self, interaction: discord.Interaction, application_id: int) -> None:
+    @app_commands.describe(application="Choose the application type")
+    @app_commands.autocomplete(application=application_type_autocomplete)
+    async def application_apply(self, interaction: discord.Interaction, application: str) -> None:
+        try:
+            application_id = int(application)
+        except ValueError:
+            await respond(interaction, "APPLICATIONS", "Choose an application from Guardian's selector.")
+            return
         row = await self.bot.database.fetchone(
             "SELECT * FROM luxury_application_types WHERE id=? AND guild_id=? AND enabled=1",
             (application_id, interaction.guild_id),
@@ -564,8 +591,15 @@ class GuardianOperations(commands.Cog):
         await respond(interaction, "APPLICATION SUBMITTED", "Your completed application was delivered to the server owner and authorized reviewers.")
 
     @application.command(name="review", description="Review a Guardian application.")
+    @app_commands.describe(application="Choose a pending application")
+    @app_commands.autocomplete(application=pending_application_autocomplete)
     @guild_only()
-    async def application_review(self, interaction: discord.Interaction, application_id: int) -> None:
+    async def application_review(self, interaction: discord.Interaction, application: str) -> None:
+        try:
+            application_id = int(application)
+        except ValueError:
+            await respond(interaction, "APPLICATION REVIEW", "Choose a pending application from Guardian's selector.")
+            return
         row = await self.bot.database.fetchone(
             """SELECT a.*,t.name,t.reviewer_role_id,t.questions_json FROM luxury_applications a
             JOIN luxury_application_types t ON t.id=a.type_id WHERE a.id=? AND a.guild_id=?""",
@@ -611,13 +645,27 @@ class GuardianOperations(commands.Cog):
         await respond(interaction, "APPLICATION DECIDED", f"Application **#{application_id}** was **{status}**.")
 
     @application.command(name="accept", description="Accept a pending application.")
+    @app_commands.describe(application="Choose a pending application")
+    @app_commands.autocomplete(application=pending_application_autocomplete)
     @guild_only()
-    async def application_accept(self, interaction: discord.Interaction, application_id: int, note: str = "") -> None:
+    async def application_accept(self, interaction: discord.Interaction, application: str, note: str = "") -> None:
+        try:
+            application_id = int(application)
+        except ValueError:
+            await respond(interaction, "APPLICATION REVIEW", "Choose a pending application from Guardian's selector.")
+            return
         await self.decide_application(interaction, application_id, "accepted", note)
 
     @application.command(name="deny", description="Deny a pending application.")
+    @app_commands.describe(application="Choose a pending application")
+    @app_commands.autocomplete(application=pending_application_autocomplete)
     @guild_only()
-    async def application_deny(self, interaction: discord.Interaction, application_id: int, reason: app_commands.Range[str, 1, 500]) -> None:
+    async def application_deny(self, interaction: discord.Interaction, application: str, reason: app_commands.Range[str, 1, 500]) -> None:
+        try:
+            application_id = int(application)
+        except ValueError:
+            await respond(interaction, "APPLICATION REVIEW", "Choose a pending application from Guardian's selector.")
+            return
         await self.decide_application(interaction, application_id, "denied", reason)
 
     @academy.command(name="configure", description="Configure Guardian Staff Academy.")
