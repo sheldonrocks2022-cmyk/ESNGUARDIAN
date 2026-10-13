@@ -230,7 +230,9 @@ class ProtectionCoordinatorCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def status_command(self, interaction: discord.Interaction) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            await respond(interaction, "This command is only available in a server.")
+            return
         state, reason = await self.state(interaction.guild.id)
         gaps = await self.validate(interaction.guild)
         active = await self.bot.database.fetchone(
@@ -250,7 +252,9 @@ class ProtectionCoordinatorCog(commands.Cog):
     @guild_only()
     @staff_only()
     async def selftest_command(self, interaction: discord.Interaction) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            await respond(interaction, "This command is only available in a server.")
+            return
         await defer_response(interaction)
         score, gaps = await self.selftest(interaction.guild)
         await respond(
@@ -264,7 +268,9 @@ class ProtectionCoordinatorCog(commands.Cog):
     @guild_only()
     @guild_owner_only()
     async def drill_command(self, interaction: discord.Interaction) -> None:
-        assert interaction.guild is not None
+        if interaction.guild is None:
+            await respond(interaction, "This command is only available in a server.")
+            return
         await defer_response(interaction)
         result = await self.safe_drill(interaction.guild)
         await respond(
