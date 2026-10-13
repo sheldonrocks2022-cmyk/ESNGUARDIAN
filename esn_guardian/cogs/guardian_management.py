@@ -74,8 +74,7 @@ class GuardianManagement(commands.Cog):
         mine=await self.contacts(ctx.author.id);theirs=await self.contacts(user_id)
         if not mine or not theirs:return await ctx.reply("Both users must be registered Guardian contacts.",mention_author=False)
         if not 1<=len(message)<=1500:return await ctx.reply("Message must be 1-1500 characters.",mention_author=False)
-        blocked=await self.bot.database.fetchone("SELECT 1 FROM guardian_contact_blocks WHERE owner_id=? AND blocked_id=?",(user_id,ctx.author.id))
-        if blocked:return await ctx.reply("That contact is not accepting messages from you.",mention_author=False)
+        blocked=await self.bot.database.fetchone("SELECT 1 FROM guardian_contact_blocks WHERE owner_id=? AND blocked_id=?",(user_id,ctx.author.id))\n        if blocked:return await ctx.reply("That contact is not accepting messages from you.",mention_author=False)\n        pref=await self.bot.database.fetchone("SELECT muted FROM guardian_contact_preferences WHERE user_id=?",(user_id,))\n        if pref and int(pref["muted"]):return await ctx.reply("That contact has Guardian network messages muted.",mention_author=False)
         gid=int(mine[0]["guild_id"]);await self.bot.database.execute("INSERT INTO guardian_contact_messages(sender_id,recipient_id,sender_guild_id,body) VALUES(?,?,?,?)",(ctx.author.id,user_id,gid,message))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_contact_messages WHERE sender_id=? ORDER BY id DESC LIMIT 1",(ctx.author.id,));mid=int(row["id"])
         try:
