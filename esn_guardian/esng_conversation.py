@@ -18,6 +18,7 @@ from esn_guardian.esng_skills import answer_skill
 from esn_guardian.esng_extended import extended_skill
 from esn_guardian.esng_minilm import ESNGMiniLM
 from esn_guardian.esng_intelligence import ConversationContext, explain_python_error
+from esn_guardian.esng_multisource import research_many
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -146,6 +147,12 @@ class ESNGConversation:
         skill_answer = answer_skill(p)
         if skill_answer is not None:
             return skill_answer
+        multi_match = re.fullmatch(r"(?:compare sources|research sources|multi research)\s*[: ]\s*(.{3,250}?)\s*\|\s*(https://\S+(?:\s*\|\s*https://\S+){1,3})", p, re.I | re.S)
+        if multi_match:
+            urls = [u.strip() for u in multi_match.group(2).split('|')]
+            answer = await research_many(multi_match.group(1), urls)
+            self.ai_context.remember(key, multi_match.group(1), answer)
+            return answer
         qa_match = re.fullmatch(r"(?:ask|answer|research)\s+(https://\S+)\s*[:|]\s*(.{5,250})", p, re.I | re.S)
         if qa_match:
             return await read_public_page(qa_match.group(1), qa_match.group(2))
