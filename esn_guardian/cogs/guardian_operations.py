@@ -120,7 +120,7 @@ class ApplyModal(discord.ui.Modal):
 
 
 class GuardianOperations(commands.Cog):
-    ticket = app_commands.Group(name="ticket", description="Guardian Luxury ticket system")
+    ticket = app_commands.Group(name="support", description="Guardian Luxury ticket system")
     application = app_commands.Group(name="application", description="Guardian Luxury application system")
     academy = app_commands.Group(name="academy", description="Guardian Staff Academy")
 
