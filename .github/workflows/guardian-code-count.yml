@@ -2,7 +2,7 @@ name: Guardian Code Line Count
 on:
   workflow_dispatch:
   push:
-    branches: [guardian-v8-hardening]
+    branches: [guardian-v8-hardening, guardian-v8-luxury]
     paths:
       - '.github/workflows/guardian-code-count.yml'
 permissions:
