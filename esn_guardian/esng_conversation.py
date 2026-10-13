@@ -116,7 +116,7 @@ class ESNGConversation:
         if web_query:
             return await search_web(web_query.group(1).strip())
         calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%\s-]{3,100})\??", normalized)
-        if calc:
+        if calc and re.search(r"\\d|[π√]", calc.group(1)) and re.match(r"\\s*(?:[+\\-(\\dπ√]|(?:sqrt|sin|cos|tan|log|ln|exp|abs|floor|ceil|factorial|degrees|radians)\\s*\\()", calc.group(1), re.I):
             try:
                 return translate("result", locale, value=calculate(calc.group(1).strip()))
             except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, TypeError):
