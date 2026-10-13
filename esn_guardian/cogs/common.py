@@ -23,6 +23,19 @@ def set_protected_footer(embed: discord.Embed) -> discord.Embed:
     return embed
 
 
+def guild_brand_embed(guild: discord.Guild, title: str, description: str = "", *, color: discord.Color = OBSIDIAN_BLUE) -> discord.Embed:
+    """Create the shared luxury Guardian embed using the current guild identity."""
+    embed = discord.Embed(title=title, description=description[:4096], color=color, timestamp=datetime.now(UTC))
+    if guild.icon:
+        embed.set_author(name=f"ESN GUARDIAN  •  {guild.name}", icon_url=guild.icon.url)
+        embed.set_thumbnail(url=guild.icon.url)
+    else:
+        embed.set_author(name=f"ESN GUARDIAN  •  {guild.name}")
+    embed.add_field(name="SERVER", value=f"{guild.name}\n`{guild.id}`", inline=False)
+    embed.set_footer(text="ESN GUARDIAN  •  PROTECTED  •  EVENT LOGGED")
+    return embed
+
+
 def command_embed(content: str, *, title: str = "ESN Guardian") -> discord.Embed:
     embed = discord.Embed(title=title, description=content[:4096], color=OBSIDIAN_BLUE, timestamp=datetime.now(UTC))
     return set_protected_footer(embed)
@@ -183,8 +196,7 @@ async def log_event(bot: "GuardianBot", guild: discord.Guild, setting_field: str
     channel = guild.get_channel(channel_id)
     if not isinstance(channel, discord.TextChannel):
         return
-    embed = discord.Embed(title=title, description=description[:4096], color=color, timestamp=datetime.now(UTC))
-    set_protected_footer(embed)
+    embed = guild_brand_embed(guild, title, description, color=color)
     try:
         async with LOG_SEND_SEMAPHORE:
             await asyncio.wait_for(
