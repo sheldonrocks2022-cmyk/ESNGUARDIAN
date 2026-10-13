@@ -38,7 +38,10 @@ async def install_schema(bot: commands.Bot) -> None:
     statements = (
         """CREATE TABLE IF NOT EXISTS luxury_ticket_config (
             guild_id INTEGER PRIMARY KEY, staff_role_id INTEGER, category_id INTEGER,
-            log_channel_id INTEGER, max_tickets INTEGER NOT NULL DEFAULT 3)""",
+            log_channel_id INTEGER, max_tickets INTEGER NOT NULL DEFAULT 3,
+            panel_title TEXT NOT NULL DEFAULT 'Guardian Support Center',
+            panel_description TEXT NOT NULL DEFAULT 'Press Open Ticket for private support.',
+            panel_button_label TEXT NOT NULL DEFAULT 'Open Ticket')""",
         """CREATE TABLE IF NOT EXISTS luxury_tickets (
             ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL, channel_id INTEGER UNIQUE, subject TEXT NOT NULL,
@@ -51,7 +54,7 @@ async def install_schema(bot: commands.Bot) -> None:
         """CREATE TABLE IF NOT EXISTS luxury_application_types (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
             name TEXT NOT NULL, reviewer_role_id INTEGER, accepted_role_id INTEGER,
-            enabled INTEGER NOT NULL DEFAULT 1, questions_json TEXT NOT NULL DEFAULT '[]')""",
+            enabled INTEGER NOT NULL DEFAULT 1, questions_json TEXT NOT NULL DEFAULT '[]', review_channel_id INTEGER)""",
         """CREATE TABLE IF NOT EXISTS luxury_applications (
             id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL,
             type_id INTEGER NOT NULL, user_id INTEGER NOT NULL, answers_json TEXT NOT NULL,
@@ -119,6 +122,96 @@ class ApplyModal(discord.ui.Modal):
         await self.cog.save_application(interaction, self.type_id, [str(item) for item in self.inputs])
 
 
+
+class ApplicationTypeSelect(discord.ui.Select):
+    def __init__(self, cog: "GuardianOperations", rows) -> None:
+        self.cog = cog
+        options = [discord.SelectOption(label=str(r["name"])[:100], value=str(r["id"]), description="Start this application") for r in rows[:25]]
+        super().__init__(placeholder="Choose an application…", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        row = await self.cog.bot.database.fetchone(
+            "SELECT * FROM luxury_application_types WHERE id=? AND guild_id=? AND enabled=1",
+            (int(self.values[0]), interaction.guild_id),
+        )
+        if row is None:
+            await respond(interaction, "APPLICATIONS", "That application is no longer available.")
+            return
+        questions = json.loads(row["questions_json"] or "[]")
+        if not questions:
+            await respond(interaction, "APPLICATIONS", "That application has no questions configured yet.")
+            return
+        await interaction.response.send_modal(ApplyModal(self.cog, int(row["id"]), str(row["name"]), questions))
+
+
+class ApplicationTypeView(discord.ui.View):
+    def __init__(self, cog: "GuardianOperations", rows) -> None:
+        super().__init__(timeout=120)
+        self.add_item(ApplicationTypeSelect(cog, rows))
+
+
+class ApplicationPanel(discord.ui.View):
+    def __init__(self, cog: "GuardianOperations") -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Apply", emoji="📝", style=discord.ButtonStyle.primary, custom_id="guardian:v8lux:application:apply")
+    async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        rows = await self.cog.bot.database.fetchall(
+            "SELECT * FROM luxury_application_types WHERE guild_id=? AND enabled=1 ORDER BY name",
+            (interaction.guild_id,),
+        )
+        if not rows:
+            await respond(interaction, "APPLICATIONS", "No applications are currently open.")
+            return
+        await interaction.response.send_message(
+            embed=luxury("CHOOSE AN APPLICATION", "Select the application you want to complete.", interaction.guild),
+            view=ApplicationTypeView(self.cog, rows), ephemeral=True,
+        )
+
+
+class ApplicationDecisionView(discord.ui.View):
+    def __init__(self, cog: "GuardianOperations", application_id: int) -> None:
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.application_id = application_id
+
+    @discord.ui.button(label="Accept", emoji="✅", style=discord.ButtonStyle.success)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.decide_application(interaction, self.application_id, "accepted", "Accepted by reviewer.")
+
+    @discord.ui.button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger)
+    async def deny_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self.cog.decide_application(interaction, self.application_id, "denied", "Denied by reviewer.")
+
+
+class CourseSelect(discord.ui.Select):
+    def __init__(self, cog: "GuardianOperations", rows, action: str) -> None:
+        self.cog, self.action = cog, action
+        options = [discord.SelectOption(label=str(r["name"])[:100], value=str(r["id"])) for r in rows[:25]]
+        super().__init__(placeholder="Choose a course…", options=options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        course_id = int(self.values[0])
+        if self.action == "publish":
+            await self.cog.bot.database.execute("UPDATE luxury_academy_courses SET published=1 WHERE id=? AND guild_id=?", (course_id, interaction.guild_id))
+            await respond(interaction, "COURSE PUBLISHED", "The selected Academy course is now published.")
+            return
+        course = await self.cog.bot.database.fetchone(
+            "SELECT * FROM luxury_academy_courses WHERE id=? AND guild_id=? AND published=1", (course_id, interaction.guild_id)
+        )
+        if course is None:
+            await respond(interaction, "STAFF ACADEMY", "That published course is unavailable.")
+            return
+        await respond(interaction, f"ACADEMY • {course['name']}", str(course["content"]))
+
+
+class CourseSelectView(discord.ui.View):
+    def __init__(self, cog: "GuardianOperations", rows, action: str) -> None:
+        super().__init__(timeout=120)
+        self.add_item(CourseSelect(cog, rows, action))
+
+
 class GuardianOperations(commands.Cog):
     ticket = app_commands.Group(name="support", description="Guardian Luxury ticket system")
     application = app_commands.Group(name="application", description="Guardian Luxury application system")
@@ -131,6 +224,7 @@ class GuardianOperations(commands.Cog):
         await install_schema(self.bot)
         self.bot.add_view(TicketPanel(self))
         self.bot.add_view(TicketControls(self))
+        self.bot.add_view(ApplicationPanel(self))
 
     def is_staff(self, interaction: discord.Interaction, role_id: int | None = None) -> bool:
         member = interaction.user
@@ -243,11 +337,39 @@ class GuardianOperations(commands.Cog):
     @guild_only()
     @staff_only()
     async def ticket_panel(self, interaction: discord.Interaction) -> None:
-        await interaction.channel.send(
-            embed=luxury("GUARDIAN SUPPORT CENTER", "Press **Open Ticket** for private support.", interaction.guild),
-            view=TicketPanel(self),
-        )
+        config = await self.ticket_config(interaction.guild_id)
+        title = config["panel_title"] if config and "panel_title" in config.keys() else "Guardian Support Center"
+        description = config["panel_description"] if config and "panel_description" in config.keys() else "Press **Open Ticket** for private support."
+        await interaction.channel.send(embed=luxury(str(title).upper(), str(description), interaction.guild), view=TicketPanel(self))
         await respond(interaction, "TICKET PANEL", "Luxury ticket panel published.")
+
+    @ticket.command(name="panel-edit", description="Edit the Luxury support panel text.")
+    @guild_only()
+    @staff_only()
+    async def ticket_panel_edit(
+        self, interaction: discord.Interaction,
+        title: app_commands.Range[str, 1, 120],
+        description: app_commands.Range[str, 1, 1500],
+    ) -> None:
+        await self.bot.database.execute(
+            """INSERT INTO luxury_ticket_config(guild_id,panel_title,panel_description)
+            VALUES(?,?,?) ON CONFLICT(guild_id) DO UPDATE SET
+            panel_title=excluded.panel_title,panel_description=excluded.panel_description""",
+            (interaction.guild_id, title, description),
+        )
+        await respond(interaction, "SUPPORT PANEL UPDATED", "Your Luxury support panel design has been saved.")
+
+    @ticket.command(name="panel-preview", description="Preview the configured support panel privately.")
+    @guild_only()
+    @staff_only()
+    async def ticket_panel_preview(self, interaction: discord.Interaction) -> None:
+        config = await self.ticket_config(interaction.guild_id)
+        title = config["panel_title"] if config else "Guardian Support Center"
+        description = config["panel_description"] if config else "Press **Open Ticket** for private support."
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=luxury(str(title).upper(), str(description), interaction.guild), ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=luxury(str(title).upper(), str(description), interaction.guild), ephemeral=True)
 
     @ticket.command(name="configure", description="Configure Guardian tickets.")
     @guild_only()
@@ -291,16 +413,27 @@ class GuardianOperations(commands.Cog):
         )
         await respond(interaction, "PRIVATE NOTE", "The staff note was stored in Guardian's ticket record.")
 
+    @application.command(name="panel", description="Post the Luxury applications panel.")
+    @guild_only()
+    @staff_only()
+    async def application_panel(self, interaction: discord.Interaction) -> None:
+        await interaction.channel.send(
+            embed=luxury("APPLICATION CENTER", "Press **Apply** to choose an open application and begin.", interaction.guild),
+            view=ApplicationPanel(self),
+        )
+        await respond(interaction, "APPLICATION PANEL", "Luxury application panel published.")
+
     @application.command(name="type-create", description="Create a configurable application type.")
     @guild_only()
     @staff_only()
     async def application_type_create(
         self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 80],
         reviewer_role: discord.Role, accepted_role: discord.Role | None = None,
+        review_channel: discord.TextChannel | None = None,
     ) -> None:
         await self.bot.database.execute(
-            "INSERT INTO luxury_application_types(guild_id,name,reviewer_role_id,accepted_role_id) VALUES(?,?,?,?)",
-            (interaction.guild_id, name, reviewer_role.id, accepted_role.id if accepted_role else None),
+            "INSERT INTO luxury_application_types(guild_id,name,reviewer_role_id,accepted_role_id,review_channel_id) VALUES(?,?,?,?,?)",
+            (interaction.guild_id, name, reviewer_role.id, accepted_role.id if accepted_role else None, review_channel.id if review_channel else None),
         )
         await respond(interaction, "APPLICATION TYPE CREATED", f"**{name}** is ready. Add questions with **/application question-add**.")
 
@@ -361,7 +494,28 @@ class GuardianOperations(commands.Cog):
             "SELECT id FROM luxury_applications WHERE guild_id=? AND type_id=? AND user_id=? ORDER BY id DESC LIMIT 1",
             (interaction.guild_id, type_id, interaction.user.id),
         )
-        await respond(interaction, "APPLICATION SUBMITTED", f"Application **#{row['id']}** was submitted for review.")
+        app_type = await self.bot.database.fetchone("SELECT * FROM luxury_application_types WHERE id=?", (type_id,))
+        questions = json.loads(app_type["questions_json"] or "[]")
+        details = "\n\n".join(f"**{q}**\n{a}" for q, a in zip(questions, answers))
+        review_embed = luxury(f"NEW APPLICATION • {app_type['name']}", f"Applicant: {interaction.user.mention}\n\n{details}", interaction.guild)
+        review_channel = interaction.guild.get_channel(int(app_type["review_channel_id"])) if app_type["review_channel_id"] else None
+        if isinstance(review_channel, discord.TextChannel):
+            await review_channel.send(embed=review_embed, view=ApplicationDecisionView(self, int(row["id"])))
+        recipients = set()
+        if interaction.guild.owner:
+            recipients.add(interaction.guild.owner)
+        reviewer_role = interaction.guild.get_role(int(app_type["reviewer_role_id"])) if app_type["reviewer_role_id"] else None
+        if reviewer_role:
+            recipients.update(reviewer_role.members)
+        recipients.update(m for m in interaction.guild.members if m.guild_permissions.administrator)
+        for recipient in recipients:
+            if recipient.bot:
+                continue
+            try:
+                await recipient.send(embed=review_embed, view=ApplicationDecisionView(self, int(row["id"])))
+            except discord.HTTPException:
+                pass
+        await respond(interaction, "APPLICATION SUBMITTED", "Your completed application was delivered to the server owner and authorized reviewers.")
 
     @application.command(name="review", description="Review a Guardian application.")
     @guild_only()
@@ -470,35 +624,38 @@ class GuardianOperations(commands.Cog):
         )
         await respond(interaction, "COURSE CREATED", f"**{name}** was saved as an Academy draft.")
 
-    @academy.command(name="course-publish", description="Publish a Staff Academy course.")
+    @academy.command(name="course-publish", description="Choose and publish a Staff Academy course.")
     @guild_only()
     @staff_only()
-    async def academy_course_publish(self, interaction: discord.Interaction, course_id: int) -> None:
-        row = await self.bot.database.fetchone(
-            "SELECT id FROM luxury_academy_courses WHERE id=? AND guild_id=?",
-            (course_id, interaction.guild_id),
+    async def academy_course_publish(self, interaction: discord.Interaction) -> None:
+        rows = await self.bot.database.fetchall(
+            "SELECT * FROM luxury_academy_courses WHERE guild_id=? AND published=0 ORDER BY name", (interaction.guild_id,)
         )
-        if row is None:
-            await respond(interaction, "STAFF ACADEMY", "Course not found.")
+        if not rows:
+            await respond(interaction, "STAFF ACADEMY", "There are no draft courses waiting to be published.")
             return
-        await self.bot.database.execute("UPDATE luxury_academy_courses SET published=1 WHERE id=?", (course_id,))
-        await respond(interaction, "COURSE PUBLISHED", f"Academy course **#{course_id}** is now available.")
+        await interaction.response.send_message(
+            embed=luxury("PUBLISH ACADEMY COURSE", "Choose a draft course below.", interaction.guild),
+            view=CourseSelectView(self, rows, "publish"), ephemeral=True,
+        )
 
-    @academy.command(name="train", description="Open a published Staff Academy course.")
+    @academy.command(name="train", description="Choose a published Staff Academy course.")
     @guild_only()
-    async def academy_train(self, interaction: discord.Interaction, course_id: int) -> None:
+    async def academy_train(self, interaction: discord.Interaction) -> None:
         config = await self.bot.database.fetchone("SELECT * FROM luxury_academy_config WHERE guild_id=?", (interaction.guild_id,))
         if config is None or not self.is_staff(interaction, config["staff_role_id"]):
             await respond(interaction, "STAFF ACADEMY", "You are not assigned to this server's Academy staff role.")
             return
-        course = await self.bot.database.fetchone(
-            "SELECT * FROM luxury_academy_courses WHERE id=? AND guild_id=? AND published=1",
-            (course_id, interaction.guild_id),
+        rows = await self.bot.database.fetchall(
+            "SELECT * FROM luxury_academy_courses WHERE guild_id=? AND published=1 ORDER BY name", (interaction.guild_id,)
         )
-        if course is None:
-            await respond(interaction, "STAFF ACADEMY", "Published course not found.")
+        if not rows:
+            await respond(interaction, "STAFF ACADEMY", "There are no published Academy courses yet.")
             return
-        await respond(interaction, f"ACADEMY • {course['name']}", str(course["content"]))
+        await interaction.response.send_message(
+            embed=luxury("STAFF ACADEMY", "Choose your training course below.", interaction.guild),
+            view=CourseSelectView(self, rows, "train"), ephemeral=True,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:
