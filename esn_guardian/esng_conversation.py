@@ -112,17 +112,17 @@ class ESNGConversation:
         if diagnostic:
             return diagnostic
         history.append(p)
-        qa_match = re.fullmatch(r"(?:ask|answer|research)\\s+(https://\\S+)\\s*[:|]\\s*(.{5,250})", p, re.I | re.S)
+        qa_match = re.fullmatch(r"(?:ask|answer|research)\s+(https://\S+)\s*[:|]\s*(.{5,250})", p, re.I | re.S)
         if qa_match:
             return await read_public_page(qa_match.group(1), qa_match.group(2))
-        page_match = re.fullmatch(r"(?:read|summarize|extract)(?: (?:webpage|article|page|url))?\\s*[: ]\\s*(https://\\S+)", p, re.I)
+        page_match = re.fullmatch(r"(?:read|summarize|extract)(?: (?:webpage|article|page|url))?\s*[: ]\s*(https://\S+)", p, re.I)
         if page_match:
             return await read_public_page(page_match.group(1))
-        web_query = re.fullmatch(r"(?:search(?: the)? web(?: for)?|look up online|google)\\s*[: ]\\s*(.{3,350})", p, re.I | re.S)
+        web_query = re.fullmatch(r"(?:search(?: the)? web(?: for)?|look up online|google)\s*[: ]\s*(.{3,350})", p, re.I | re.S)
         if web_query:
             return await search_web(web_query.group(1).strip())
-        calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\\s*([0-9+*/().%^×÷−π√a-zA-Z,\\s-]{1,180})\\??", p, re.I)
-        if calc and re.search(r"\\d|[π√]", calc.group(1)) and re.match(r"\\s*(?:[+\\-(\\dπ√]|(?:sqrt|sin|cos|tan|log|ln|exp|abs|floor|ceil|factorial|degrees|radians)\\s*\\()", calc.group(1), re.I):
+        calc = re.fullmatch(r"(?:what is|calculate|solve|compute)?\s*([0-9+*/().%^×÷−π√a-zA-Z,\s-]{1,180})\??", p, re.I)
+        if calc and re.search(r"\d|[π√]", calc.group(1)) and re.match(r"\s*(?:[+\-(\dπ√]|(?:sqrt|sin|cos|tan|log|ln|exp|abs|floor|ceil|factorial|degrees|radians)\s*\()", calc.group(1), re.I):
             try:
                 return translate("result", locale, value=calculate(calc.group(1).strip()))
             except (ValueError, SyntaxError, ZeroDivisionError, OverflowError, TypeError):
