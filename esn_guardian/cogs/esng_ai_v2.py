@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import re
+import logging
+from contextvars import ContextVar
+
+from esn_guardian.esng_conversation import ESNGConversation
+
+LOG = logging.getLogger("esn_guardian.esng_ai")
+CURRENT_ESNG_USER: ContextVar[int] = ContextVar("current_esng_user", default=0)
 
 import discord
 from discord.ext import commands
@@ -18,6 +25,18 @@ MEMBER_RE = re.compile(
 
 class ESNGuardianAI2Cog(ESNGuardianAICog):
     """ESNG Intelligence v7 MAX: live multi-layer Guardian security reasoning."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        super().__init__(bot)
+        self.conversation = ESNGConversation()
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        token = CURRENT_ESNG_USER.set(message.author.id)
+        try:
+            await super().on_message(message)
+        finally:
+            CURRENT_ESNG_USER.reset(token)
 
     def _intel(self):
         return self.bot.get_cog("SecurityIntelligenceCog")
@@ -95,6 +114,23 @@ class ESNGuardianAI2Cog(ESNGuardianAICog):
         )
 
     async def _answer(self, guild: discord.Guild, prompt: str) -> str:
+        # Preserve deterministic Guardian answers; conversational prompts use
+        # the optional LLM backend and fall back when it is unavailable.
+        sensitive = (
+            "guardian", "security", "raid", "nuke", "sentinel", "risk",
+            "case #", "signal #", "verification", "panic", "moderation",
+            "backup", "esng version", "ai version", "v10 intelligence",
+        )
+        if self.conversation.enabled and not any(word in prompt.casefold() for word in sensitive):
+            try:
+                answer = await self.conversation.reply(guild.id, CURRENT_ESNG_USER.get(), prompt)
+                if answer:
+                    return answer
+            except Exception:
+                LOG.exception("ESNG LLM backend failed; falling back to verified answers")
+        return await self._verified_answer(guild, prompt)
+
+    async def _verified_answer(self, guild: discord.Guild, prompt: str) -> str:
         p = prompt.casefold().strip()
         intel = self._intel()
         overwatch = self._overwatch()
