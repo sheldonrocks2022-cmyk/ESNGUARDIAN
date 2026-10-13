@@ -19,7 +19,7 @@ CONSTANTS = {"pi":math.pi,"e":math.e,"tau":math.tau}
 
 def calculate(expression: str) -> int | float:
     expression = expression.strip().replace("×","*").replace("÷","/").replace("−","-").replace("π","pi").replace("√(","sqrt(").replace("^","**")
-    expression = re.sub(r"(?<=\\d)\\s*%", "/100", expression)
+    expression = re.sub(r"(?<=\d)\s*%", "/100", expression)
     if len(expression)>180: raise ValueError("Expression too long")
     tree = ast.parse(expression,mode="eval")
     nodes = list(ast.walk(tree))
@@ -84,8 +84,8 @@ async def search_web(query: str) -> str:
         parser.feed(html)
         if not parser.results: return "No public search results were available. Some websites block automated searches."
         lines=["Public web search results (titles and links; not independently verified):"]
-        for title,url in parser.results[:4]: lines.append(f"• {title}\\n{url}")
-        return "\\n".join(lines)[:1800]
+        for title,url in parser.results[:4]: lines.append(f"• {title}\n{url}")
+        return "\n".join(lines)[:1800]
     except (aiohttp.ClientError,TimeoutError,ValueError):
         return "Public web search is unavailable right now. Try again later."
 
