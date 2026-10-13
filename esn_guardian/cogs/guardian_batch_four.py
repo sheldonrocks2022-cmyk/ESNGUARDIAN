@@ -3,6 +3,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 from esn_guardian.owner_access import allowed,is_primary
+from esn_guardian.cogs.network_operations import luxury
 
 class GuardianBatchFour(commands.Cog):
     def __init__(self,bot): self.bot=bot
@@ -16,7 +17,7 @@ class GuardianBatchFour(commands.Cog):
     @commands.dm_only()
     async def broadcastmanage(self,ctx):
         if not await allowed(self.bot,ctx.author.id,"communications"):return
-        await ctx.reply("Use history, cancel, resend, acknowledge, or unacknowledged.",mention_author=False)
+        await ctx.reply(embed=luxury("BROADCAST CONTROL","Use `history`, `cancel`, `resend`, `acknowledge`, or `unacknowledged`."),mention_author=False)
 
     @broadcastmanage.command(name="history")
     async def history(self,ctx):
@@ -65,7 +66,7 @@ class GuardianBatchFour(commands.Cog):
 
     @commands.group(name="gmsgctl",invoke_without_command=True)
     @commands.dm_only()
-    async def gmsgctl(self,ctx):await ctx.reply("Use sent, unread, read, delete, mute, unmute, status, or blocked.",mention_author=False)
+    async def gmsgctl(self,ctx):await ctx.reply(embed=luxury("CONTACT MESSAGE CONTROL","Use `sent`, `unread`, `read`, `delete`, `mute`, `unmute`, `status`, or `blocked`."),mention_author=False)
     @gmsgctl.command(name="sent")
     async def sent(self,ctx):
         rows=await self.bot.database.fetchall("SELECT id,recipient_id,status,created_at FROM guardian_contact_messages WHERE sender_id=? ORDER BY id DESC LIMIT 10",(ctx.author.id,))
@@ -124,6 +125,6 @@ class GuardianBatchFour(commands.Cog):
         lines=[]
         for r in rows:
             g=self.bot.get_guild(int(r["guild_id"]));lines.append(f"{g.name if g else r['guild_id']} | {r['n']} authorized contact(s)")
-        await ctx.reply("GUARDIAN NETWORK DIRECTORY\n"+("\n".join(lines) if lines else "No enrolled contact servers."),mention_author=False)
+        await ctx.reply(embed=luxury("GUARDIAN NETWORK DIRECTORY","\n".join(lines) if lines else "No enrolled contact servers."),mention_author=False)
 
 async def setup(bot):await bot.add_cog(GuardianBatchFour(bot))
