@@ -1,10 +1,39 @@
 from __future__ import annotations
 import discord
-from discord.ext import commands
+from discord.ext import commands,tasks
 from esn_guardian.owner_access import LEVELS,allowed,ensure_owner_table,is_primary,owner_level
 
 class GuardianManagement(commands.Cog):
-    def __init__(self,bot): self.bot=bot
+    def __init__(self,bot):
+        self.bot=bot
+        self.owner_command_guide_loop.start()
+
+    def cog_unload(self):
+        self.owner_command_guide_loop.cancel()
+
+    def command_guide_text(self):
+        prefix=sorted({cmd.qualified_name for cmd in self.bot.walk_commands() if not cmd.hidden})
+        slash=sorted({cmd.qualified_name for cmd in self.bot.tree.walk_commands()})
+        return "PREFIX\n"+", ".join("!"+x for x in prefix)+"\n\nSLASH\n"+", ".join("/"+x for x in slash)
+
+    async def send_command_guide(self,user):
+        guide=self.command_guide_text()
+        for start in range(0,len(guide),3900):
+            await user.send(guide[start:start+3900],allowed_mentions=discord.AllowedMentions.none())
+
+    @tasks.loop(hours=2)
+    async def owner_command_guide_loop(self):
+        owner_id=getattr(self.bot.settings,"owner_id",None)
+        if owner_id is None:return
+        try:
+            owner=self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))
+            await self.send_command_guide(owner)
+        except discord.HTTPException:
+            pass
+
+    @owner_command_guide_loop.before_loop
+    async def before_owner_command_guide_loop(self):
+        await self.bot.wait_until_ready()
     async def cog_load(self):
         await ensure_owner_table(self.bot)
         for sql in (
@@ -59,9 +88,7 @@ class GuardianManagement(commands.Cog):
     @commands.dm_only()
     async def commandguide(self,ctx):
         if not await allowed(self.bot,ctx.author.id,"communications"):return
-        prefix=sorted({c.qualified_name for c in self.bot.walk_commands() if not c.hidden});slash=sorted({c.qualified_name for c in self.bot.tree.walk_commands()})
-        text="PREFIX\n"+", ".join("!"+x for x in prefix)+"\n\nSLASH\n"+", ".join("/"+x for x in slash)
-        for start in range(0,len(text),3900):await ctx.author.send(text[start:start+3900])
+        await self.send_command_guide(ctx.author)
 
     async def contacts(self,user_id):
         return await self.bot.database.fetchall("SELECT guild_id FROM guardian_contacts WHERE user_id=?",(user_id,))
