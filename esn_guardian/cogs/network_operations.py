@@ -51,33 +51,33 @@ class NetworkOperations(commands.Cog):
     @commands.cooldown(1,300,commands.BucketType.user)
     async def unbanrequest(self,ctx,*,reason:str):
         if await self.bot.database.global_ban_reason(ctx.author.id) is None:
-            return await ctx.reply("There is no active Guardian global ban for your account.",mention_author=False)
+            return await ctx.reply(embed=luxury("UNBAN REVIEW","There is no active Guardian global ban for your account.","warning"),mention_author=False)
         reason=reason.strip()
-        if not 20<=len(reason)<=1500:return await ctx.reply("Use `!unbanrequest <20-1500 character reason>`.",mention_author=False)
+        if not 20<=len(reason)<=1500:return await ctx.reply(embed=luxury("UNBAN REVIEW","Use `!unbanrequest <20-1500 character reason>`.","warning"),mention_author=False)
         old=await self.bot.database.fetchone("SELECT id FROM guardian_unban_reviews WHERE user_id=? AND status='pending'",(ctx.author.id,))
-        if old:return await ctx.reply(f"Review GUR-{int(old['id']):06d} is already pending.",mention_author=False)
+        if old:return await ctx.reply(embed=luxury("UNBAN REVIEW PENDING",f"`GUR-{int(old['id']):06d}` is already pending.","warning"),mention_author=False)
         await self.bot.database.execute("INSERT INTO guardian_unban_reviews(user_id,requester_id,reason) VALUES(?,?,?)",(ctx.author.id,ctx.author.id,reason))
         row=await self.bot.database.fetchone("SELECT id FROM guardian_unban_reviews WHERE user_id=? ORDER BY id DESC LIMIT 1",(ctx.author.id,))
         rid=int(row["id"]); owner=await self._owner_user()
         if owner:
             try:await owner.send(embed=luxury("GLOBAL UNBAN REVIEW",f"**Review:** `GUR-{rid:06d}`\n**User:** `{ctx.author.id}`\n**Reason:** {discord.utils.escape_mentions(reason)}","warning"))
             except discord.HTTPException:pass
-        await ctx.reply(f"Guardian review `GUR-{rid:06d}` submitted.",mention_author=False)
+        await ctx.reply(embed=luxury("UNBAN REVIEW SUBMITTED",f"`GUR-{rid:06d}` submitted.","success"),mention_author=False)
 
     @commands.command(name="unbanreview")
     @commands.dm_only()
     async def unbanreview(self,ctx,review_id:int,decision:str):
         if not self.primary(ctx.author.id):return
         decision=decision.casefold()
-        if decision not in {"approve","deny"}:return await ctx.reply("Use `!unbanreview <ID> approve|deny`.",mention_author=False)
+        if decision not in {"approve","deny"}:return await ctx.reply(embed=luxury("UNBAN REVIEW","Use `!unbanreview <ID> approve|deny`.","warning"),mention_author=False)
         row=await self.bot.database.fetchone("SELECT * FROM guardian_unban_reviews WHERE id=? AND status='pending'",(review_id,))
-        if row is None:return await ctx.reply("Pending review not found.",mention_author=False)
+        if row is None:return await ctx.reply(embed=luxury("UNBAN REVIEW NOT FOUND","Pending review not found.","warning"),mention_author=False)
         status="approved" if decision=="approve" else "denied"
         await self.bot.database.execute("UPDATE guardian_unban_reviews SET status=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?",(status,ctx.author.id,review_id))
         if decision=="approve":
             ok,failed=await self._apply_unban(int(row["user_id"]))
-            return await ctx.reply(f"GUR-{review_id:06d} approved. Unbanned in {ok} server(s); {failed} failed.",mention_author=False)
-        await ctx.reply(f"GUR-{review_id:06d} denied.",mention_author=False)
+            return await ctx.reply(embed=luxury("UNBAN REVIEW APPROVED",f"`GUR-{review_id:06d}` approved.\n**Unbanned:** {ok}\n**Failed:** {failed}","success"),mention_author=False)
+        await ctx.reply(embed=luxury("UNBAN REVIEW DENIED",f"`GUR-{review_id:06d}` denied.","warning"),mention_author=False)
 
     @commands.command(name="trust")
     @commands.dm_only()
