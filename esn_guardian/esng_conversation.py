@@ -17,6 +17,7 @@ from esn_guardian.esng_capabilities import calculate, search_web, read_public_pa
 from esn_guardian.esng_skills import answer_skill
 from esn_guardian.esng_extended import extended_skill
 from esn_guardian.esng_minilm import ESNGMiniLM
+from esn_guardian.esng_intelligence import ConversationContext, explain_python_error
 
 OPS = {
     ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
@@ -61,6 +62,7 @@ class ESNGConversation:
         self.locales: dict[tuple[int, int], str] = {}
         self.memory = MemoryStore()
         self.language_model = ESNGMiniLM()
+        self.ai_context = ConversationContext()
 
     @property
     def enabled(self) -> bool:
@@ -88,6 +90,7 @@ class ESNGConversation:
             return "Ask me a question, request a calculation, or tell me what you're working on."
         if re.search(r"\b(forget (this|our) (chat|conversation)|clear (my )?memory|reset conversation)\b", normalized) or any(phrase in normalized for phrase in RESET.get(locale, ())):
             history.clear()
+            self.ai_context.forget(key)
             return translate("reset", locale)
         if re.search(r"\b(what (did i|were we) (ask|talk|discuss)|what was my last question)\b", normalized):
             return translate("memory", locale, value=history[-1]) if history else translate("empty", locale)
@@ -97,6 +100,7 @@ class ESNGConversation:
         if normalized in ("memory off", "forget everything", "delete my notes"):
             self.memory.forget(guild_id, user_id)
             history.clear()
+            self.ai_context.forget(key)
             return "Persistent notes and consent deleted."
         if normalized in ("my notes", "memory status"):
             if not self.memory.enabled(guild_id, user_id):
@@ -107,6 +111,8 @@ class ESNGConversation:
         if note:
             return ("Note saved." if self.memory.remember(guild_id, user_id, note.group(1).lower(), note.group(2).strip()) else
                     "Notes require opt-in ('memory on') and allow up to 20 labeled entries.")
+        if normalized.startswith("explain error:"):
+            return explain_python_error(p[len("explain error:"):]) or "No recognized Python exception name was found."
         if normalized.startswith("check python:"):
             return analyze_python(p[len("check python:"):].strip())
         comparison = compare_options(p)
@@ -131,6 +137,9 @@ class ESNGConversation:
                     "Source research is extractive, not a general AI model.")
         if normalized in ('ai model', 'language model'):
             return self.language_model.reply('model status')
+        followup = self.ai_context.followup(key, p)
+        if followup is not None:
+            return followup
         skill_answer = extended_skill(p)
         if skill_answer is not None:
             return skill_answer
@@ -154,6 +163,7 @@ class ESNGConversation:
                 return "I couldn't calculate that safely. Try a supported expression."
         model_answer = self.language_model.reply(p)
         if model_answer is not None:
+            self.ai_context.remember(key, p, model_answer)
             return model_answer
         if is_greeting(p, locale):
             return translate("hello", locale)
