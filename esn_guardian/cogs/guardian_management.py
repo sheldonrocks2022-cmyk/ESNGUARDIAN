@@ -121,7 +121,6 @@ class GuardianManagement(commands.Cog):
         await luxury_reply(ctx,embed=luxury("GUARDIAN CONTACT MESSAGING",where+"`!gmessage send <USER_ID> <message>`\n`!gmessage inbox`\n`!gmessage reply <MESSAGE_ID> <message>`\n`!gmessage block <USER_ID>`\n`!gmessage unblock <USER_ID>`\n`!gmessage report <MESSAGE_ID> <reason>`"),mention_author=False)
     @gmessage.command(name="send")
     @commands.dm_only()
-    @commands.dm_only()
     @commands.cooldown(1,20,commands.BucketType.user)
     async def message_send(self,ctx,user_id:int,*,message:str):
         mine=await self.contacts(ctx.author.id);theirs=await self.contacts(user_id)
@@ -140,13 +139,11 @@ class GuardianManagement(commands.Cog):
         await luxury_reply(ctx,embed=luxury("MESSAGE DELIVERED",f"`GMSG-{mid:06d}` delivered successfully.","success"),mention_author=False)
     @gmessage.command(name="inbox")
     @commands.dm_only()
-    @commands.dm_only()
     async def message_inbox(self,ctx):
         rows=await self.bot.database.fetchall("SELECT id,sender_id,body,status FROM guardian_contact_messages WHERE recipient_id=? ORDER BY id DESC LIMIT 10",(ctx.author.id,))
         body="\n".join(f"GMSG-{r['id']:06d} from {r['sender_id']} [{r['status']}] {str(r['body'])[:100]}" for r in rows) or "No Guardian contact messages."
         await luxury_reply(ctx,embed=luxury("GUARDIAN MESSAGE INBOX",body),mention_author=False)
     @gmessage.command(name="reply")
-    @commands.dm_only()
     @commands.dm_only()
     async def message_reply(self,ctx,message_id:int,*,message:str):
         row=await self.bot.database.fetchone("SELECT sender_id FROM guardian_contact_messages WHERE id=? AND recipient_id=?",(message_id,ctx.author.id))
@@ -154,16 +151,13 @@ class GuardianManagement(commands.Cog):
         await ctx.invoke(self.message_send,user_id=int(row["sender_id"]),message=message)
     @gmessage.command(name="block")
     @commands.dm_only()
-    @commands.dm_only()
     async def block(self,ctx,user_id:int):
         await self.bot.database.execute("INSERT OR IGNORE INTO guardian_contact_blocks(owner_id,blocked_id) VALUES(?,?)",(ctx.author.id,user_id));await luxury_reply(ctx,embed=luxury("CONTACT BLOCKED",f"`{user_id}` can no longer message you through Guardian.","success"),mention_author=False)
     @gmessage.command(name="unblock")
     @commands.dm_only()
-    @commands.dm_only()
     async def unblock(self,ctx,user_id:int):
         await self.bot.database.execute("DELETE FROM guardian_contact_blocks WHERE owner_id=? AND blocked_id=?",(ctx.author.id,user_id));await luxury_reply(ctx,embed=luxury("CONTACT UNBLOCKED",f"`{user_id}` may message you through Guardian again.","success"),mention_author=False)
     @gmessage.command(name="report")
-    @commands.dm_only()
     @commands.dm_only()
     async def report(self,ctx,message_id:int,*,reason:str):
         row=await self.bot.database.fetchone("SELECT id FROM guardian_contact_messages WHERE id=? AND recipient_id=?",(message_id,ctx.author.id))
