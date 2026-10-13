@@ -18,7 +18,7 @@ def test_opt_in_isolation_and_erasure(tmp_path):
 
 
 def test_diagnostics_are_nonexecuting():
-    assert "Syntax" in analyze_python("def broken(:")
+    assert "syntax" in analyze_python("def broken(:")
     assert "Functions: 1" in analyze_python("def ok():\n    return 1")
     assert "ModuleNotFoundError" in diagnose("ModuleNotFoundError: No module named 'x'")
     assert "Comparison framework" in compare_options("compare Python vs JavaScript")
