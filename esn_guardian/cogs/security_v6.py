@@ -213,6 +213,8 @@ class ProtectionV6Cog(commands.Cog):
         self._previous_interaction_check: Callable[[discord.Interaction], Awaitable[bool]] | None = None
         self._failsafe_active = False
         self._last_watchdog_alert: dict[int, datetime] = {}
+        self._heal_inflight: set[tuple[int, str, int]] = set()
+        self._heal_recent: dict[tuple[int, str, int], datetime] = {}
 
     async def cog_load(self) -> None:
         statements = (
@@ -1075,6 +1077,36 @@ class ProtectionV6Cog(commands.Cog):
             self._failsafe_active = True
             return None
 
+    async def _heal_channel_once(self, channel: discord.abc.GuildChannel) -> None:
+        key = (channel.guild.id, "channel", channel.id)
+        now = datetime.now(UTC)
+        previous = self._heal_recent.get(key)
+        if key in self._heal_inflight or (
+            previous is not None and now - previous < timedelta(seconds=90)
+        ):
+            return
+        self._heal_inflight.add(key)
+        try:
+            await self._heal_channel(channel)
+        finally:
+            self._heal_recent[key] = datetime.now(UTC)
+            self._heal_inflight.discard(key)
+
+    async def _heal_role_once(self, role: discord.Role) -> None:
+        key = (role.guild.id, "role", role.id)
+        now = datetime.now(UTC)
+        previous = self._heal_recent.get(key)
+        if key in self._heal_inflight or (
+            previous is not None and now - previous < timedelta(seconds=90)
+        ):
+            return
+        self._heal_inflight.add(key)
+        try:
+            await self._heal_role(role)
+        finally:
+            self._heal_recent[key] = datetime.now(UTC)
+            self._heal_inflight.discard(key)
+
     async def _heal_channel(self, channel: discord.abc.GuildChannel) -> None:
         checkpoint = await self._latest_checkpoint(channel.guild.id)
         if checkpoint is None:
@@ -1609,7 +1641,7 @@ class ProtectionV6Cog(commands.Cog):
             return
         trusted = await self._trusted_actor(after.guild, actor)
         actor_score = self._actor_chain_score(after.guild.id, actor.id if actor else None)
-        if changed_permissions:
+        if changed_permissions and not trusted:
             await self._signal(
                 after.guild,
                 actor,
@@ -1620,7 +1652,7 @@ class ProtectionV6Cog(commands.Cog):
         config = await self._config(after.guild.id)
         if config is None or bool(config["auto_heal"]):
             if not trusted or actor_score >= ACTOR_CONTAIN_SCORE:
-                await self._enqueue(1, self._heal_channel, after)
+                await self._enqueue(1, self._heal_channel_once, after)
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role) -> None:
@@ -1683,7 +1715,7 @@ class ProtectionV6Cog(commands.Cog):
         if trusted and actor_score < ACTOR_CONTAIN_SCORE:
             await self._save_role_baseline(after)
             return
-        await self._enqueue(1, self._heal_role, after)
+        await self._enqueue(1, self._heal_role_once, after)
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
