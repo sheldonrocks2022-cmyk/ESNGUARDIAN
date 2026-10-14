@@ -66,8 +66,8 @@ class GuardianBot(commands.Bot):
         self.settings = settings
         self.database = Database(settings.database_path)
         self.started_at = datetime.now(UTC)
-        self._guild_commands_synced = False
-        self._global_commands_cleared = False
+        self._global_sync_task: asyncio.Task[None] | None = None
+        self._global_sync_succeeded = False
         self._backup_task: asyncio.Task[None] | None = None
         self._health_task: asyncio.Task[None] | None = None
         self._interaction_ack_tasks: set[asyncio.Task[None]] = set()
@@ -159,6 +159,7 @@ class GuardianBot(commands.Bot):
             await self.load_extension(extension)
         self._backup_task = asyncio.create_task(self._database_backup_loop(), name="guardian-database-backups")
         self._health_task = asyncio.create_task(self._runtime_health_loop(), name="guardian-runtime-health")
+        self._global_sync_task = asyncio.create_task(self._sync_global_commands(), name="guardian-global-command-sync")
 
     async def _database_backup_loop(self) -> None:
         try:
@@ -212,6 +213,11 @@ class GuardianBot(commands.Bot):
             LOG.exception("Guardian runtime health monitor stopped unexpectedly")
 
     async def close(self) -> None:
+        if self._global_sync_task is not None:
+            self._global_sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._global_sync_task
+            self._global_sync_task = None
         if self._health_task is not None:
             self._health_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -225,7 +231,56 @@ class GuardianBot(commands.Bot):
         await self.database.close()
         await super().close()
 
+    async def _alert_global_sync_failure(self, error: Exception) -> None:
+        owner_ids = set()
+        if self.settings.owner_id:
+            owner_ids.add(self.settings.owner_id)
+        try:
+            app = await self.application_info()
+            if app.owner:
+                owner_ids.add(app.owner.id)
+            if app.team:
+                owner_ids.update(member.id for member in app.team.members)
+        except discord.HTTPException:
+            LOG.exception("Could not resolve application owners for sync failure notification")
+        message = (
+            "⚠️ ESN Guardian global slash-command sync failed after 4 attempts. "
+            "Commands may be missing or outdated until a successful sync. "
+            f"Last error: {type(error).__name__}: {str(error)[:500]}"
+        )
+        for owner_id in owner_ids:
+            try:
+                owner = self.get_user(owner_id) or await self.fetch_user(owner_id)
+                await owner.send(message, allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                LOG.exception("Could not DM Guardian operator %s about command sync failure", owner_id)
+
+    async def _sync_global_commands(self) -> None:
+        # Global registration is the source of truth. Never clear it after guild
+        # sync: that previously removed all commands from global availability.
+        last_error: Exception | None = None
+        for attempt in range(4):
+            try:
+                synced = await self.tree.sync()
+            except discord.HTTPException as error:
+                last_error = error
+                LOG.warning("Global command sync attempt %s/4 failed: %s", attempt + 1, error)
+                if attempt < 3:
+                    await asyncio.sleep((5, 15, 30)[attempt])
+            except Exception as error:
+                last_error = error
+                LOG.exception("Unexpected global command sync failure (attempt %s/4)", attempt + 1)
+                if attempt < 3:
+                    await asyncio.sleep((5, 15, 30)[attempt])
+            else:
+                self._global_sync_succeeded = True
+                LOG.info("Global command sync succeeded: %s slash commands", len(synced))
+                return
+        if last_error is not None:
+            await self._alert_global_sync_failure(last_error)
+
     async def sync_guild_commands(self, guild: discord.Guild) -> list[app_commands.AppCommand]:
+        # Retained for explicit compatibility; normal startup uses global sync.
         self.tree.copy_global_to(guild=guild)
         return await self.tree.sync(guild=guild)
 
@@ -254,26 +309,6 @@ class GuardianBot(commands.Bot):
             LOG.exception("Could not record Guardian release as last-known-good")
         for guild in self.guilds:
             await self.database.ensure_guild(guild.id)
-        if not self._guild_commands_synced:
-            guild_sync_succeeded = True
-            for guild in self.guilds:
-                try:
-                    synced_commands = await self.sync_guild_commands(guild)
-                except discord.HTTPException:
-                    guild_sync_succeeded = False
-                    LOG.exception("Could not sync application commands for guild %s (%s)", guild.name, guild.id)
-                else:
-                    LOG.info("Synced %s application commands for guild %s (%s)", len(synced_commands), guild.name, guild.id)
-            self._guild_commands_synced = guild_sync_succeeded
-        if self._guild_commands_synced and not self._global_commands_cleared:
-            self.tree.clear_commands(guild=None)
-            try:
-                await self.tree.sync()
-            except discord.HTTPException:
-                LOG.exception("Could not clear legacy global application commands")
-            else:
-                self._global_commands_cleared = True
-                LOG.info("Cleared legacy global application commands")
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         await self.database.ensure_guild(guild.id)
@@ -281,13 +316,14 @@ class GuardianBot(commands.Bot):
             await guild.leave()
             return
 
-        # Give Discord a moment to populate guild/member state, then sync this
-        # installation immediately so its onboarding commands are available.
-        await asyncio.sleep(1)
-        try:
-            await self.sync_guild_commands(guild)
-        except discord.HTTPException:
-            LOG.exception("Could not sync Guardian onboarding commands for new guild %s (%s)", guild.name, guild.id)
+        # New servers inherit globally registered commands automatically.
+        # Do not create per-guild duplicates or override the global catalogue.
+        if not self._global_sync_succeeded and (
+            self._global_sync_task is None or self._global_sync_task.done()
+        ):
+            self._global_sync_task = asyncio.create_task(
+                self._sync_global_commands(), name="guardian-global-command-sync-retry"
+            )
 
         # Welcome the actual server owner with a branded, interactive onboarding
         # experience. This is separate from the Guardian operator deployment DM.
