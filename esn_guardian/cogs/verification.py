@@ -353,6 +353,21 @@ class VerificationCog(commands.Cog):
             )
             return
 
+        # MAX owns the automatic gate. Prevent a second manual panel from
+        # silently overwriting its live channel/role configuration.
+        max_config = await self.bot.database.fetchone(
+            "SELECT enabled, verification_v2 FROM guardian_max_config WHERE guild_id=?",
+            (interaction.guild.id,),
+        )
+        if max_config and bool(max_config["enabled"]) and bool(max_config["verification_v2"]):
+            await respond(
+                interaction,
+                "Verification v2 MAX is already managing this server. "
+                "Use `/guardianmax activate-verification` to repair or reuse its "
+                "automatic gate; manual setup would create a conflicting panel.",
+            )
+            return
+
         await defer_response(interaction)
         embed = set_protected_footer(
             discord.Embed(
