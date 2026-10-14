@@ -121,6 +121,7 @@ class SecurityCog(commands.Cog):
         self._raid_trigger_count: dict[int, int] = defaultdict(int)
         self._audit_access_warned_at: dict[int, datetime] = {}
         self._case_notice_last: dict[tuple[int, str, int], datetime] = {}
+        self._case_notice_locks: dict[tuple[int, str, int], asyncio.Lock] = defaultdict(asyncio.Lock)
         self._antinuke_warning_last: dict[tuple[int, int], datetime] = {}
         self._initialized_guilds: set[int] = set()
         self._message_policy_cache: dict[
@@ -447,28 +448,34 @@ class SecurityCog(commands.Cog):
             channel_id,
         )
 
-        # Keep every case in the database, but prevent event storms from flooding
-        # staff logs or the server owner's DMs.
+        # Record every case, but serialize notice decisions per incident type to
+        # prevent simultaneous listeners from flooding logs and owner DMs.
         target_id = target.id if target else 0
         notice_key = (guild.id, action, target_id)
         now = datetime.now(UTC)
         noisy = action.startswith(("ANTINUKE_", "V6_", "GUARDIAN_TAMPER", "AUTO_ROLLBACK_"))
-        cooldown = timedelta(seconds=45 if noisy else 8)
-        previous = self._case_notice_last.get(notice_key)
-        send_notice = previous is None or now - previous >= cooldown
+        cooldown = timedelta(seconds=120 if noisy else 15)
+        async with self._case_notice_locks[notice_key]:
+            previous = self._case_notice_last.get(notice_key)
+            send_notice = previous is None or now - previous >= cooldown
+            if send_notice:
+                self._case_notice_last[notice_key] = now
         if send_notice:
-            self._case_notice_last[notice_key] = now
             await log_event(
                 self.bot,
                 guild,
                 "security_log_channel_id",
                 f"Security: {action} | Case #{case_id}",
-                description=f"Target: {target.mention if target else 'N/A'}\nReason: {reason}",
+                description=f"Target: {target.mention if target else 'N/A'}\\nReason: {reason}",
                 color=discord.Color.red(),
             )
 
-        # Preliminary anti-nuke warnings belong in staff logs, not repeated owner DMs.
-        owner_dm_allowed = action not in {"ANTINUKE_ALERT", "ANTINUKE_UNATTRIBUTED"}
+        # Routine anti-nuke warnings and automatic recovery should remain in
+        # staff logs. Reserve owner DMs for actionable incidents.
+        owner_dm_allowed = (
+            action not in {"ANTINUKE_ALERT", "ANTINUKE_UNATTRIBUTED"}
+            and not action.startswith(("V6_AUTO_HEAL_", "AUTO_ROLLBACK_"))
+        )
         if send_notice and owner_dm_allowed and guild.owner is not None:
             target_text = f"{target} ({target.id})" if target else "N/A"
             try:
