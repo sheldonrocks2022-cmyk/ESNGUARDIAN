@@ -326,41 +326,50 @@ class CommunityCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     @app_commands.command(description="Show the ESN Guardian setup and command guide.")
-    @app_commands.describe(section="Choose a guide or browse the complete live command catalogue.")
+    @app_commands.describe(
+        section="Choose a detailed setup guide, or leave blank for all commands.",
+        page="Directory page number (starts at 1).",
+    )
     @app_commands.choices(section=[app_commands.Choice(name=name.title(), value=name) for name in HELP_GUIDES])
-    async def help(self, interaction: discord.Interaction, section: app_commands.Choice[str] | None = None) -> None:
+    async def help(
+        self,
+        interaction: discord.Interaction,
+        section: app_commands.Choice[str] | None = None,
+        page: app_commands.Range[int, 1, 100] = 1,
+    ) -> None:
         if section is not None:
             await respond(interaction, HELP_GUIDES[section.value])
             return
 
-        # Build the catalogue from registered commands rather than maintaining a
-        # stale handwritten list as new Guardian extensions are installed.
-        commands_by_name = sorted(
-            {
-                command.qualified_name: command
-                for command in self.bot.tree.walk_commands()
-                if isinstance(command, (app_commands.Command, app_commands.Group))
-            }.items()
-        )
-        if not commands_by_name:
+        # Inspect the live slash-command tree; this includes V8 extensions and
+        # nested subcommands without a second, drifting hardcoded catalogue.
+        entries: list[str] = []
+        for command in sorted(self.bot.tree.walk_commands(), key=lambda item: item.qualified_name):
+            if not isinstance(command, app_commands.Command):
+                continue
+            detail = str(command.description or "").strip()
+            entries.append(
+                f"`/{command.qualified_name}` — {detail[:90]}"
+                if detail else f"`/{command.qualified_name}`"
+            )
+        if not entries:
             await respond(interaction, HELP_GUIDES["setup"])
             return
 
-        lines = [
-            "**ESN Guardian V8 — Live Command Directory**",
-            f"**{len(commands_by_name)} registered commands and groups**",
-            "Use `/help section:<category>` for detailed setup guides.",
-            "The directory below is generated from Guardian's currently loaded commands.",
-        ]
-        for name, command in commands_by_name:
-            # Discord limits embed descriptions to 4096 characters.
-            detail = str(getattr(command, "description", "") or "").strip()
-            entry = f"`/{name}` — {detail[:85]}" if detail else f"`/{name}`"
-            if sum(len(line) + 1 for line in lines) + len(entry) > 3800:
-                lines.append("**More commands:** Type `/` in Discord to browse the rest.")
-                break
-            lines.append(entry)
-        await respond(interaction, "\\n".join(lines))
+        pages: list[list[str]] = [[]]
+        for entry in entries:
+            if pages[-1] and sum(len(line) + 1 for line in pages[-1]) + len(entry) > 3200:
+                pages.append([])
+            pages[-1].append(entry)
+        if page > len(pages):
+            await respond(interaction, f"Only {len(pages)} command directory page(s) exist. Try `/help page:1`.")
+            return
+        header = (
+            f"**ESN Guardian V8 — Live Command Directory**\\n"
+            f"**{len(entries)} registered slash commands • Page {page}/{len(pages)}**\\n"
+            "Use `/help page:<number>` for more or `/help section:<category>` for guides.\\n\\n"
+        )
+        await respond(interaction, header + "\\n".join(pages[page - 1]))
 
     async def _bedrock_ping(self, host: str, port: int) -> bytes:
         loop = asyncio.get_running_loop()
