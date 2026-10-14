@@ -3,7 +3,7 @@ name: Python Guardian deployment package
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, guardian-v8-luxury]
     paths:
       - "esn_guardian/**"
       - "main.py"
