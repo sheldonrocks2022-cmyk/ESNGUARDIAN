@@ -326,9 +326,41 @@ class CommunityCog(commands.Cog):
         await self.bot.wait_until_ready()
 
     @app_commands.command(description="Show the ESN Guardian setup and command guide.")
+    @app_commands.describe(section="Choose a guide or browse the complete live command catalogue.")
     @app_commands.choices(section=[app_commands.Choice(name=name.title(), value=name) for name in HELP_GUIDES])
     async def help(self, interaction: discord.Interaction, section: app_commands.Choice[str] | None = None) -> None:
-        await respond(interaction, HELP_GUIDES[section.value if section else "setup"])
+        if section is not None:
+            await respond(interaction, HELP_GUIDES[section.value])
+            return
+
+        # Build the catalogue from registered commands rather than maintaining a
+        # stale handwritten list as new Guardian extensions are installed.
+        commands_by_name = sorted(
+            {
+                command.qualified_name: command
+                for command in self.bot.tree.walk_commands()
+                if isinstance(command, (app_commands.Command, app_commands.Group))
+            }.items()
+        )
+        if not commands_by_name:
+            await respond(interaction, HELP_GUIDES["setup"])
+            return
+
+        lines = [
+            "**ESN Guardian V8 — Live Command Directory**",
+            f"**{len(commands_by_name)} registered commands and groups**",
+            "Use `/help section:<category>` for detailed setup guides.",
+            "The directory below is generated from Guardian's currently loaded commands.",
+        ]
+        for name, command in commands_by_name:
+            # Discord limits embed descriptions to 4096 characters.
+            detail = str(getattr(command, "description", "") or "").strip()
+            entry = f"`/{name}` — {detail[:85]}" if detail else f"`/{name}`"
+            if sum(len(line) + 1 for line in lines) + len(entry) > 3800:
+                lines.append("**More commands:** Type `/` in Discord to browse the rest.")
+                break
+            lines.append(entry)
+        await respond(interaction, "\\n".join(lines))
 
     async def _bedrock_ping(self, host: str, port: int) -> bytes:
         loop = asyncio.get_running_loop()
