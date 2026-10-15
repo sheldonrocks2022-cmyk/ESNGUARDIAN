@@ -26,7 +26,7 @@ class OwnerResearch(commands.Cog):
         q=parse_qs(urlparse(href).query).get("uddg")
         return unquote(q[0]) if q else href
     async def search(self, query, limit=8):
-        timeout=aiohttp.ClientTimeout(total=12)
+        timeout=aiohttp.ClientTimeout(total=6)
         async with aiohttp.ClientSession(timeout=timeout,headers={"User-Agent":UA}) as session:
             async with session.get(SEARCH_URL.format(quote_plus(query)),allow_redirects=True) as resp:
                 if resp.status!=200: raise RuntimeError(f"search HTTP {resp.status}")
@@ -41,7 +41,7 @@ class OwnerResearch(commands.Cog):
             if len(out)>=limit: break
         return out
     async def page_text(self, url):
-        timeout=aiohttp.ClientTimeout(total=8)
+        timeout=aiohttp.ClientTimeout(total=5)
         async with aiohttp.ClientSession(timeout=timeout,headers={"User-Agent":UA}) as session:
             async with session.get(url,allow_redirects=True) as resp:
                 if resp.status!=200 or "text/html" not in resp.headers.get("Content-Type",""): return ""
@@ -58,17 +58,29 @@ class OwnerResearch(commands.Cog):
         return command_embed(body[:4000],title=title)
     async def run(self,ctx,code,query,extra="",deep=False):
         if not self.owner(ctx): return
-        async with ctx.typing():
-            try:
-                rows=await self.search((query+" "+extra).strip(),10)
-                if deep and rows:
-                    texts=await asyncio.gather(*(self.page_text(r["url"]) for r in rows[:4]),return_exceptions=True)
-                    words=[w.casefold() for w in re.findall(r"[A-Za-z0-9_-]{4,}",query)][:8]
-                    for r,t in zip(rows,texts):
-                        if isinstance(t,str): r["snippet"]=(r["snippet"]+" "+next((sent for sent in re.split(r"(?<=[.!?])\\s+",t) if any(w in sent.casefold() for w in words)),""))[:350]
-                await ctx.reply(embed=self.embed_results(f"ESNG CODE {code} • WEB RESEARCH",query,rows,"Public web research • no external AI API"),mention_author=False)
-            except Exception:
-                await ctx.reply(embed=command_embed("Public-web research could not complete. The search source may be unavailable or rate-limiting Guardian; try again later.",title=f"ESNG CODE {code} • SEARCH UNAVAILABLE"),mention_author=False)
+        searching = command_embed(
+            f"**Query:** {discord.utils.escape_markdown(query)}\n\n🔎 Searching the public web now…\nGuardian will replace this panel with the results.",
+            title=f"ESNG CODE {code} • SEARCHING",
+        )
+        message = await ctx.reply(embed=searching, mention_author=False)
+        async def research():
+            rows=await self.search((query+" "+extra).strip(),10)
+            if deep and rows:
+                texts=await asyncio.gather(*(self.page_text(r["url"]) for r in rows[:4]),return_exceptions=True)
+                words=[w.casefold() for w in re.findall(r"[A-Za-z0-9_-]{4,}",query)][:8]
+                for r,t in zip(rows,texts):
+                    if isinstance(t,str): r["snippet"]=(r["snippet"]+" "+next((sent for sent in re.split(r"(?<=[.!?])\\s+",t) if any(w in sent.casefold() for w in words)),""))[:350]
+            return rows
+        try:
+            rows=await asyncio.wait_for(research(), timeout=18.0)
+            await message.edit(embed=self.embed_results(f"ESNG CODE {code} • WEB RESEARCH",query,rows,"Completed public-web research • no external AI API"))
+        except asyncio.TimeoutError:
+            await message.edit(embed=command_embed(
+                f"**Query:** {discord.utils.escape_markdown(query)}\n\nResearch hit Guardian's 20-second response window. Slow or blocked websites were abandoned. Try again or use a narrower query.",
+                title=f"ESNG CODE {code} • RESEARCH TIMEOUT",
+            ))
+        except Exception:
+            await message.edit(embed=command_embed("Public-web research could not complete. The search source may be unavailable or rate-limiting Guardian; try again later.",title=f"ESNG CODE {code} • SEARCH UNAVAILABLE"))
     @commands.group(name="esngresearch",invoke_without_command=True,hidden=True)
     async def esngresearch(self,ctx): pass
     @esngresearch.command(name="16")
