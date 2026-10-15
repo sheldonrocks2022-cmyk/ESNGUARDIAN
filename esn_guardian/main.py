@@ -330,7 +330,7 @@ class GuardianBot(commands.Bot):
         server_owner = guild.owner
         if server_owner is None:
             try:
-                server_owner = await guild.fetch_member(guild.owner_id)
+                server_owner = await self.fetch_user(guild.owner_id)
             except discord.HTTPException:
                 server_owner = None
         if server_owner is not None:
@@ -364,6 +364,8 @@ class GuardianBot(commands.Bot):
                 await server_owner.send(embed=owner_embed, view=welcome_view)
             except discord.HTTPException:
                 LOG.info("Server owner DM unavailable for Guardian onboarding in guild %s", guild.id)
+            except Exception:
+                LOG.exception("Unexpected Guardian owner onboarding failure in guild %s", guild.id)
 
         if self.settings.owner_id is None:
             return
