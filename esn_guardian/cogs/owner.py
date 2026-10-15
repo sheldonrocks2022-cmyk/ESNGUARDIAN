@@ -148,10 +148,16 @@ class OwnerCog(commands.Cog):
             return
 
         await defer_response(interaction)
+        await defer_response(interaction)
+        summary = await self.execute_globalban(target_id=target_id, reason=reason, actor_id=interaction.user.id, source_guild_id=interaction.guild_id, confidence=int(confidence), evidence_case_id=evidence_case_id)
+        await respond(interaction, summary)
+
+    async def execute_globalban(self, *, target_id: int, reason: str, actor_id: int, source_guild_id: int | None, confidence: int = 100, evidence_case_id: int | None = None) -> str:
+        """Shared enforcement used by /globalban and owner-confirmed prefix commands."""
         await self.bot.database.execute(
             "INSERT INTO global_bans (user_id, reason, banned_by_id) VALUES (?, ?, ?) "
             "ON CONFLICT(user_id) DO UPDATE SET reason = excluded.reason, banned_by_id = excluded.banned_by_id",
-            (target_id, reason, interaction.user.id),
+            (target_id, reason, actor_id),
         )
         self._global_bans[target_id] = reason
         banned = 0
@@ -203,7 +209,7 @@ class OwnerCog(commands.Cog):
                 try:
                     await v7._evidence(
                         guild.id,
-                        interaction.user.id,
+                        actor_id,
                         "GLOBAL_BAN_ENFORCEMENT",
                         target_id,
                         {
@@ -212,7 +218,7 @@ class OwnerCog(commands.Cog):
                             "failure_reason": failure_reason,
                             "confidence": int(confidence),
                             "evidence_case_id": evidence_case_id,
-                            "source_server_id": interaction.guild_id,
+                            "source_server_id": source_guild_id,
                             "source": "bot_owner_globalban",
                         },
                     )
@@ -228,15 +234,91 @@ class OwnerCog(commands.Cog):
         )
         user_notified = await self._notify_user_by_id(target_id, user_dm)
         evidence_text = f" • evidence case #{evidence_case_id}" if evidence_case_id is not None else ""
-        await respond(
-            interaction,
-            (
+        return (
                 f"Global ban saved for `{target_id}`. Confidence: {int(confidence)}%{evidence_text}.\n"
                 f"Enforcement: {banned} successful • {failed} failed.\n"
                 f"Server-owner notices: {owner_notified} delivered • {owner_notify_failed} failed.\n"
                 f"Banned-user notice: {'delivered' if user_notified else 'failed (DM unavailable or Discord API error)'}."
-            ),
-        )
+            )
+
+
+    @commands.group(name="esng", invoke_without_command=True)
+    async def esng(self, ctx: commands.Context) -> None:
+        if ctx.author.id != getattr(self.bot.settings, "owner_id", None):
+            return
+        await ctx.reply("Owner syntax: `!esng code 3 @user` or `!esng code 3 USER_ID`.", mention_author=False)
+
+    @esng.group(name="code", invoke_without_command=True)
+    async def esng_code(self, ctx: commands.Context) -> None:
+        if ctx.author.id == getattr(self.bot.settings, "owner_id", None):
+            await ctx.reply("Use `!esng code 3 @user` or `!esng code 3 USER_ID`.", mention_author=False)
+
+    @esng_code.command(name="3")
+    async def esng_code_three(self, ctx: commands.Context, target: str, *, reason: str = "Guardian owner global ban") -> None:
+        owner_id = getattr(self.bot.settings, "owner_id", None)
+        if owner_id is None or ctx.author.id != int(owner_id):
+            return
+        raw = target.strip()
+        if raw.startswith("<@") and raw.endswith(">"):
+            raw = raw[2:-1].lstrip("!")
+        if not raw.isdecimal() or int(raw) <= 0:
+            await ctx.reply("Provide a user mention or numeric Discord user ID.", mention_author=False)
+            return
+        target_id = int(raw)
+        if target_id in {int(owner_id), self.bot.user.id if self.bot.user else -1}:
+            await ctx.reply("Guardian cannot globally ban its owner or itself.", mention_author=False)
+            return
+        cog = self
+        class ConfirmBan(discord.ui.View):
+            def __init__(self) -> None:
+                super().__init__(timeout=60)
+                self.message: discord.Message | None = None
+                self.busy = False
+
+            async def interaction_check(self, interaction: discord.Interaction) -> bool:
+                if interaction.user.id != int(owner_id):
+                    await interaction.response.send_message("Only the configured Guardian owner can use this confirmation.", ephemeral=True)
+                    return False
+                return True
+
+            async def on_timeout(self) -> None:
+                for child in self.children:
+                    child.disabled = True
+                if self.message:
+                    try:
+                        await self.message.edit(view=self)
+                    except discord.HTTPException:
+                        pass
+
+            @discord.ui.button(label="Confirm Global Ban", style=discord.ButtonStyle.danger)
+            async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+                if self.busy:
+                    await interaction.response.send_message("Already processing.", ephemeral=True)
+                    return
+                self.busy = True
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                for child in self.children:
+                    child.disabled = True
+                try:
+                    await interaction.message.edit(view=self)
+                    summary = await cog.execute_globalban(target_id=target_id, reason=reason, actor_id=int(owner_id), source_guild_id=ctx.guild.id if ctx.guild else None)
+                    await interaction.followup.send(embed=command_embed(summary, title="Guardian Global Ban • Complete"), ephemeral=True)
+                except Exception:
+                    import logging
+                    logging.getLogger("esn_guardian").exception("Owner-confirmed global ban failed")
+                    await interaction.followup.send("Global ban failed or was interrupted. Check Guardian logs before retrying.", ephemeral=True)
+                self.stop()
+
+            @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+            async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+                for child in self.children:
+                    child.disabled = True
+                await interaction.response.edit_message(content="Guardian global ban cancelled. No ban executed.", view=self)
+                self.stop()
+
+        view = ConfirmBan()
+        embed = command_embed(f"**Target:** <@{target_id}> (`{target_id}`)\\n**Reason:** {discord.utils.escape_mentions(reason)[:800]}\\n**Scope:** Every connected Guardian server\\n\\n**No ban occurs until you confirm.**", title="ESN Guardian • Owner Global Ban Confirmation")
+        view.message = await ctx.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(description="Preview global ban coverage without banning anyone.")
     @owner_only()
