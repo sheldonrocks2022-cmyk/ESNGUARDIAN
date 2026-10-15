@@ -319,6 +319,36 @@ class OwnerCog(commands.Cog):
         embed = command_embed(f"**Target:** <@{target_id}> (`{target_id}`)\n**Reason:** {discord.utils.escape_mentions(reason)[:800]}\n**Scope:** Every connected Guardian server\n\n**No ban occurs until you confirm.**", title="ESN Guardian • Owner Global Ban Confirmation")
         view.message = await ctx.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
+    @app_commands.command(name="esng-codex", description="Open Guardian's private interactive Owner Code Codex.")
+    @owner_only()
+    async def esng_codex(self, interaction: discord.Interaction) -> None:
+        pages = [
+            ("ESNG OWNER CODEX • 1/3", "**1** Guardian Status — READ ONLY\n**2** Global Investigation — READ ONLY\n**3** Global Ban — CONFIRMATION REQUIRED\n**4** Global Unban — use audited /globalunban\n**5** Server Intel — READ ONLY"),
+            ("ESNG OWNER CODEX • 2/3", "**6** Emergency Lockdown — use existing audited protection controls\n**7** Release Lockdown — use /protection release\n**8** Evidence File — READ ONLY\n**9** Global Ban Preview — use /globalbanpreview\n**10** Network Pulse — READ ONLY"),
+            ("ESNG OWNER CODEX • 3/3", "**11** Command Repair — use /synccommands\n**12** Trust File — READ ONLY\n**13** Case Command Center — READ ONLY\n**14** Deployment Report — READ ONLY\n**15** Network Emergency View — READ ONLY"),
+        ]
+        owner_id = int(self.bot.settings.owner_id)
+        class CodexView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=180); self.page=0; self.refresh()
+            def refresh(self):
+                self.previous.disabled=self.page == 0; self.next.disabled=self.page == len(pages)-1
+            def make_embed(self):
+                title, body = pages[self.page]
+                return command_embed(body + "\n\n**Owner syntax:** `!esng code <number> [target]`", title=title)
+            async def interaction_check(self, i):
+                if i.user.id != owner_id:
+                    await i.response.send_message("This Owner Codex is private.", ephemeral=True); return False
+                return True
+            @discord.ui.button(label="Previous", emoji="◀️", style=discord.ButtonStyle.secondary)
+            async def previous(self, i, button):
+                self.page=max(0,self.page-1); self.refresh(); await i.response.edit_message(embed=self.make_embed(),view=self)
+            @discord.ui.button(label="Next", emoji="▶️", style=discord.ButtonStyle.primary)
+            async def next(self, i, button):
+                self.page=min(len(pages)-1,self.page+1); self.refresh(); await i.response.edit_message(embed=self.make_embed(),view=self)
+        view=CodexView()
+        await interaction.response.send_message(embed=view.make_embed(), view=view, ephemeral=True)
+
     @app_commands.command(description="Preview global ban coverage without banning anyone.")
     @owner_only()
     async def globalbanpreview(self, interaction: discord.Interaction, user_id: str) -> None:
