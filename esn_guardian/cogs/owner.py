@@ -387,16 +387,100 @@ class OwnerCog(commands.Cog):
     async def esng_code_30(self, ctx: commands.Context, *, query: str) -> None:
         await self._forward_research_code(ctx, 30, query)
 
+
+    def _owner_prefix(self, ctx: commands.Context) -> bool:
+        oid=getattr(self.bot.settings,"owner_id",None)
+        return oid is not None and ctx.author.id==int(oid)
+
+    def _target_id(self, raw: str) -> int | None:
+        raw=raw.strip()
+        if raw.startswith("<@") and raw.endswith(">"): raw=raw[2:-1].lstrip("!")
+        return int(raw) if raw.isdecimal() and int(raw)>0 else None
+
+    async def _appeal_restriction(self, uid: int):
+        return await self.bot.database.fetchone("SELECT blocked,cooldown_until,reason,updated_at FROM omega_appeal_restrictions WHERE user_id=?", (uid,))
+
+    @esng_code.command(name="31")
+    async def esng_code_31(self, ctx: commands.Context, target: str, *, reason: str="Repeated or abusive appeals") -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        await self.bot.database.execute("INSERT INTO omega_appeal_restrictions(user_id,blocked,cooldown_until,reason,updated_by) VALUES(?,1,NULL,?,?) ON CONFLICT(user_id) DO UPDATE SET blocked=1,cooldown_until=NULL,reason=excluded.reason,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP",(uid,reason[:1000],ctx.author.id))
+        await ctx.reply(embed=command_embed(f"**User:** <@{uid}> (`{uid}`)\n**Appeal access:** BLOCKED\n**Reason:** {discord.utils.escape_mentions(reason)[:1000]}",title="ESNG CODE 31 • APPEAL BAN"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
+    @esng_code.command(name="32")
+    async def esng_code_32(self, ctx: commands.Context, target: str) -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        await self.bot.database.execute("DELETE FROM omega_appeal_restrictions WHERE user_id=?",(uid,))
+        await ctx.reply(embed=command_embed(f"**User:** <@{uid}> (`{uid}`)\n**Appeal access:** RESTORED",title="ESNG CODE 32 • APPEAL UNBAN"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
+    @esng_code.command(name="33")
+    async def esng_code_33(self, ctx: commands.Context, target: str) -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        rr=await self._appeal_restriction(uid); pending=await self.bot.database.fetchone("SELECT id FROM omega_global_appeals WHERE user_id=? AND status='pending' ORDER BY id DESC LIMIT 1",(uid,))
+        state="ALLOWED"
+        if rr and int(rr["blocked"] or 0): state="BLOCKED"
+        elif rr and rr["cooldown_until"]: state=f"COOLDOWN UNTIL {rr['cooldown_until']} UTC"
+        await ctx.reply(embed=command_embed(f"**User:** <@{uid}> (`{uid}`)\n**Appeal access:** {state}\n**Pending appeal:** "+(f"#{pending['id']}" if pending else "None"),title="ESNG CODE 33 • APPEAL STATUS"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
+    @esng_code.command(name="34")
+    async def esng_code_34(self, ctx: commands.Context, appeal_id: int, *, reason: str) -> None:
+        if not self._owner_prefix(ctx): return
+        row=await self.bot.database.fetchone("SELECT user_id FROM omega_global_appeals WHERE id=? AND status='pending'",(appeal_id,))
+        if row is None: return await ctx.reply(embed=command_embed("That pending appeal was not found.",title="ESNG CODE 34 • REJECT APPEAL"),mention_author=False)
+        await self.bot.database.execute("UPDATE omega_global_appeals SET status='denied',reviewed_by=?,review_note=?,reviewed_at=CURRENT_TIMESTAMP WHERE id=?",(ctx.author.id,reason[:1000],appeal_id))
+        await self._notify_user_by_id(int(row["user_id"]),f"Your Guardian global-ban appeal #{appeal_id} was denied.\nReason: {reason[:1000]}")
+        await ctx.reply(embed=command_embed(f"**Appeal:** #{appeal_id}\n**Decision:** DENIED\n**Reason:** {discord.utils.escape_mentions(reason)[:1000]}",title="ESNG CODE 34 • APPEAL REJECTED"),mention_author=False)
+
+    @esng_code.command(name="35")
+    async def esng_code_35(self, ctx: commands.Context, target: str, hours: commands.Range[int,1,8760], *, reason: str="Owner appeal cooldown") -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        await self.bot.database.execute("INSERT INTO omega_appeal_restrictions(user_id,blocked,cooldown_until,reason,updated_by) VALUES(?,0,datetime('now', ?),?,?) ON CONFLICT(user_id) DO UPDATE SET blocked=0,cooldown_until=excluded.cooldown_until,reason=excluded.reason,updated_by=excluded.updated_by,updated_at=CURRENT_TIMESTAMP",(uid,f"+{int(hours)} hours",reason[:1000],ctx.author.id))
+        await ctx.reply(embed=command_embed(f"**User:** <@{uid}>\n**Cooldown:** {hours} hour(s)\n**Reason:** {discord.utils.escape_mentions(reason)[:1000]}",title="ESNG CODE 35 • APPEAL COOLDOWN"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
+    @esng_code.command(name="36")
+    async def esng_code_36(self, ctx: commands.Context, target: str) -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        ban=await self.bot.database.fetchone("SELECT reason FROM global_bans WHERE user_id=?",(uid,)); appeals=await self.bot.database.fetchone("SELECT COUNT(*) AS n FROM omega_global_appeals WHERE user_id=?",(uid,)); pending=await self.bot.database.fetchone("SELECT COUNT(*) AS n FROM omega_global_appeals WHERE user_id=? AND status='pending'",(uid,)); rr=await self._appeal_restriction(uid)
+        await ctx.reply(embed=command_embed(f"**User:** <@{uid}> (`{uid}`)\n**Global ban:** {'ACTIVE' if ban else 'None'}\n**Ban reason:** {discord.utils.escape_mentions(str(ban['reason']))[:600] if ban else '—'}\n**Appeals:** {appeals['n']} total • {pending['n']} pending\n**Appeal restriction:** {'BLOCKED' if rr and int(rr['blocked'] or 0) else 'Configured' if rr else 'None'}",title="ESNG CODE 36 • GUARDIAN USER FILE"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
+    @esng_code.command(name="37")
+    async def esng_code_37(self, ctx: commands.Context, target: str, *, reason: str) -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        cur=await self.bot.database.fetchone("SELECT user_id FROM global_bans WHERE user_id=?",(uid,))
+        if cur is None: return await ctx.reply(embed=command_embed("That user does not have an active Guardian global ban.",title="ESNG CODE 37 • REASON EDIT"),mention_author=False)
+        await self.bot.database.execute("UPDATE global_bans SET reason=? WHERE user_id=?",(reason[:1500],uid)); self._global_bans[uid]=reason[:1500]
+        await ctx.reply(embed=command_embed(f"**User:** <@{uid}>\n**New reason:** {discord.utils.escape_mentions(reason)[:1500]}",title="ESNG CODE 37 • BAN REASON UPDATED"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
+    @esng_code.command(name="38")
+    async def esng_code_38(self, ctx: commands.Context, target: str) -> None:
+        if not self._owner_prefix(ctx): return
+        uid=self._target_id(target)
+        if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
+        ban=await self.bot.database.fetchone("SELECT reason,banned_by_id FROM global_bans WHERE user_id=?",(uid,))
+        body=f"**User:** <@{uid}> (`{uid}`)\n**Global ban:** "+("ACTIVE\n**Reason:** "+discord.utils.escape_mentions(str(ban["reason"]))[:1200] if ban else "NOT ACTIVE")
+        await ctx.reply(embed=command_embed(body,title="ESNG CODE 38 • GLOBAL BAN STATUS"),mention_author=False,allowed_mentions=discord.AllowedMentions.none())
+
     @app_commands.command(name="esng-codex", description="Open Guardian's private interactive Owner Code Codex.")
     @owner_only()
     async def esng_codex(self, interaction: discord.Interaction) -> None:
         pages = [
-            ("ESNG OWNER CODEX • 1/6", "**1** Guardian Status — READ ONLY\n**2** Global Investigation — READ ONLY\n**3** Global Ban — CONFIRMATION REQUIRED\n**4** Global Unban — use audited /globalunban\n**5** Server Intel — READ ONLY"),
-            ("ESNG OWNER CODEX • 2/6", "**6** Emergency Lockdown — use existing audited protection controls\n**7** Release Lockdown — use /protection release\n**8** Evidence File — READ ONLY\n**9** Global Ban Preview — use /globalbanpreview\n**10** Network Pulse — READ ONLY"),
-            ("ESNG OWNER CODEX • 3/6", "**11** Command Repair — use /synccommands\n**12** Trust File — READ ONLY\n**13** Case Command Center — READ ONLY\n**14** Deployment Report — READ ONLY\n**15** Network Emergency View — READ ONLY"),
-            ("ESNG OWNER CODEX • 4/6", "**16** Web Hunter — public web search\n**17** Deep Research — multi-page research\n**18** Project Finder — projects, GitHub, docs, communities\n**19** GitHub Hunter — public repositories\n**20** News Scanner — recent web/news search"),
-            ("ESNG OWNER CODEX • 5/6", "**21** Error Hunter — errors, docs, issues and fixes\n**22** Documentation Hunter — official docs/guides\n**23** Price Hunter — public price/listing research\n**24** Website Intel — public website/SEO research\n**25** Competitor Scan — similar public projects"),
-            ("ESNG OWNER CODEX • 6/6", "**26** Resource Hunter — free/open-source resources\n**27** Source Check — supporting/contradicting sources\n**28** Update Scanner — releases and changelogs\n**29** Build Research — libraries and implementations\n**30** Research MAX — broad deep public-web research"),
+            ("ESNG OWNER CODEX • 1/9", "**1** Guardian Status — READ ONLY\n**2** Global Investigation — READ ONLY\n**3** Global Ban — CONFIRMATION REQUIRED\n**4** Global Unban — use audited /globalunban\n**5** Server Intel — READ ONLY"),
+            ("ESNG OWNER CODEX • 2/9", "**6** Emergency Lockdown — use existing audited protection controls\n**7** Release Lockdown — use /protection release\n**8** Evidence File — READ ONLY\n**9** Global Ban Preview — use /globalbanpreview\n**10** Network Pulse — READ ONLY"),
+            ("ESNG OWNER CODEX • 3/9", "**11** Command Repair — use /synccommands\n**12** Trust File — READ ONLY\n**13** Case Command Center — READ ONLY\n**14** Deployment Report — READ ONLY\n**15** Network Emergency View — READ ONLY"),
+            ("ESNG OWNER CODEX • 4/9", "**16** Web Hunter — public web search\n**17** Deep Research — multi-page research\n**18** Project Finder — projects, GitHub, docs, communities\n**19** GitHub Hunter — public repositories\n**20** News Scanner — recent web/news search"),
+            ("ESNG OWNER CODEX • 5/9", "**21** Error Hunter — errors, docs, issues and fixes\n**22** Documentation Hunter — official docs/guides\n**23** Price Hunter — public price/listing research\n**24** Website Intel — public website/SEO research\n**25** Competitor Scan — similar public projects"),
+            ("ESNG OWNER CODEX • 6/9", "**26** Resource Hunter — free/open-source resources\n**27** Source Check — supporting/contradicting sources\n**28** Update Scanner — releases and changelogs\n**29** Build Research — libraries and implementations\n**30** Research MAX — broad deep public-web research"),\n            ("ESNG OWNER CODEX • 7/9", "**31** Appeal Ban — block future appeals\n**32** Appeal Unban — restore appeal access\n**33** Appeal Status — restriction + pending state\n**34** Reject Appeal — deny a pending appeal\n**35** Appeal Cooldown — temporary appeal restriction"),\n            ("ESNG OWNER CODEX • 8/9", "**36** Guardian User File — ban + appeal overview\n**37** Global Ban Reason Edit — update stored reason\n**38** Global Ban Status — inspect active ban\n**39** Case Lock — RESERVED\n**40** Case Unlock — RESERVED"),\n            ("ESNG OWNER CODEX • 9/9", "**41** Case Priority — RESERVED\n**42** User Watch Flag — RESERVED\n**43** User Watch Remove — RESERVED\n**44** Enforcement History — RESERVED\n**45** Owner User Control — RESERVED"),
         ]
         owner_id = int(self.bot.settings.owner_id)
         class CodexView(discord.ui.View):
