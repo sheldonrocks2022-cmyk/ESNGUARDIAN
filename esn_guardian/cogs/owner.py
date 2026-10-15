@@ -319,13 +319,84 @@ class OwnerCog(commands.Cog):
         embed = command_embed(f"**Target:** <@{target_id}> (`{target_id}`)\n**Reason:** {discord.utils.escape_mentions(reason)[:800]}\n**Scope:** Every connected Guardian server\n\n**No ban occurs until you confirm.**", title="ESN Guardian • Owner Global Ban Confirmation")
         view.message = await ctx.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
+
+    async def _forward_research_code(self, ctx: commands.Context, number: int, query: str) -> None:
+        if ctx.author.id != int(getattr(self.bot.settings, "owner_id", 0) or 0): return
+        cog=self.bot.get_cog("OwnerResearch")
+        cmd=cog.esngresearch.get_command(str(number)) if cog else None
+        if cmd is None: return await ctx.reply("Guardian research engine is unavailable.",mention_author=False)
+        await ctx.invoke(cmd,query=query)
+
+    @esng_code.command(name="16")
+    async def esng_code_16(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 16, query)
+
+    @esng_code.command(name="17")
+    async def esng_code_17(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 17, query)
+
+    @esng_code.command(name="18")
+    async def esng_code_18(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 18, query)
+
+    @esng_code.command(name="19")
+    async def esng_code_19(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 19, query)
+
+    @esng_code.command(name="20")
+    async def esng_code_20(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 20, query)
+
+    @esng_code.command(name="21")
+    async def esng_code_21(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 21, query)
+
+    @esng_code.command(name="22")
+    async def esng_code_22(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 22, query)
+
+    @esng_code.command(name="23")
+    async def esng_code_23(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 23, query)
+
+    @esng_code.command(name="24")
+    async def esng_code_24(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 24, query)
+
+    @esng_code.command(name="25")
+    async def esng_code_25(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 25, query)
+
+    @esng_code.command(name="26")
+    async def esng_code_26(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 26, query)
+
+    @esng_code.command(name="27")
+    async def esng_code_27(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 27, query)
+
+    @esng_code.command(name="28")
+    async def esng_code_28(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 28, query)
+
+    @esng_code.command(name="29")
+    async def esng_code_29(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 29, query)
+
+    @esng_code.command(name="30")
+    async def esng_code_30(self, ctx: commands.Context, *, query: str) -> None:
+        await self._forward_research_code(ctx, 30, query)
+
     @app_commands.command(name="esng-codex", description="Open Guardian's private interactive Owner Code Codex.")
     @owner_only()
     async def esng_codex(self, interaction: discord.Interaction) -> None:
         pages = [
-            ("ESNG OWNER CODEX • 1/3", "**1** Guardian Status — READ ONLY\n**2** Global Investigation — READ ONLY\n**3** Global Ban — CONFIRMATION REQUIRED\n**4** Global Unban — use audited /globalunban\n**5** Server Intel — READ ONLY"),
-            ("ESNG OWNER CODEX • 2/3", "**6** Emergency Lockdown — use existing audited protection controls\n**7** Release Lockdown — use /protection release\n**8** Evidence File — READ ONLY\n**9** Global Ban Preview — use /globalbanpreview\n**10** Network Pulse — READ ONLY"),
-            ("ESNG OWNER CODEX • 3/3", "**11** Command Repair — use /synccommands\n**12** Trust File — READ ONLY\n**13** Case Command Center — READ ONLY\n**14** Deployment Report — READ ONLY\n**15** Network Emergency View — READ ONLY"),
+            ("ESNG OWNER CODEX • 1/6", "**1** Guardian Status — READ ONLY\n**2** Global Investigation — READ ONLY\n**3** Global Ban — CONFIRMATION REQUIRED\n**4** Global Unban — use audited /globalunban\n**5** Server Intel — READ ONLY"),
+            ("ESNG OWNER CODEX • 2/6", "**6** Emergency Lockdown — use existing audited protection controls\n**7** Release Lockdown — use /protection release\n**8** Evidence File — READ ONLY\n**9** Global Ban Preview — use /globalbanpreview\n**10** Network Pulse — READ ONLY"),
+            ("ESNG OWNER CODEX • 3/6", "**11** Command Repair — use /synccommands\n**12** Trust File — READ ONLY\n**13** Case Command Center — READ ONLY\n**14** Deployment Report — READ ONLY\n**15** Network Emergency View — READ ONLY"),
+            ("ESNG OWNER CODEX • 4/6", "**16** Web Hunter — public web search\n**17** Deep Research — multi-page research\n**18** Project Finder — projects, GitHub, docs, communities\n**19** GitHub Hunter — public repositories\n**20** News Scanner — recent web/news search"),
+            ("ESNG OWNER CODEX • 5/6", "**21** Error Hunter — errors, docs, issues and fixes\n**22** Documentation Hunter — official docs/guides\n**23** Price Hunter — public price/listing research\n**24** Website Intel — public website/SEO research\n**25** Competitor Scan — similar public projects"),
+            ("ESNG OWNER CODEX • 6/6", "**26** Resource Hunter — free/open-source resources\n**27** Source Check — supporting/contradicting sources\n**28** Update Scanner — releases and changelogs\n**29** Build Research — libraries and implementations\n**30** Research MAX — broad deep public-web research"),
         ]
         owner_id = int(self.bot.settings.owner_id)
         class CodexView(discord.ui.View):
