@@ -280,9 +280,15 @@ class GuardianBot(commands.Bot):
             await self._alert_global_sync_failure(last_error)
 
     async def sync_guild_commands(self, guild: discord.Guild) -> list[app_commands.AppCommand]:
-        # Retained for explicit compatibility; normal startup uses global sync.
-        self.tree.copy_global_to(guild=guild)
-        return await self.tree.sync(guild=guild)
+        # Guardian uses global commands as the single source of truth. Older V8
+        # builds copied the global catalogue into individual guilds, which makes
+        # Discord display duplicate commands (one global + one guild command).
+        # Clear only Guardian's stale guild-scoped registrations; never touch
+        # another application's commands.
+        self.tree.clear_commands(guild=guild)
+        cleared = await self.tree.sync(guild=guild)
+        LOG.info("Cleared stale guild-scoped Guardian commands in %s; global catalogue remains authoritative", guild.id)
+        return cleared
 
     async def on_socket_response(self, payload: dict[str, object]) -> None:
         if payload.get("t") != "INTERACTION_CREATE":
