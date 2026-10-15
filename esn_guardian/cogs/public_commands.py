@@ -5,6 +5,41 @@ import discord
 from discord.ext import commands
 from esn_guardian.luxury_ui import luxury_reply
 
+
+
+class Code3ConfirmView(discord.ui.View):
+    def __init__(self, bot, owner_id: int, target_id: int):
+        super().__init__(timeout=60)
+        self.bot, self.owner_id, self.target_id = bot, owner_id, target_id
+        self.completed = False
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("Only the configured Guardian bot owner can confirm this action.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirm Global Ban", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        if self.completed:
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+        self.completed = True
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(view=self)
+        owner_cog = self.bot.get_cog("OwnerCog")
+        if owner_cog is None:
+            return await interaction.followup.send("Guardian owner controls are unavailable.", ephemeral=True)
+        from esn_guardian.cogs.owner import OwnerCog
+        await OwnerCog.globalban.callback(owner_cog, interaction, str(self.target_id), "ESNG Code 3 global ban", 100, None)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        self.completed = True
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(content="ESNG Code 3 cancelled. No global ban was performed.", embed=None, view=self)
+        self.stop()
+
 class GuardianPublic(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -70,6 +105,33 @@ class GuardianPublic(commands.Cog):
         await luxury_reply(ctx, "OMEGA Operations", "Server-scoped controls and diagnostics.",
             fields=[("Read-only", "`!omega status` • `!omega scan` • `!omega report`", False),
                     ("Configuration", "`!omega policy` • `!omega alerts`", False)])
+
+
+    @esng.command(name="code")
+    async def code(self, ctx, code_number: int, target: str | None = None):
+        configured_owner = getattr(getattr(self.bot, "settings", None), "owner_id", None)
+        if configured_owner is None or ctx.author.id != int(configured_owner):
+            return await luxury_reply(ctx, "Owner Command Only", "This ESNG code is restricted to the configured Guardian bot owner.", level="danger")
+        if code_number != 3:
+            return await luxury_reply(ctx, "Unknown ESNG Code", "That is not an active ESNG code.", level="warning")
+        if not target:
+            return await luxury_reply(ctx, "ESNG Code 3", "Usage: \`!ESNG code 3 @user\` or \`!ESNG code 3 USER_ID\`.", level="warning")
+        raw = target.strip()
+        if raw.startswith("<@") and raw.endswith(">"):
+            raw = raw[2:-1].lstrip("!")
+        try:
+            target_id = int(raw)
+            if target_id <= 0: raise ValueError()
+        except ValueError:
+            return await luxury_reply(ctx, "Invalid Target", "Use a Discord user mention or numeric user ID.", level="danger")
+        if target_id == int(configured_owner) or (self.bot.user and target_id == self.bot.user.id):
+            return await luxury_reply(ctx, "Protected Target", "Guardian cannot globally ban its configured owner or itself.", level="danger")
+        view = Code3ConfirmView(self.bot, int(configured_owner), target_id)
+        embed = discord.Embed(title="ESNG CODE 3 • GLOBAL BAN CONFIRMATION",
+            description=f"**Target:** <@{target_id}> (\`{target_id}\`)\\n\\nThis uses Guardian's existing /globalban enforcement across every connected server. **Nothing happens until you confirm below.**",
+            color=discord.Color(0x0B3D91))
+        embed.set_footer(text="ESN GUARDIAN • OWNER COMMAND • CONFIRMATION REQUIRED")
+        await ctx.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none())
 
     @esng.command(name="lockdown")
     @commands.has_guild_permissions(administrator=True)
