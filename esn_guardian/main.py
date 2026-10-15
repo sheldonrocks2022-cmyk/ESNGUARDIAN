@@ -275,6 +275,16 @@ class GuardianBot(commands.Bot):
             else:
                 self._global_sync_succeeded = True
                 LOG.info("Global command sync succeeded: %s slash commands", len(synced))
+                # One-time/idempotent cleanup: remove stale guild-scoped copies
+                # left by older Guardian builds. Global commands remain intact.
+                for guild in self.guilds:
+                    try:
+                        self.tree.clear_commands(guild=guild)
+                        await self.tree.sync(guild=guild)
+                    except discord.HTTPException as cleanup_error:
+                        LOG.warning("Could not clear stale guild commands in %s: %s", guild.id, cleanup_error)
+                    except Exception:
+                        LOG.exception("Unexpected stale guild-command cleanup failure in %s", guild.id)
                 return
         if last_error is not None:
             await self._alert_global_sync_failure(last_error)
