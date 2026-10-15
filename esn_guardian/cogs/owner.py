@@ -317,7 +317,7 @@ class OwnerCog(commands.Cog):
                 self.stop()
 
         view = ConfirmBan()
-        embed = command_embed(f"**Target:** <@{target_id}> (`{target_id}`)\\n**Reason:** {discord.utils.escape_mentions(reason)[:800]}\\n**Scope:** Every connected Guardian server\\n\\n**No ban occurs until you confirm.**", title="ESN Guardian • Owner Global Ban Confirmation")
+        embed = command_embed(f"**Target:** <@{target_id}> (`{target_id}`)\n**Reason:** {discord.utils.escape_mentions(reason)[:800]}\n**Scope:** Every connected Guardian server\n\n**No ban occurs until you confirm.**", title="ESN Guardian • Owner Global Ban Confirmation")
         view.message = await ctx.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(description="Preview global ban coverage without banning anyone.")
