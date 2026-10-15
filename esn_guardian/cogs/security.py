@@ -470,27 +470,12 @@ class SecurityCog(commands.Cog):
                 color=discord.Color.red(),
             )
 
-        # Routine anti-nuke warnings and automatic recovery should remain in
-        # staff logs. Reserve owner DMs for actionable incidents.
-        owner_dm_allowed = (
-            action not in {"ANTINUKE_ALERT", "ANTINUKE_UNATTRIBUTED"}
-            and not action.startswith(("V6_AUTO_HEAL_", "AUTO_ROLLBACK_"))
-        )
-        if send_notice and owner_dm_allowed and guild.owner is not None:
-            target_text = f"{target} ({target.id})" if target else "N/A"
-            try:
-                await guild.owner.send(
-                    embed=security_case_embed(
-                        guild,
-                        case_id=case_id,
-                        action=action,
-                        target_text=target_text,
-                        reason=reason,
-                    ),
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-            except discord.HTTPException:
-                pass
+        # Per-server security events belong in the configured Guardian security
+        # log channel only. Do not DM the protected server owner for routine or
+        # automatic security cases. Global-ban notices, network broadcasts,
+        # Guardian Contact/Owner Inbox, appeals, onboarding, and bot-owner
+        # administrative notifications use separate communication paths and
+        # are intentionally unaffected by this policy.
         return case_id
 
     async def _audit_executor(self, guild: discord.Guild, action: discord.AuditLogAction, target_id: int) -> discord.User | discord.Member | None:
