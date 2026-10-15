@@ -25,6 +25,8 @@ def brand(guild: discord.Guild, title: str, body: str) -> discord.Embed:
 
 
 async def reply(interaction: discord.Interaction, title: str, body: str, *, view: discord.ui.View | None = None) -> None:
+    if interaction.guild is None:
+        return
     kwargs = {"embed": brand(interaction.guild, title, body), "ephemeral": True}
     if view is not None:
         kwargs["view"] = view
@@ -118,6 +120,8 @@ class GuardianExperience(commands.Cog):
         }
 
     async def send_welcome(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or interaction.guild_id is None:
+            return
         state = await self.setup_state(interaction.guild_id)
         ready = sum(state.values())
         body = (
@@ -129,6 +133,8 @@ class GuardianExperience(commands.Cog):
         await reply(interaction, "WELCOME TO GUARDIAN", body, view=WelcomeView(self))
 
     async def send_setup_journey(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None or interaction.guild_id is None:
+            return
         if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
             await reply(interaction, "SETUP JOURNEY", "You need **Manage Server** to use Guardian's setup journey.")
             return
@@ -183,12 +189,16 @@ class GuardianExperience(commands.Cog):
     @app_commands.command(name="guardian-welcome", description="Open this server's interactive Guardian V8 Luxury welcome.")
     @guild_only()
     async def guardian_welcome(self, interaction: discord.Interaction) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
         await self.send_welcome(interaction)
 
     @app_commands.command(name="guardian-setup", description="Open Guardian's guided server setup journey.")
     @guild_only()
     @staff_only()
     async def guardian_setup(self, interaction: discord.Interaction) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True, thinking=True)
         await self.send_setup_journey(interaction)
 
     @app_commands.command(name="guardian-wrapped", description="Generate this server's Guardian monthly or yearly recap.")
