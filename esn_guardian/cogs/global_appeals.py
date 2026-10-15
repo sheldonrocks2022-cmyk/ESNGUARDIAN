@@ -4,6 +4,8 @@ import asyncio
 import discord
 from discord.ext import commands
 
+from esn_guardian.cogs.common import command_embed
+
 class GlobalAppeals(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -21,6 +23,15 @@ class GlobalAppeals(commands.Cog):
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               reviewed_at TEXT
             )""")
+        await self.bot.database.execute("""
+            CREATE TABLE IF NOT EXISTS omega_appeal_restrictions (
+              user_id INTEGER PRIMARY KEY,
+              blocked INTEGER NOT NULL DEFAULT 0,
+              cooldown_until TEXT,
+              reason TEXT,
+              updated_by INTEGER NOT NULL,
+              updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )""")
 
     def is_owner(self, user_id):
         owner = getattr(self.bot.settings, "owner_id", None)
@@ -31,29 +42,34 @@ class GlobalAppeals(commands.Cog):
     @commands.cooldown(1, 120, commands.BucketType.user)
     async def appeal(self, ctx, *, statement: str = ""):
         if not 20 <= len(statement.strip()) <= 1500:
-            return await ctx.reply("DM me: `!appeal <20-1500 character explanation>`.", mention_author=False)
+            return await ctx.reply(embed=command_embed("Submit a private explanation between **20 and 1500 characters**.\n\n`!appeal <your explanation>`", title="GUARDIAN APPEALS • SUBMISSION"), mention_author=False)
         if await self.bot.database.global_ban_reason(ctx.author.id) is None:
-            return await ctx.reply("There is no active Guardian global ban for your account.", mention_author=False)
+            return await ctx.reply(embed=command_embed("There is no active Guardian global ban for your account.", title="GUARDIAN APPEALS • NOT ELIGIBLE"), mention_author=False)
+        restriction = await self.bot.database.fetchone("SELECT blocked,cooldown_until,reason FROM omega_appeal_restrictions WHERE user_id=?", (ctx.author.id,))
+        if restriction and int(restriction["blocked"] or 0):
+            return await ctx.reply(embed=command_embed("Your access to the Guardian appeal system has been restricted by the bot owner.\n\n**Reason:** "+discord.utils.escape_mentions(str(restriction["reason"] or "Not provided"))[:1000], title="GUARDIAN APPEALS • ACCESS RESTRICTED"), mention_author=False)
+        if restriction and restriction["cooldown_until"]:
+            active = await self.bot.database.fetchone("SELECT CASE WHEN datetime(?) > CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS active", (restriction["cooldown_until"],))
+            if active and int(active["active"]):
+                return await ctx.reply(embed=command_embed(f"You cannot submit another appeal until **{restriction['cooldown_until']} UTC**.\n\n**Reason:** {discord.utils.escape_mentions(str(restriction['reason'] or 'Owner cooldown'))[:1000]}", title="GUARDIAN APPEALS • COOLDOWN"), mention_author=False)
         async with self.lock:
             existing = await self.bot.database.fetchone(
                 "SELECT id FROM omega_global_appeals WHERE user_id=? AND status='pending'",
                 (ctx.author.id,))
             if existing:
-                return await ctx.reply("You already have a pending appeal.", mention_author=False)
+                return await ctx.reply(embed=command_embed("You already have an appeal waiting for bot-owner review.", title="GUARDIAN APPEALS • ALREADY PENDING"), mention_author=False)
             await self.bot.database.execute(
                 "INSERT INTO omega_global_appeals (user_id, statement) VALUES (?,?)",
                 (ctx.author.id, statement.strip()))
             row = await self.bot.database.fetchone(
                 "SELECT id FROM omega_global_appeals WHERE user_id=? ORDER BY id DESC LIMIT 1",
                 (ctx.author.id,))
-        await ctx.reply(f"Your private appeal #{row['id']} has been submitted for bot-owner review.", mention_author=False)
+        await ctx.reply(embed=command_embed(f"**Appeal:** #{row['id']}\n**Status:** Pending owner review\n**Privacy:** Private — not broadcast to servers", title="GUARDIAN APPEALS • SUBMITTED"), mention_author=False)
         owner_id = self.bot.settings.owner_id
         if owner_id:
             try:
                 owner = self.bot.get_user(owner_id) or await self.bot.fetch_user(owner_id)
-                await owner.send(f"Guardian global-ban appeal #{row['id']} from user `{ctx.author.id}`. "
-                                 f"DM Guardian `!appeals` to review. No appeal text is broadcast.",
-                                 allowed_mentions=discord.AllowedMentions.none())
+                await owner.send(embed=command_embed(f"**Appeal:** #{row['id']}\n**User:** {ctx.author} (`{ctx.author.id}`)\n**Status:** Pending\n\nDM Guardian with `!appeals` to review.", title="GUARDIAN APPEALS • NEW CASE"), allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:
                 pass
 
@@ -65,12 +81,9 @@ class GlobalAppeals(commands.Cog):
         rows = await self.bot.database.fetchall(
             "SELECT id,user_id,statement FROM omega_global_appeals WHERE status='pending' ORDER BY id LIMIT 10")
         if not rows:
-            return await ctx.reply("No pending global-ban appeals.", mention_author=False)
+            return await ctx.reply(embed=command_embed("There are currently no pending global-ban appeals.", title="GUARDIAN APPEALS • OWNER QUEUE"), mention_author=False)
         for row in rows:
-            await ctx.author.send(f"**Appeal #{row['id']}** — User `{row['user_id']}`\n"
-                                  f"{discord.utils.escape_mentions(str(row['statement']))[:1500]}\n"
-                                  f"Review: `!appealreview {row['id']} approve|deny reason`",
-                                  allowed_mentions=discord.AllowedMentions.none())
+            await ctx.author.send(embed=command_embed(f"**Appeal:** #{row['id']}\n**User:** `{row['user_id']}`\n\n**Statement**\n{discord.utils.escape_mentions(str(row['statement']))[:1500]}\n\n**Review**\n`!appealreview {row['id']} approve|deny <reason>`", title="GUARDIAN APPEALS • OWNER REVIEW"), allowed_mentions=discord.AllowedMentions.none())
 
     @commands.command(name="globalbanlist", aliases=["bannedusers"])
     @commands.dm_only()
@@ -127,14 +140,10 @@ class GlobalAppeals(commands.Cog):
                 (status,ctx.author.id,note[:1000],appeal_id))
         try:
             user = self.bot.get_user(target_id) or await self.bot.fetch_user(target_id)
-            await user.send(f"Guardian global-ban appeal #{appeal_id}: {status.replace('_',' ')}.\n"
-                            f"Owner note: {discord.utils.escape_mentions(note[:1000])}",
-                            allowed_mentions=discord.AllowedMentions.none())
+            await user.send(embed=command_embed(f"**Appeal:** #{appeal_id}\n**Decision:** {status.replace('_',' ').upper()}\n**Owner note:** {discord.utils.escape_mentions(note[:1000])}", title="GUARDIAN APPEALS • DECISION"), allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException:
             pass
-        await ctx.reply(f"Appeal #{appeal_id}: {status}. "
-                        + ("Run `/globalunban` to actually lift the ban." if status.startswith("approved") else ""),
-                        mention_author=False)
+        await ctx.reply(embed=command_embed(f"**Appeal:** #{appeal_id}\n**Decision:** {status.replace('_',' ').upper()}\n" + ("Use `/globalunban` to perform the audited unban." if status.startswith("approved") else "Decision saved and the user was notified when possible."), title="GUARDIAN APPEALS • REVIEW COMPLETE"), mention_author=False)
 
 async def setup(bot):
     await bot.add_cog(GlobalAppeals(bot))
