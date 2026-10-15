@@ -437,7 +437,7 @@ class OwnerCog(commands.Cog):
         await ctx.reply(embed=command_embed(f"**Appeal:** #{appeal_id}\n**Decision:** DENIED\n**Reason:** {discord.utils.escape_mentions(reason)[:1000]}",title="ESNG CODE 34 • APPEAL REJECTED"),mention_author=False)
 
     @esng_code.command(name="35")
-    async def esng_code_35(self, ctx: commands.Context, target: str, hours: commands.Range[int,1,8760], *, reason: str="Owner appeal cooldown") -> None:
+    async def esng_code_35(self, ctx: commands.Context, target: str, hours: int, *, reason: str="Owner appeal cooldown") -> None:
         if not self._owner_prefix(ctx): return
         uid=self._target_id(target)
         if uid is None: return await ctx.reply("Provide a user mention or numeric Discord user ID.",mention_author=False)
