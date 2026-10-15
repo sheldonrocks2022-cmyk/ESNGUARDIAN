@@ -148,7 +148,6 @@ class OwnerCog(commands.Cog):
             return
 
         await defer_response(interaction)
-        await defer_response(interaction)
         summary = await self.execute_globalban(target_id=target_id, reason=reason, actor_id=interaction.user.id, source_guild_id=interaction.guild_id, confidence=int(confidence), evidence_case_id=evidence_case_id)
         await respond(interaction, summary)
 
