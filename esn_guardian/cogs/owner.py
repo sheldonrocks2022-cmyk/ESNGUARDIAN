@@ -4,7 +4,7 @@ import io
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from esn_guardian.cogs.common import command_embed, notify_user, respond, defer_response
 
@@ -24,9 +24,9 @@ def owner_only() -> app_commands.check:
 class OwnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._global_bans: dict[int, str] = {}
+        self._global_bans: dict[int, str] = {}\n        self.owner_guide_reminder.start()
 
-    async def cog_load(self) -> None:
+    def cog_unload(self) -> None:\n        self.owner_guide_reminder.cancel()\n\n    @tasks.loop(hours=2)\n    async def owner_guide_reminder(self) -> None:\n        owner_id=getattr(self.bot.settings, 'owner_id', None)\n        if owner_id is None: return\n        try:\n            owner=self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))\n            await owner.send(embed=command_embed('Owner commands: `/esng-codex` • `!ESNG code <number> ...` • `!broadcast create normal <message>` • `!broadcast create important <message>`\\n\\nOperations: `/globalban` • `/globalunban` • `/globalbanpreview` • `/botstats` • `/servers` • `/synccommands` • `/maintenance` • `/blacklist` • `/unblacklist`\\n\\nUse `/help` for the live slash-command directory.', title='ESN Guardian • Owner Command Guide'), allowed_mentions=discord.AllowedMentions.none())\n        except (discord.Forbidden, discord.HTTPException): pass\n\n    @owner_guide_reminder.before_loop\n    async def before_owner_guide_reminder(self) -> None:\n        await self.bot.wait_until_ready()\n\n    async def cog_load(self) -> None:
         rows = await self.bot.database.fetchall(
             "SELECT user_id, reason FROM global_bans"
         )
@@ -538,8 +538,8 @@ class OwnerCog(commands.Cog):
             ("ESNG OWNER CODEX • 5/9", "**21** Error Hunter — errors, docs, issues and fixes\n**22** Documentation Hunter — official docs/guides\n**23** Price Hunter — public price/listing research\n**24** Website Intel — public website/SEO research\n**25** Competitor Scan — similar public projects"),
             ("ESNG OWNER CODEX • 6/9", "**26** Resource Hunter — free/open-source resources\n**27** Source Check — supporting/contradicting sources\n**28** Update Scanner — releases and changelogs\n**29** Build Research — libraries and implementations\n**30** Research MAX — broad deep public-web research"),
             ("ESNG OWNER CODEX • 7/9", "**31** Appeal Ban — block future appeals\n**32** Appeal Unban — restore appeal access\n**33** Appeal Status — restriction + pending state\n**34** Reject Appeal — deny a pending appeal\n**35** Appeal Cooldown — temporary appeal restriction"),
-            ("ESNG OWNER CODEX • 8/9", "**36** Guardian User File — ban + appeal overview\n**37** Global Ban Reason Edit — update stored reason\n**38** Global Ban Status — inspect active ban\n**39** Case Lock — RESERVED\n**40** Case Unlock — RESERVED"),
-            ("ESNG OWNER CODEX • 9/9", "**41** Case Priority — RESERVED\n**42** User Watch Flag — RESERVED\n**43** User Watch Remove — RESERVED\n**44** Enforcement History — RESERVED\n**45** Owner User Control — RESERVED"),
+            ("ESNG OWNER CODEX • 8/9", "**36** Guardian User File — ban + appeal overview\n**37** Global Ban Reason Edit — update stored reason\n**38** Global Ban Status — inspect active ban\n**39** Shadow restriction\n**40** Remove shadow restriction"),
+            ("ESNG OWNER CODEX • 9/9", "**41** Add strike\n**42** Forgive strike\n**43** Permanent owner record\n**44** Temporary clearance\n**45** Revoke clearance\n**46** Summon server owner\n**47** Network mute\n**48** Network unmute\n**49** Hold requests\n**50** Release hold\n**51** Owner alert\n**52** Clear alert\n**53** Expiring restriction\n**54** Guardian pardon\n**55** Transfer assignment\n**56** Owner takeover\n**57** Summon staff\n**58** Deadline\n**59** Override review\n**60** GODFILE — primary owner only"),
         ]
         owner_id = int(self.bot.settings.owner_id)
         class CodexView(discord.ui.View):
@@ -642,7 +642,7 @@ class OwnerCog(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             return
 
-    @app_commands.command(description="Send an announcement to configured system log channels.")
+    @commands.group(name='broadcast', invoke_without_command=True)\n    async def broadcast_prefix(self, ctx: commands.Context) -> None:\n        if ctx.author.id != int(getattr(self.bot.settings, 'owner_id', 0) or 0): return\n        await ctx.reply('Use `!broadcast create normal <message>` or `!broadcast create important <message>`.', mention_author=False)\n\n    @broadcast_prefix.command(name='create')\n    async def broadcast_create(self, ctx: commands.Context, priority: str, *, message: str) -> None:\n        if ctx.author.id != int(getattr(self.bot.settings, 'owner_id', 0) or 0): return\n        priority=priority.lower().strip()\n        if priority not in {'normal','important'}: return await ctx.reply('Priority must be `normal` or `important`.', mention_author=False)\n        title='ESN GUARDIAN • IMPORTANT BROADCAST' if priority=='important' else 'ESN GUARDIAN • NETWORK BROADCAST'\n        embed=command_embed(discord.utils.escape_mentions(message)[:3900], title=title)\n        seen=set(); dm_ok=dm_fail=channel_ok=0\n        for guild in list(self.bot.guilds):\n            recipients=[]\n            if guild.owner: recipients.append(guild.owner)\n            recipients.extend(x for x in guild.members if not x.bot and x.guild_permissions.administrator)\n            for member in recipients:\n                if member.id in seen: continue\n                seen.add(member.id)\n                try: await member.send(embed=embed, allowed_mentions=discord.AllowedMentions.none()); dm_ok+=1\n                except (discord.Forbidden, discord.HTTPException): dm_fail+=1\n            try:\n                settings=await self.bot.database.setting(guild.id); ids=[]\n                for key in ('system_log_channel_id','command_log_channel_id'):\n                    cid=settings[key] if key in settings.keys() else None\n                    if cid and cid not in ids: ids.append(cid)\n                for cid in ids:\n                    channel=guild.get_channel(cid)\n                    if isinstance(channel, discord.TextChannel):\n                        try: await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none()); channel_ok+=1\n                        except discord.HTTPException: pass\n            except Exception: pass\n        await ctx.reply(embed=command_embed(f'Priority: **{priority.upper()}**\\nOwner/admin DMs: **{dm_ok}** delivered • **{dm_fail}** unavailable\\nConfigured channels: **{channel_ok}** delivered\\nServers scanned: **{len(self.bot.guilds)}**', title='Guardian Broadcast • Complete'), mention_author=False)\n\n    @app_commands.command(description="Send an announcement to configured system log channels.")
     @owner_only()
     async def broadcast(self, interaction: discord.Interaction, message: str) -> None:
         await defer_response(interaction)
