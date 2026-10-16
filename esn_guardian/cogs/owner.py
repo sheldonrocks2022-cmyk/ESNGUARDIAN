@@ -320,6 +320,62 @@ class OwnerCog(commands.Cog):
         view.message = await ctx.reply(embed=embed, view=view, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
 
+    async def _forward_advanced_code(self, ctx: commands.Context, number: int, *args: str) -> None:
+        if ctx.author.id != int(getattr(self.bot.settings, "owner_id", 0) or 0):
+            return
+        cog = self.bot.get_cog("OwnerCodesAdvanced")
+        group = getattr(cog, "esngx", None) if cog else None
+        cmd = group.get_command(str(number)) if group else None
+        if cmd is None:
+            return await ctx.reply("Guardian advanced owner controls are unavailable.", mention_author=False)
+        await ctx.invoke(cmd, *args)
+
+    @esng_code.command(name="39")
+    async def esng_code_39(self, ctx, target: str, *, reason: str = "Owner shadow restriction"): await self._forward_advanced_code(ctx,39,target,reason)
+    @esng_code.command(name="40")
+    async def esng_code_40(self, ctx, target: str): await self._forward_advanced_code(ctx,40,target)
+    @esng_code.command(name="41")
+    async def esng_code_41(self, ctx, target: str, *, reason: str): await self._forward_advanced_code(ctx,41,target,reason)
+    @esng_code.command(name="42")
+    async def esng_code_42(self, ctx, strike_id: int): await self._forward_advanced_code(ctx,42,str(strike_id))
+    @esng_code.command(name="43")
+    async def esng_code_43(self, ctx, target: str, *, note: str): await self._forward_advanced_code(ctx,43,target,note)
+    @esng_code.command(name="44")
+    async def esng_code_44(self, ctx, target: str, scope: str, minutes: int = 30): await self._forward_advanced_code(ctx,44,target,scope,str(minutes))
+    @esng_code.command(name="45")
+    async def esng_code_45(self, ctx, clearance_id: int): await self._forward_advanced_code(ctx,45,str(clearance_id))
+    @esng_code.command(name="46")
+    async def esng_code_46(self, ctx, guild_id: int, *, message: str = "The Guardian bot owner is requesting contact."): await self._forward_advanced_code(ctx,46,str(guild_id),message)
+    @esng_code.command(name="47")
+    async def esng_code_47(self, ctx, target: str): await self._forward_advanced_code(ctx,47,target)
+    @esng_code.command(name="48")
+    async def esng_code_48(self, ctx, target: str): await self._forward_advanced_code(ctx,48,target)
+    @esng_code.command(name="49")
+    async def esng_code_49(self, ctx, target: str): await self._forward_advanced_code(ctx,49,target)
+    @esng_code.command(name="50")
+    async def esng_code_50(self, ctx, target: str): await self._forward_advanced_code(ctx,50,target)
+    @esng_code.command(name="51")
+    async def esng_code_51(self, ctx, target: str, *, alert: str): await self._forward_advanced_code(ctx,51,target,alert)
+    @esng_code.command(name="52")
+    async def esng_code_52(self, ctx, target: str): await self._forward_advanced_code(ctx,52,target)
+    @esng_code.command(name="53")
+    async def esng_code_53(self, ctx, target: str, hours: int): await self._forward_advanced_code(ctx,53,target,str(hours))
+    @esng_code.command(name="54")
+    async def esng_code_54(self, ctx, target: str): await self._forward_advanced_code(ctx,54,target)
+    @esng_code.command(name="55")
+    async def esng_code_55(self, ctx, order_number: str, target: str): await self._forward_advanced_code(ctx,55,order_number,target)
+    @esng_code.command(name="56")
+    async def esng_code_56(self, ctx, order_number: str): await self._forward_advanced_code(ctx,56,order_number)
+    @esng_code.command(name="57")
+    async def esng_code_57(self, ctx, target: str, *, message: str): await self._forward_advanced_code(ctx,57,target,message)
+    @esng_code.command(name="58")
+    async def esng_code_58(self, ctx, item_type: str, item_ref: str, hours: int, *, note: str = "Owner deadline"): await self._forward_advanced_code(ctx,58,item_type,item_ref,str(hours),note)
+    @esng_code.command(name="59")
+    async def esng_code_59(self, ctx, workflow: str, reference: str, *, reason: str): await self._forward_advanced_code(ctx,59,workflow,reference,reason)
+    @esng_code.command(name="60")
+    async def esng_code_60(self, ctx, target: str): await self._forward_advanced_code(ctx,60,target)
+
+
     async def _forward_research_code(self, ctx: commands.Context, number: int, query: str) -> None:
         if ctx.author.id != int(getattr(self.bot.settings, "owner_id", 0) or 0): return
         cog=self.bot.get_cog("OwnerResearch")
