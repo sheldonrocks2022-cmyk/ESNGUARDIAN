@@ -24,9 +24,17 @@ def owner_only() -> app_commands.check:
 class OwnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._global_bans: dict[int, str] = {}\n        self.owner_guide_reminder.start()
+        self._global_bans: dict[int, str] = {}
+        self.owner_guide_reminder.start()
 
-    def cog_unload(self) -> None:\n        self.owner_guide_reminder.cancel()\n\n    @tasks.loop(hours=2)\n    async def owner_guide_reminder(self) -> None:\n        owner_id=getattr(self.bot.settings, 'owner_id', None)\n        if owner_id is None: return\n        try:\n            owner=self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))\n            await owner.send(embed=command_embed('Owner commands: `/esng-codex` • `!ESNG code <number> ...` • `!broadcast create normal <message>` • `!broadcast create important <message>`\\n\\nOperations: `/globalban` • `/globalunban` • `/globalbanpreview` • `/botstats` • `/servers` • `/synccommands` • `/maintenance` • `/blacklist` • `/unblacklist`\\n\\nUse `/help` for the live slash-command directory.', title='ESN Guardian • Owner Command Guide'), allowed_mentions=discord.AllowedMentions.none())\n        except (discord.Forbidden, discord.HTTPException): pass\n\n    @owner_guide_reminder.before_loop\n    async def before_owner_guide_reminder(self) -> None:\n        await self.bot.wait_until_ready()\n\n    async def cog_load(self) -> None:
+    def cog_unload(self) -> None:
+        self.owner_guide_reminder.cancel()
+
+    @tasks.loop(hours=2)
+    async def owner_guide_reminder(self) -> None:
+        owner_id=getattr(self.bot.settings, 'owner_id', None)\n        if owner_id is None: return\n        try:\n            owner=self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))\n            await owner.send(embed=command_embed('Owner commands: `/esng-codex` • `!ESNG code <number> ...` • `!broadcast create normal <message>` • `!broadcast create important <message>`\\n\\nOperations: `/globalban` • `/globalunban` • `/globalbanpreview` • `/botstats` • `/servers` • `/synccommands` • `/maintenance` • `/blacklist` • `/unblacklist`\\n\\nUse `/help` for the live slash-command directory.', title='ESN Guardian • Owner Command Guide'), allowed_mentions=discord.AllowedMentions.none())\n        except (discord.Forbidden, discord.HTTPException): pass\n\n    @owner_guide_reminder.before_loop
+    async def before_owner_guide_reminder(self) -> None:
+        await self.bot.wait_until_ready()\n\n    async def cog_load(self) -> None:
         rows = await self.bot.database.fetchall(
             "SELECT user_id, reason FROM global_bans"
         )
