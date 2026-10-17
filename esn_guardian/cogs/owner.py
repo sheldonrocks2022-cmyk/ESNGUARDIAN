@@ -670,68 +670,6 @@ class OwnerCog(commands.Cog):
         except (discord.Forbidden, discord.HTTPException):
             return
 
-    @commands.group(name="broadcast", invoke_without_command=True)
-    async def broadcast_prefix(self, ctx: commands.Context) -> None:
-        if ctx.author.id != int(getattr(self.bot.settings, "owner_id", 0) or 0):
-            return
-        await ctx.reply(
-            "Use `!broadcast create normal <message>` or `!broadcast create important <message>`.",
-            mention_author=False,
-        )
-
-    @broadcast_prefix.command(name="create")
-    async def broadcast_create(self, ctx: commands.Context, priority: str, *, message: str) -> None:
-        if ctx.author.id != int(getattr(self.bot.settings, "owner_id", 0) or 0):
-            return
-        priority = priority.lower().strip()
-        if priority not in {"normal", "important"}:
-            await ctx.reply("Priority must be normal or important.", mention_author=False)
-            return
-        title = "ESN GUARDIAN • IMPORTANT BROADCAST" if priority == "important" else "ESN GUARDIAN • NETWORK BROADCAST"
-        embed = command_embed(discord.utils.escape_mentions(message)[:3900], title=title)
-        seen: set[int] = set()
-        dm_ok = 0
-        dm_fail = 0
-        channel_ok = 0
-        for guild in list(self.bot.guilds):
-            recipients = []
-            if guild.owner is not None:
-                recipients.append(guild.owner)
-            recipients.extend(member for member in guild.members if not member.bot and member.guild_permissions.administrator)
-            for member in recipients:
-                if member.id in seen:
-                    continue
-                seen.add(member.id)
-                try:
-                    await member.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-                    dm_ok += 1
-                except (discord.Forbidden, discord.HTTPException):
-                    dm_fail += 1
-            try:
-                settings = await self.bot.database.setting(guild.id)
-                channel_ids = []
-                for key in ("system_log_channel_id", "command_log_channel_id"):
-                    cid = settings[key] if key in settings.keys() else None
-                    if cid and cid not in channel_ids:
-                        channel_ids.append(cid)
-                for cid in channel_ids:
-                    channel = guild.get_channel(cid)
-                    if isinstance(channel, discord.TextChannel):
-                        try:
-                            await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-                            channel_ok += 1
-                        except discord.HTTPException:
-                            pass
-            except Exception:
-                pass
-        summary = (
-            f"Priority: **{priority.upper()}**\n"
-            f"Owner/admin DMs: **{dm_ok}** delivered • **{dm_fail}** unavailable\n"
-            f"Configured channels: **{channel_ok}** delivered\n"
-            f"Servers scanned: **{len(self.bot.guilds)}**"
-        )
-        await ctx.reply(embed=command_embed(summary, title="Guardian Broadcast • Complete"), mention_author=False)
-
     @app_commands.command(description="Send an announcement to configured system log channels.")
     @owner_only()
     async def broadcast(self, interaction: discord.Interaction, message: str) -> None:
