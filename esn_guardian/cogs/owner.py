@@ -32,9 +32,29 @@ class OwnerCog(commands.Cog):
 
     @tasks.loop(hours=2)
     async def owner_guide_reminder(self) -> None:
-        owner_id=getattr(self.bot.settings, 'owner_id', None)\n        if owner_id is None: return\n        try:\n            owner=self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))\n            await owner.send(embed=command_embed('Owner commands: `/esng-codex` • `!ESNG code <number> ...` • `!broadcast create normal <message>` • `!broadcast create important <message>`\\n\\nOperations: `/globalban` • `/globalunban` • `/globalbanpreview` • `/botstats` • `/servers` • `/synccommands` • `/maintenance` • `/blacklist` • `/unblacklist`\\n\\nUse `/help` for the live slash-command directory.', title='ESN Guardian • Owner Command Guide'), allowed_mentions=discord.AllowedMentions.none())\n        except (discord.Forbidden, discord.HTTPException): pass\n\n    @owner_guide_reminder.before_loop
+        owner_id = getattr(self.bot.settings, "owner_id", None)
+        if owner_id is None:
+            return
+        try:
+            owner = self.bot.get_user(int(owner_id)) or await self.bot.fetch_user(int(owner_id))
+            description = (
+                "Owner commands: /esng-codex, !ESNG code <number>, and !broadcast create.\n\n"
+                "Operations: /globalban, /globalunban, /globalbanpreview, /botstats, /servers, "
+                "/synccommands, /maintenance, /blacklist, /unblacklist.\n\n"
+                "Use /help for the live slash-command directory."
+            )
+            await owner.send(
+                embed=command_embed(description, title="ESN Guardian • Owner Command Guide"),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @owner_guide_reminder.before_loop
     async def before_owner_guide_reminder(self) -> None:
-        await self.bot.wait_until_ready()\n\n    async def cog_load(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def cog_load(self) -> None:
         rows = await self.bot.database.fetchall(
             "SELECT user_id, reason FROM global_bans"
         )
